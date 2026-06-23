@@ -1,0 +1,144 @@
+// fleet.service.ts
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, QueryFailedError } from 'typeorm';
+import { Fleet, VehicleStatus } from './entities/fleet.entity';
+
+// ─── DTOs ─────────────────────────────────────────────────────────────────────
+
+export class CreateFleetDto {
+  declare numberPlate: string;
+  declare seatingCapacity: number;
+  declare saccoId: string;
+  declare notes?: string;
+}
+
+export class UpdateFleetDto {
+  declare numberPlate?: string;
+  declare seatingCapacity?: number;
+  declare status?: VehicleStatus;
+  declare notes?: string;
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
+
+@Injectable()
+export class FleetService {
+  constructor(
+    @InjectRepository(Fleet)
+    private readonly fleetRepository: Repository<Fleet>,
+  ) { }
+
+  // ── Create ────────────────────────────────────────────────────────────────
+
+  async create(dto: CreateFleetDto): Promise<Fleet> {
+    if (!dto.numberPlate?.trim()) {
+      throw new BadRequestException('Number plate is required.');
+    }
+    if (!dto.seatingCapacity || dto.seatingCapacity < 1) {
+      throw new BadRequestException('Seating capacity must be at least 1.');
+    }
+
+    const vehicle = this.fleetRepository.create({
+      numberPlate: dto.numberPlate.trim().toUpperCase(),
+      seatingCapacity: dto.seatingCapacity,
+      saccoId: dto.saccoId,
+      notes: dto.notes?.trim() ?? null,
+      status: VehicleStatus.ACTIVE,
+    });
+
+    try {
+      return await this.fleetRepository.save(vehicle);
+    } catch (err) {
+      this.handleUniqueViolation(err);
+    }
+  }
+
+  // ── Find all ──────────────────────────────────────────────────────────────
+
+  async findAll(saccoId?: string): Promise<Fleet[]> {
+    return this.fleetRepository.find({
+      where: saccoId ? { saccoId } : {},
+      order: { numberPlate: 'ASC' },
+    });
+  }
+
+  // ── Find by status ────────────────────────────────────────────────────────
+
+  async findByStatus(status: VehicleStatus, saccoId?: string): Promise<Fleet[]> {
+    return this.fleetRepository.find({
+      where: saccoId ? { status, saccoId } : { status },
+      order: { numberPlate: 'ASC' },
+    });
+  }
+
+  // ── Find one ──────────────────────────────────────────────────────────────
+
+  async findOne(id: string): Promise<Fleet> {
+    const vehicle = await this.fleetRepository.findOne({ where: { id } });
+    if (!vehicle) {
+      throw new NotFoundException(`Vehicle "${id}" not found.`);
+    }
+    return vehicle;
+  }
+
+  async findOneScoped(id: string, saccoId?: string): Promise<Fleet> {
+    const vehicle = await this.findOne(id);
+    if (saccoId && vehicle.saccoId !== saccoId) {
+      throw new ForbiddenException('You do not have access to this vehicle.');
+    }
+    return vehicle;
+  }
+
+  // ── Update ────────────────────────────────────────────────────────────────
+
+  async update(id: string, dto: UpdateFleetDto, saccoId?: string): Promise<Fleet> {
+    const vehicle = await this.findOneScoped(id, saccoId);
+
+    if (dto.numberPlate !== undefined) {
+      vehicle.numberPlate = dto.numberPlate.trim().toUpperCase();
+    }
+    if (dto.seatingCapacity !== undefined) {
+      if (dto.seatingCapacity < 1) {
+        throw new BadRequestException('Seating capacity must be at least 1.');
+      }
+      vehicle.seatingCapacity = dto.seatingCapacity;
+    }
+    if (dto.status !== undefined) vehicle.status = dto.status;
+    if (dto.notes !== undefined) vehicle.notes = dto.notes?.trim() ?? null;
+
+    try {
+      return await this.fleetRepository.save(vehicle);
+    } catch (err) {
+      this.handleUniqueViolation(err);
+    }
+  }
+
+  // ── Status shortcuts ──────────────────────────────────────────────────────
+
+  async setStatus(
+    id: string,
+    status: VehicleStatus,
+    saccoId?: string,
+  ): Promise<Fleet> {
+    const vehicle = await this.findOneScoped(id, saccoId);
+    vehicle.status = status;
+    return this.fleetRepository.save(vehicle);
+  }
+
+  // ── Private helpers ───────────────────────────────────────────────────────
+
+  private handleUniqueViolation(err: unknown): never {
+    if (err instanceof QueryFailedError && (err as any).code === '23505') {
+      throw new BadRequestException(
+        'A vehicle with this number plate already exists.',
+      );
+    }
+    throw err;
+  }
+}

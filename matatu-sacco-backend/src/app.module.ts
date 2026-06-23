@@ -5,6 +5,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { SaccoModule } from './sacco/sacco.module';
 import { FleetModule } from './fleet/fleet.module';
+import { RouteModule } from './route/route.module';
 import { BookingModule } from './booking/booking.module';
 import { PaymentModule } from './payment/payment.module';
 import { AuthModule } from './auth/auth.module';
@@ -34,6 +35,7 @@ import { APP_GUARD } from '@nestjs/core';
     BookingModule,
     PaymentModule,
     AuthModule,
+    RouteModule,
   ],
   controllers: [AppController],
   providers: [AppService, {
