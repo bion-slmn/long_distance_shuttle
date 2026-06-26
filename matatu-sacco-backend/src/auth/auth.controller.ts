@@ -7,9 +7,11 @@ import {
     HttpStatus,
     UseGuards,
 } from '@nestjs/common';
-import { AuthService } from './auth.service';
+import { AuthService, type CreateStaffDto } from './auth.service';
 import { UserRole } from './entities/user.entity';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
+import { Roles } from '../decorators/roles.decorator';
+import { RolesGuard } from '../guards/roles.guard';
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
 class RegisterDto {
@@ -35,28 +37,33 @@ class RefreshDto {
 export class AuthController {
     constructor(private readonly authService: AuthService) { }
 
-    // POST /auth/register
     @Post('register')
     @HttpCode(HttpStatus.CREATED)
     register(@Body() body: RegisterDto) {
         return this.authService.register(body);
     }
 
-    // POST /auth/login
+    // POST /auth/staff  — admin-only, creates drivers/clerks
+    @Post('staff')
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+    @HttpCode(HttpStatus.CREATED)
+    createStaff(@Body() body: CreateStaffDto, @Req() req: any) {
+        return this.authService.createStaffUser(body, req.user);
+    }
+
     @Post('login')
     @HttpCode(HttpStatus.OK)
     login(@Body() body: LoginDto) {
         return this.authService.login(body.identifier, body.password);
     }
 
-    // POST /auth/refresh  — guard verifies the refresh token signature
     @Post('refresh')
     @HttpCode(HttpStatus.OK)
     refresh(@Body() body: RefreshDto) {
         return this.authService.refresh(body.refresh_token);
     }
 
-    // POST /auth/logout  — requires a valid access token
     @Post('logout')
     @UseGuards(JwtAuthGuard)
     @HttpCode(HttpStatus.OK)

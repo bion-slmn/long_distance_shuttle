@@ -12,6 +12,7 @@ import {
   UseGuards,
   ParseUUIDPipe,
   ForbiddenException,
+  Query,
 } from '@nestjs/common';
 import { RouteService, CreateRouteDto, UpdateRouteDto } from './route.service';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
@@ -19,6 +20,9 @@ import { RolesGuard } from '../guards/roles.guard';
 import { Roles } from '../decorators/roles.decorator';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import { UserRole } from '../auth/entities/user.entity';
+import { UpdateQueueDto } from './dto/update-route.dto';
+import { QueueStatus } from './entities/route-queue.entity';
+import { CreateQueueDto } from './dto/create-route.dto';
 
 @Controller('routes')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -119,5 +123,76 @@ export class RouteController {
       : user.saccoId;
 
     return this.routeService.removeStop(id, stop, saccoId);
+  }
+
+  // =========================================================================
+  // ─── ROUTE QUEUE ENDPOINTS ───────────────────────────────────────────────
+  // =========================================================================
+
+  // ── POST /routes/queue/clock-in ──────────────────────────────────────────
+  @Post('queue/clock-in')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
+  @HttpCode(HttpStatus.CREATED)
+  clockInVehicle(
+    @Body() body: CreateQueueDto,
+    @CurrentUser() user: any,
+  ) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.routeService.clockInVehicle(body, saccoId);
+  }
+
+  // ── GET /routes/queue/available ──────────────────────────────────────────
+  // Example: GET /routes/queue/available?routeId=uuid&date=2026-06-24
+  @Get('queue/available')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
+  findAvailableVehicles(
+    @Query('routeId', ParseUUIDPipe) routeId: string,
+    @Query('date') dateString?: string,
+  ) {
+    const targetDate = dateString ? new Date(dateString) : new Date();
+    return this.routeService.findAvailableVehiclesForRoute(routeId, targetDate);
+  }
+
+  // ── GET /routes/queue ────────────────────────────────────────────────────
+  // Example: GET /routes/queue?routeId=uuid&status=WAITING
+  @Get('queue')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
+  findAllQueueEntries(
+    @Query('routeId') routeId?: string,
+    @Query('status') status?: QueueStatus,
+  ) {
+    return this.routeService.findAllQueueEntries({ routeId, status });
+  }
+
+  // ── GET /routes/queue/:id ────────────────────────────────────────────────
+  @Get('queue/:id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
+  findOneQueueEntry(@Param('id', ParseUUIDPipe) id: string) {
+    return this.routeService.findOneQueueEntry(id);
+  }
+
+  // ── PATCH /routes/queue/:id ──────────────────────────────────────────────
+  @Patch('queue/:id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
+  @HttpCode(HttpStatus.OK)
+  updateQueueEntry(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateQueueDto,
+    @CurrentUser() user: any,
+  ) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.routeService.updateQueueEntry(id, body, saccoId);
+  }
+
+  // ── DELETE /routes/queue/:id ─────────────────────────────────────────────
+  @Delete('queue/:id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  removeVehicleFromQueue(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: any,
+  ) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.routeService.removeVehicleFromQueue(id, saccoId);
   }
 }

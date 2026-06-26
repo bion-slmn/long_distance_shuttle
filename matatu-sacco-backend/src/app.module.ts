@@ -11,6 +11,7 @@ import { PaymentModule } from './payment/payment.module';
 import { AuthModule } from './auth/auth.module';
 import { RolesGuard } from './guards/roles.guard';
 import { APP_GUARD } from '@nestjs/core';
+import { TripModule } from './trip/trip.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { APP_GUARD } from '@nestjs/core';
     PaymentModule,
     AuthModule,
     RouteModule,
+    TripModule,
   ],
   controllers: [AppController],
   providers: [AppService, {

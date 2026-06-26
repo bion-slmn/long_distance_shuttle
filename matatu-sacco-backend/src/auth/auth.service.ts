@@ -22,6 +22,25 @@ interface RegisterDto {
     saccoId?: string;
 }
 
+interface CreateManagedUserDto {
+    fullName: string;
+    email?: string;
+    phoneNumber?: string;
+    password: string;
+    role: UserRole.SACCO_ADMIN | UserRole.DRIVER | UserRole.CLERK;
+    saccoId: string; // required — every managed role belongs to a Sacco
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────
+export interface CreateStaffDto {
+    fullName: string;
+    email?: string;
+    phoneNumber?: string;
+    password: string;
+    role: UserRole.DRIVER | UserRole.CLERK;
+    saccoId: string; // required here, not optional
+}
+
 export interface TokenPair {
     access_token: string;
     refresh_token: string;
@@ -52,9 +71,18 @@ export class AuthService {
     ) { }
 
     // ── Register ──────────────────────────────────────────────────────────────
-
     async register(dto: RegisterDto) {
         const { fullName, email, phoneNumber, password, role, saccoId } = dto;
+
+        // Public self-registration is only allowed for passengers
+        // (and optionally sacco admins, if you want self-onboarding for that role).
+        const PUBLIC_ROLES = [UserRole.PASSENGER];
+
+        if (!PUBLIC_ROLES.includes(role)) {
+            throw new BadRequestException(
+                'This role cannot be self-registered. Contact your Sacco admin.',
+            );
+        }
 
         if (!email && !phoneNumber) {
             throw new BadRequestException(
@@ -133,7 +161,108 @@ export class AuthService {
         return { success: true, message: 'Logged out successfully. Safe travels!' };
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+
+
+    async createManagedUser(
+        dto: CreateManagedUserDto,
+        creator: { sub: string; role: UserRole; saccoId: string | null },
+    ) {
+        // Who's allowed to create whom
+        const PERMITTED_TARGETS: Record<UserRole, UserRole[]> = {
+            [UserRole.SUPER_ADMIN]: [UserRole.SACCO_ADMIN, UserRole.CLERK, UserRole.DRIVER],
+            [UserRole.SACCO_ADMIN]: [UserRole.CLERK, UserRole.DRIVER],
+            [UserRole.CLERK]: [],
+            [UserRole.DRIVER]: [],
+            [UserRole.PASSENGER]: [],
+        };
+
+        const allowedTargets = PERMITTED_TARGETS[creator.role] ?? [];
+
+        if (!allowedTargets.includes(dto.role)) {
+            throw new UnauthorizedException(
+                `You are not permitted to create a user with role ${dto.role}.`,
+            );
+        }
+
+        // Sacco admins are confined to their own Sacco; super admins can target any Sacco.
+        if (creator.role === UserRole.SACCO_ADMIN && creator.saccoId !== dto.saccoId) {
+            throw new UnauthorizedException(
+                'You can only create users within your own Sacco.',
+            );
+        }
+
+        if (!dto.email && !dto.phoneNumber) {
+            throw new BadRequestException('Provide at least an email or phone number.');
+        }
+
+        await this.assertNoDuplicateEmail(dto.email);
+        await this.assertNoDuplicatePhone(dto.phoneNumber);
+
+        const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
+
+        const user = this.userRepository.create({
+            fullName: dto.fullName.trim(),
+            email: dto.email?.toLowerCase().trim() ?? null,
+            phoneNumber: dto.phoneNumber?.trim() ?? null,
+            passwordHash,
+            role: dto.role,
+            saccoId: dto.saccoId,
+            tokenVersion: 0,
+        });
+
+        const saved = await this.userRepository.save(user);
+        return this.sanitizeUser(saved);
+    }
+
+
+    async createStaffUser(
+        dto: CreateStaffDto,
+        creator: { sub: string; role: UserRole; saccoId: string | null },
+    ) {
+        const STAFF_ROLES = [UserRole.DRIVER, UserRole.CLERK];
+
+        if (!STAFF_ROLES.includes(dto.role)) {
+            throw new BadRequestException('This endpoint only creates drivers or clerks.');
+        }
+
+        // Sacco admins can only create staff within their own Sacco.
+        // Super admins can create staff for any Sacco (must specify saccoId).
+        if (creator.role === UserRole.SACCO_ADMIN) {
+            if (creator.saccoId !== dto.saccoId) {
+                throw new UnauthorizedException(
+                    'You can only create staff within your own Sacco.',
+                );
+            }
+        } else if (creator.role !== UserRole.SUPER_ADMIN) {
+            throw new UnauthorizedException(
+                'Only Sacco admins or super admins can create staff accounts.',
+            );
+        }
+
+        if (!dto.email && !dto.phoneNumber) {
+            throw new BadRequestException(
+                'Provide at least an email or phone number.',
+            );
+        }
+
+        await this.assertNoDuplicateEmail(dto.email);
+        await this.assertNoDuplicatePhone(dto.phoneNumber);
+
+        const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
+
+        const user = this.userRepository.create({
+            fullName: dto.fullName.trim(),
+            email: dto.email?.toLowerCase().trim() ?? null,
+            phoneNumber: dto.phoneNumber?.trim() ?? null,
+            passwordHash,
+            role: dto.role,
+            saccoId: dto.saccoId,
+            tokenVersion: 0,
+        });
+
+        const saved = await this.userRepository.save(user);
+        return this.sanitizeUser(saved);
+    }
 
     private async findActiveUserByIdentifier(identifier: string): Promise<User | null> {
         const isEmail = identifier.includes('@');
@@ -144,6 +273,8 @@ export class AuthService {
                 : { phoneNumber: identifier.trim(), isActive: true },
         });
     }
+
+
 
     private async generateTokenPair(user: User): Promise<TokenPair> {
         const payload = {
