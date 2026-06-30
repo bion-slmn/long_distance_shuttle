@@ -29,6 +29,7 @@ export class SaccoController {
     // ── POST /saccos ──────────────────────────────────────────────────────────
 
     @Post()
+    @UseGuards(JwtAuthGuard, RolesGuard)
     @Roles(UserRole.SUPER_ADMIN)
     @HttpCode(HttpStatus.CREATED)
     create(@Body() body: CreateSaccoDto) {

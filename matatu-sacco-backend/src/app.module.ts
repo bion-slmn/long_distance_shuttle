@@ -12,6 +12,9 @@ import { AuthModule } from './auth/auth.module';
 import { RolesGuard } from './guards/roles.guard';
 import { APP_GUARD } from '@nestjs/core';
 import { TripModule } from './trip/trip.module';
+import { PassportModule } from '@nestjs/passport';
+import { JwtStrategy } from './auth/strategies/jwt.strategy';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @Module({
   imports: [
@@ -30,6 +33,7 @@ import { TripModule } from './trip/trip.module';
       autoLoadEntities: true,
       synchronize: true, // Set to false in production to prevent unexpected data wiping!
     }),
+    PassportModule.register({ defaultStrategy: 'jwt' }),  // ← add
 
     SaccoModule,
     FleetModule,
@@ -40,9 +44,17 @@ import { TripModule } from './trip/trip.module';
     TripModule,
   ],
   controllers: [AppController],
-  providers: [AppService, {
-    provide: APP_GUARD,
-    useClass: RolesGuard,
-  },],
+  providers: [
+    AppService,
+    JwtStrategy,          // ← register globally
+    {
+      provide: APP_GUARD,
+      useClass: JwtAuthGuard,  // ← runs first on every route
+    },
+    {
+      provide: APP_GUARD,
+      useClass: RolesGuard,    // ← runs second, user already set
+    },
+  ],
 })
 export class AppModule { }

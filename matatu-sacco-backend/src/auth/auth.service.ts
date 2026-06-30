@@ -22,13 +22,12 @@ interface RegisterDto {
     saccoId?: string;
 }
 
-interface CreateManagedUserDto {
+export interface CreateManagerDto {
     fullName: string;
     email?: string;
     phoneNumber?: string;
     password: string;
-    role: UserRole.SACCO_ADMIN | UserRole.DRIVER | UserRole.CLERK;
-    saccoId: string; // required — every managed role belongs to a Sacco
+    saccoId: string;
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────
@@ -163,34 +162,7 @@ export class AuthService {
 
 
 
-    async createManagedUser(
-        dto: CreateManagedUserDto,
-        creator: { sub: string; role: UserRole; saccoId: string | null },
-    ) {
-        // Who's allowed to create whom
-        const PERMITTED_TARGETS: Record<UserRole, UserRole[]> = {
-            [UserRole.SUPER_ADMIN]: [UserRole.SACCO_ADMIN, UserRole.CLERK, UserRole.DRIVER],
-            [UserRole.SACCO_ADMIN]: [UserRole.CLERK, UserRole.DRIVER],
-            [UserRole.CLERK]: [],
-            [UserRole.DRIVER]: [],
-            [UserRole.PASSENGER]: [],
-        };
-
-        const allowedTargets = PERMITTED_TARGETS[creator.role] ?? [];
-
-        if (!allowedTargets.includes(dto.role)) {
-            throw new UnauthorizedException(
-                `You are not permitted to create a user with role ${dto.role}.`,
-            );
-        }
-
-        // Sacco admins are confined to their own Sacco; super admins can target any Sacco.
-        if (creator.role === UserRole.SACCO_ADMIN && creator.saccoId !== dto.saccoId) {
-            throw new UnauthorizedException(
-                'You can only create users within your own Sacco.',
-            );
-        }
-
+    async createManager(dto: CreateManagerDto) {
         if (!dto.email && !dto.phoneNumber) {
             throw new BadRequestException('Provide at least an email or phone number.');
         }
@@ -205,7 +177,7 @@ export class AuthService {
             email: dto.email?.toLowerCase().trim() ?? null,
             phoneNumber: dto.phoneNumber?.trim() ?? null,
             passwordHash,
-            role: dto.role,
+            role: UserRole.SACCO_ADMIN,
             saccoId: dto.saccoId,
             tokenVersion: 0,
         });
