@@ -2,15 +2,12 @@
 import {
     createContext,
     useContext,
-    useEffect,
-    useState,
     type ReactNode,
 } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { refreshRequest, type AuthResponse } from "@/api/authApi"
 import { setAccessToken } from "@/api/axios"
-
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 type AuthUser = AuthResponse["user"]
 
@@ -24,55 +21,42 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
-// ─── Provider ────────────────────────────────────────────────────────────────
+// ─── The query itself ─────────────────────────────────────────────────────
+
+function useMeQuery() {
+    return useQuery({
+        queryKey: ["me"],
+        queryFn: async () => {
+            const data = await refreshRequest()
+            setAccessToken(data.access_token)
+            return data.user
+        },
+        retry: false,
+        staleTime: 5 * 60 * 1000,
+    })
+}
+
+// ─── Provider ────────────────────────────────────────────────────────────
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-    const [user, setUser] = useState<AuthUser | null>(null)
-    const [isLoading, setIsLoading] = useState(true)
+    const queryClient = useQueryClient()
+    const { data: user, isLoading } = useMeQuery()
 
-    // Called by LoginForm/RegisterForm on success, and internally after a
-    // successful silent refresh — keeps the in-memory token + user in sync.
+    // Called by LoginForm/RegisterForm directly on success — no need to
+    // refetch, we already have the data from the login/register response.
     function setSession(data: AuthResponse) {
         setAccessToken(data.access_token)
-        setUser(data.user)
+        queryClient.setQueryData(["me"], data.user)
     }
 
     function logout() {
         setAccessToken(null)
-        setUser(null)
-        // refresh_token cookie is httpOnly — clearing it server-side requires
-        // hitting a /auth/logout endpoint that clears the cookie; wire that
-        // in here once it exists, e.g.:
+        queryClient.setQueryData(["me"], null)
         // api.post("/auth/logout").catch(() => {})
     }
 
-    // Silent refresh on boot: the in-memory access_token is gone after any
-    // page reload, but the httpOnly refresh_token cookie survives. Fire one
-    // refresh call before rendering anything that depends on auth state.
-    useEffect(() => {
-        let cancelled = false
-
-        refreshRequest()
-            .then((data) => {
-                if (!cancelled) setSession(data)
-            })
-            .catch(() => {
-                if (!cancelled) {
-                    setAccessToken(null)
-                    setUser(null)
-                }
-            })
-            .finally(() => {
-                if (!cancelled) setIsLoading(false)
-            })
-
-        return () => {
-            cancelled = true
-        }
-    }, [])
-
     const value: AuthContextValue = {
-        user,
+        user: user ?? null,
         isAuthenticated: !!user,
         isLoading,
         setSession,
@@ -82,7 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
-// ─── Hook ────────────────────────────────────────────────────────────────────
+// ─── Hook ────────────────────────────────────────────────────────────────
 
 export function useAuth() {
     const ctx = useContext(AuthContext)

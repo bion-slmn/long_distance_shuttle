@@ -84,22 +84,23 @@ export class AuthController {
         @Req() req: Request,
         @Res({ passthrough: true }) res: Response,
     ) {
+
         const rawRefreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
 
         if (!rawRefreshToken) {
             throw new UnauthorizedException('No refresh token provided.');
         }
 
-        const { access_token, refresh_token } = await this.authService.refresh(rawRefreshToken);
+        const results = await this.authService.refresh(rawRefreshToken);
 
-        res.cookie(REFRESH_COOKIE_NAME, refresh_token, {
+        res.cookie(REFRESH_COOKIE_NAME, results.refresh_token, {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
             sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
             path: REFRESH_COOKIE_PATH,
         });
 
-        return { access_token };
+        return results;
     }
 
     // ── Logout ────────────────────────────────────────────────────────────────

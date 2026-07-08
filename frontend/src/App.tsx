@@ -6,6 +6,9 @@ import LoginForm from './features/auth/LoginForm'
 import { Toaster } from 'sonner'
 import AdminCreateUser from './features/auth/AdmincreateUser'
 import ProtectedRoute from './features/auth/ProtectedRoute'
+import CreateSaccoForm from './features/sacco/CreateSaccoForm'
+import SaccoListView from './features/sacco/SaccoListView'
+import { FleetListView } from './features/fleet/FleetListView'
 
 function App() {
   return (
@@ -27,6 +30,9 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["SUPER_ADMIN", "SACCO_ADMIN"]}>
               <AdminCreateUser />
+              <CreateSaccoForm />
+              <SaccoListView />
+              <FleetListView />
             </ProtectedRoute>
           }
         />

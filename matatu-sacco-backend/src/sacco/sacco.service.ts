@@ -6,7 +6,7 @@ import {
     ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { ILike, QueryFailedError, Repository } from 'typeorm';
 import { Sacco, SaccoContact, SaccoEmail } from './entities/sacco.entity';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
@@ -17,6 +17,24 @@ export interface CreateSaccoDto {
     contacts?: SaccoContact[];
     emails?: SaccoEmail[];
     headquarters?: string;
+}
+
+
+export interface FindAllSaccosOptions {
+    includeInactive?: boolean;
+    saccoId?: string;
+    page?: number;
+    limit?: number;
+    minimalFields?: boolean;
+    search?: string;
+}
+
+export interface PaginatedSaccos {
+    data: Sacco[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
 }
 
 export interface UpdateSaccoDto {
@@ -100,11 +118,16 @@ export class SaccoService {
     }
 
     // ── Find all ──────────────────────────────────────────────────────────────
+    async findAll(options: FindAllSaccosOptions = {}): Promise<PaginatedSaccos> {
+        const {
+            includeInactive = false,
+            saccoId,
+            page = 1,
+            limit = 20,
+            minimalFields = false,
+            search,
+        } = options;
 
-    async findAll(
-        includeInactive = false,
-        saccoId?: string          // ← when provided, restricts to one sacco
-    ): Promise<Sacco[]> {
         const where: any = {};
 
         if (!includeInactive) {
@@ -112,13 +135,32 @@ export class SaccoService {
         }
 
         if (saccoId) {
-            where.id = saccoId;   // clerk only sees their own sacco
+            where.id = saccoId;
         }
 
-        return this.saccoRepository.find({
+        if (search?.trim()) {
+            where.name = ILike(`%${search.trim()}%`);
+        }
+
+        const take = limit > 0 ? limit : 20;
+        const currentPage = page > 0 ? page : 1;
+        const skip = (currentPage - 1) * take;
+
+        const [data, total] = await this.saccoRepository.findAndCount({
             where,
+            select: minimalFields ? { id: true, name: true } : undefined,
             order: { name: 'ASC' },
+            skip,
+            take,
         });
+
+        return {
+            data,
+            total,
+            page: currentPage,
+            limit: take,
+            totalPages: Math.ceil(total / take) || 0,
+        };
     }
 
     async findOneScoped(id: string, saccoId?: string): Promise<Sacco> {

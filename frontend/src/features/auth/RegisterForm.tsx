@@ -137,7 +137,7 @@ export default function RegisterForm() {
                                             </SelectContent>
                                         </Select>
                                         {fieldState.invalid && (
-                                            <FieldError errors={[fieldState.error]} />
+                                            <FieldError errors={[fieldState.error]} className="text-left text-xs" />
                                         )}
                                     </Field>
                                 )}
@@ -161,7 +161,7 @@ export default function RegisterForm() {
                                             autoComplete="email"
                                         />
                                         {fieldState.invalid && (
-                                            <FieldError errors={[fieldState.error]} />
+                                            <FieldError errors={[fieldState.error]} className="text-left text-xs" />
                                         )}
                                     </Field>
                                 )}
@@ -181,7 +181,7 @@ export default function RegisterForm() {
                                             aria-invalid={fieldState.invalid}
                                         />
                                         {fieldState.invalid && (
-                                            <FieldError errors={[fieldState.error]} />
+                                            <FieldError errors={[fieldState.error]} className="text-left text-xs" />
                                         )}
                                     </Field>
                                 )}
@@ -205,7 +205,7 @@ export default function RegisterForm() {
                                         aria-invalid={fieldState.invalid}
                                     />
                                     {fieldState.invalid && (
-                                        <FieldError errors={[fieldState.error]} />
+                                        <FieldError errors={[fieldState.error]} className="text-left text-xs" />
                                     )}
                                 </Field>
                             )}
@@ -226,7 +226,7 @@ export default function RegisterForm() {
                                             autoComplete="new-password"
                                         />
                                         {fieldState.invalid && (
-                                            <FieldError errors={[fieldState.error]} />
+                                            <FieldError errors={[fieldState.error]} className="text-left text-xs" />
                                         )}
                                     </Field>
                                 )}
@@ -249,7 +249,7 @@ export default function RegisterForm() {
                                             autoComplete="new-password"
                                         />
                                         {fieldState.invalid && (
-                                            <FieldError errors={[fieldState.error]} />
+                                            <FieldError errors={[fieldState.error]} className="text-left text-xs" />
                                         )}
                                     </Field>
                                 )}

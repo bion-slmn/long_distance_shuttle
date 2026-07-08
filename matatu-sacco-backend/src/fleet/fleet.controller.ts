@@ -55,16 +55,21 @@ export class FleetController {
   findAll(
     @CurrentUser() user: any,
     @Query('status') status?: VehicleStatus,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
     const saccoId = user.role === UserRole.SUPER_ADMIN
       ? undefined
       : user.saccoId;
 
-    if (status) {
-      return this.fleetService.findByStatus(status, saccoId);
-    }
-
-    return this.fleetService.findAll(saccoId);
+    return this.fleetService.findAll({
+      saccoId,
+      status,
+      search,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
   }
 
   // ── GET /fleet/:id ────────────────────────────────────────────────────────

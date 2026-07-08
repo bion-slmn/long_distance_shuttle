@@ -34,6 +34,7 @@ import {
     type CreateStaffPayload,
     type CreateManagerPayload,
 } from "@/api/authApi"
+import { SaccoCombobox } from "../sacco/SaccoCombobox"
 
 // ─── Shared identifier rule ─────────────────────────────────────────────────
 // mirrors RegisterForm: at least one of email/phone is required
@@ -240,18 +241,15 @@ function CreateStaffForm() {
                         )}
                     />
                 </div>
-
                 <Controller
                     name="saccoId"
                     control={form.control}
                     render={({ field, fieldState }) => (
                         <Field data-invalid={fieldState.invalid}>
-                            <FieldLabel htmlFor="staff-saccoId">Sacco ID</FieldLabel>
-                            <Input
-                                {...field}
-                                id="staff-saccoId"
-                                placeholder="SACCO-001"
-                                aria-invalid={fieldState.invalid}
+                            <FieldLabel htmlFor="staff-saccoId">Sacco</FieldLabel>
+                            <SaccoCombobox
+                                value={field.value}
+                                onChange={field.onChange}
                             />
                             {fieldState.invalid && (
                                 <FieldError errors={[fieldState.error]} />
@@ -354,12 +352,10 @@ function CreateManagerForm() {
                         control={form.control}
                         render={({ field, fieldState }) => (
                             <Field data-invalid={fieldState.invalid}>
-                                <FieldLabel htmlFor="manager-saccoId">Sacco ID</FieldLabel>
-                                <Input
-                                    {...field}
-                                    id="manager-saccoId"
-                                    placeholder="SACCO-001"
-                                    aria-invalid={fieldState.invalid}
+                                <FieldLabel htmlFor="staff-saccoId">Sacco</FieldLabel>
+                                <SaccoCombobox
+                                    value={field.value}
+                                    onChange={field.onChange}
                                 />
                                 {fieldState.invalid && (
                                     <FieldError errors={[fieldState.error]} />

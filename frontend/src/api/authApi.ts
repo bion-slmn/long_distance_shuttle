@@ -1,4 +1,4 @@
-import api from "./axios";
+import api, { refreshApi } from "./axios";
 
 // ─── Types (adjust to match your actual entity/DTO shapes) ─────────────────
 
@@ -61,7 +61,7 @@ export const loginRequest = async (payload: LoginPayload): Promise<AuthResponse>
 };
 
 export const refreshRequest = async (): Promise<AuthResponse> => {
-    const { data } = await api.post<AuthResponse>('/auth/refresh');
+    const { data } = await refreshApi.post<AuthResponse>("/auth/refresh");
     return data;
 };
 

@@ -37,27 +37,26 @@ export class SaccoController {
     }
 
     // ── GET /saccos ───────────────────────────────────────────────────────────
-    // SUPER_ADMIN → all saccos
-    // SACCO_ADMIN → all saccos (they manage across)
+    // SUPER_ADMIN → all saccos, paginated
+    // SACCO_ADMIN → only their own sacco
     // CLERK       → only their own sacco
 
     @Get()
     @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
     findAll(
-        @CurrentUser() user: any,
         @Query('includeInactive') includeInactive?: string,
+        @Query('page') page?: string,
+        @Query('limit') limit?: string,
+        @Query('minimalFields') minimalFields?: string,
+        @Query('search') search?: string,
     ) {
-        const isClerk = user.role === UserRole.CLERK;
-
-        // Clerks without a sacco assignment shouldn't see anything
-        if (isClerk && !user.saccoId) {
-            return [];
-        }
-
-        return this.saccoService.findAll(
-            includeInactive === 'true' && user.role === UserRole.SUPER_ADMIN,
-            isClerk ? user.saccoId : undefined,   // ← scope to their sacco
-        );
+        return this.saccoService.findAll({
+            includeInactive: includeInactive === 'true',
+            page: page ? Number(page) : undefined,
+            limit: limit ? Number(limit) : undefined,
+            minimalFields: minimalFields === 'true',
+            search,
+        });
     }
 
     // ── GET /saccos/:id ───────────────────────────────────────────────────────

@@ -127,7 +127,13 @@ export class AuthService {
 
     // ── Refresh ───────────────────────────────────────────────────────────────
 
-    async refresh(rawRefreshToken: string): Promise<TokenPair> {
+    // ── Refresh ───────────────────────────────────────────────────────────────
+
+    // ── Refresh ───────────────────────────────────────────────────────────────
+    // Refresh token is NOT rotated — same token stays valid until its own
+    // 7-day expiry. Revocation only happens via tokenVersion bump on logout().
+
+    async refresh(rawRefreshToken: string): Promise<AuthResponse> {
         let payload: any;
 
         try {
@@ -150,7 +156,22 @@ export class AuthService {
             throw new UnauthorizedException('Session expired. Please log in again.');
         }
 
-        return this.generateTokenPair(user);
+        const access_token = await this.jwtService.signAsync(
+            {
+                sub: user.id,
+                email: user.email,
+                phone: user.phoneNumber,
+                role: user.role,
+                saccoId: user.saccoId,
+                tokenVersion: user.tokenVersion,
+            },
+            {
+                secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
+                expiresIn: '15m',
+            },
+        );
+
+        return { access_token, refresh_token: rawRefreshToken, user: this.sanitizeUser(user) };
     }
 
     // ── Logout ────────────────────────────────────────────────────────────────

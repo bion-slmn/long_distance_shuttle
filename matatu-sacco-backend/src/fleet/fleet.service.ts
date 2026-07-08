@@ -6,7 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, QueryFailedError } from 'typeorm';
+import { Repository, QueryFailedError, ILike } from 'typeorm';
 import { Fleet, VehicleStatus } from './entities/fleet.entity';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
@@ -23,6 +23,23 @@ export class UpdateFleetDto {
   declare seatingCapacity?: number;
   declare status?: VehicleStatus;
   declare notes?: string;
+}
+
+export interface FindAllFleetOptions {
+  saccoId?: string;
+  status?: VehicleStatus;
+  page?: number;
+  limit?: number;
+  minimalFields?: boolean;
+  search?: string; // matches against numberPlate
+}
+
+export interface PaginatedFleet {
+  data: Fleet[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -59,13 +76,51 @@ export class FleetService {
     }
   }
 
-  // ── Find all ──────────────────────────────────────────────────────────────
 
-  async findAll(saccoId?: string): Promise<Fleet[]> {
-    return this.fleetRepository.find({
-      where: saccoId ? { saccoId } : {},
+
+  async findAll(options: FindAllFleetOptions = {}): Promise<PaginatedFleet> {
+    const {
+      saccoId,
+      status,
+      page = 1,
+      limit = 20,
+      minimalFields = false,
+      search,
+    } = options;
+
+    const where: any = {};
+
+    if (saccoId) {
+      where.saccoId = saccoId;
+    }
+
+    if (status) {
+      where.status = status;
+    }
+
+    if (search?.trim()) {
+      where.numberPlate = ILike(`%${search.trim()}%`);
+    }
+
+    const take = limit > 0 ? limit : 20;
+    const currentPage = page > 0 ? page : 1;
+    const skip = (currentPage - 1) * take;
+
+    const [data, total] = await this.fleetRepository.findAndCount({
+      where,
+      select: minimalFields ? { id: true, numberPlate: true } : undefined,
       order: { numberPlate: 'ASC' },
+      skip,
+      take,
     });
+
+    return {
+      data,
+      total,
+      page: currentPage,
+      limit: take,
+      totalPages: Math.ceil(total / take) || 0,
+    };
   }
 
   // ── Find by status ────────────────────────────────────────────────────────
