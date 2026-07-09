@@ -33,6 +33,9 @@ export class Route {
     @Column({ type: 'varchar', length: 100 })
     declare description: string;
 
+    @Column({ type: 'decimal', precision: 10, scale: 2, default: 0.00 })
+    declare fare: number;
+
     // Ordered stops between origin and destination
     @Column({ type: 'jsonb', default: [] })
     declare stages: string[];

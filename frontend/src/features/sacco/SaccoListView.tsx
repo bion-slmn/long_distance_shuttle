@@ -14,7 +14,14 @@ import {
     XCircle,
     ChevronRight,
     ChevronLeft,
-    X
+    X,
+    RouteIcon,
+    Users2,
+    Bus,
+    Eye,
+    Pencil,
+    Power,
+    PowerOff,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -25,6 +32,7 @@ import {
     DropdownMenuContent,
     DropdownMenuItem,
     DropdownMenuTrigger,
+    DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
 import {
     Dialog,
@@ -34,23 +42,24 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog"
 import {
-    Sheet,
-    SheetContent,
-    SheetDescription,
-    SheetHeader,
-    SheetTitle,
-} from "@/components/ui/sheet"
-import {
     Drawer,
     DrawerContent,
     DrawerDescription,
     DrawerHeader,
     DrawerTitle,
 } from "@/components/ui/drawer"
-
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "@/components/ui/table"
+import { Badge } from "@/components/ui/badge"
+import { Switch } from "@/components/ui/switch"
 import { deactivateSaccoRequest, getSaccosRequest, reactivateSaccoRequest } from "@/api/saccoApi"
 import type { Sacco } from "@/api/saccoApi"
-import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import SaccoForm from "./CreateSaccoForm"
@@ -79,7 +88,7 @@ export default function SaccoListView({
     // Check if mobile
     useEffect(() => {
         const checkMobile = () => {
-            setIsMobile(window.innerWidth < 640)
+            setIsMobile(window.innerWidth < 768)
         }
         checkMobile()
         window.addEventListener('resize', checkMobile)
@@ -93,7 +102,7 @@ export default function SaccoListView({
 
     const { data: response, isLoading, error, isPlaceholderData } = useQuery({
         queryKey,
-        queryFn: () => getSaccosRequest({ includeInactive, page, limit: PAGE_SIZE }),
+        queryFn: () => getSaccosRequest({ includeInactive, page, limit: PAGE_SIZE, withCounts: true }),
         staleTime: 5 * 60 * 1000,
         placeholderData: (prev) => prev,
     })
@@ -144,9 +153,6 @@ export default function SaccoListView({
         },
     })
 
-    // NOTE: this only filters the saccos on the CURRENT page, since data is
-    // now paginated server-side. For real search-across-all-pages, this
-    // needs to become a server-side `search` query param instead.
     const filteredSaccos = useMemo(() => {
         if (!searchQuery.trim()) return saccos
 
@@ -160,7 +166,6 @@ export default function SaccoListView({
         )
     }, [saccos, searchQuery])
 
-    // Handlers
     const handleAddSacco = () => {
         setFormMode("create")
         setEditingSacco(null)
@@ -185,7 +190,7 @@ export default function SaccoListView({
     const handleDialogClose = () => setSelectedSacco(null)
 
     if (isLoading) {
-        return <SaccoListSkeleton />
+        return <SaccoListSkeleton isMobile={isMobile} />
     }
 
     if (error) {
@@ -225,25 +230,13 @@ export default function SaccoListView({
         return (
             <>
                 <div className="space-y-3">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                        <div className="flex items-center gap-2">
-                            <h2 className="text-base font-medium">Saccos</h2>
-                            <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
-                                {total}
-                            </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <SaccoSearchBar
-                                value={searchQuery}
-                                onChange={setSearchQuery}
-                                className="w-full sm:w-56"
-                            />
-                            <Button size="sm" onClick={handleAddSacco} className="gap-1.5">
-                                <Plus className="size-3.5" />
-                                <span className="hidden sm:inline text-xs">Add</span>
-                            </Button>
-                        </div>
-                    </div>
+                    <SaccoToolbar
+                        searchQuery={searchQuery}
+                        onSearchChange={setSearchQuery}
+                        onAddSacco={handleAddSacco}
+                        total={total}
+                        isMobile={isMobile}
+                    />
                     <EmptyState
                         title="No matching saccos"
                         description={`No saccos found matching "${searchQuery}" on this page`}
@@ -267,46 +260,63 @@ export default function SaccoListView({
     return (
         <>
             <div className={cn("space-y-4", className)}>
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                        <h2 className="text-base font-medium">Saccos</h2>
-                        <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
-                            {total}
-                        </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <SaccoSearchBar
-                            value={searchQuery}
-                            onChange={setSearchQuery}
-                            className="w-full sm:w-56"
-                        />
-                        <Button size="sm" onClick={handleAddSacco} className="gap-1.5">
-                            <Plus className="size-3.5" />
-                            <span className="hidden sm:inline text-xs">Add</span>
-                        </Button>
-                    </div>
-                </div>
+                <SaccoToolbar
+                    searchQuery={searchQuery}
+                    onSearchChange={setSearchQuery}
+                    onAddSacco={handleAddSacco}
+                    total={total}
+                    isMobile={isMobile}
+                />
 
-                <div
-                    className={cn(
-                        "grid gap-2 transition-opacity",
-                        isPlaceholderData && "opacity-60 pointer-events-none",
-                    )}
-                >
-                    {filteredSaccos.map((sacco) => (
-                        <SaccoCard
-                            key={sacco.id}
-                            sacco={sacco}
-                            onSelect={() => setSelectedSacco(sacco)}
-                            onEdit={() => handleEditSacco(sacco)}
-                            onToggleActive={() => toggleActiveMutation.mutate(sacco)}
-                            isToggling={
-                                toggleActiveMutation.isPending &&
-                                toggleActiveMutation.variables?.id === sacco.id
-                            }
-                        />
-                    ))}
-                </div>
+                {isMobile ? (
+                    // Mobile: Compact Card View
+                    <div className="grid gap-2">
+                        {filteredSaccos.map((sacco) => (
+                            <MobileSaccoCard
+                                key={sacco.id}
+                                sacco={sacco}
+                                onSelect={() => setSelectedSacco(sacco)}
+                                onEdit={() => handleEditSacco(sacco)}
+                                onToggleActive={() => toggleActiveMutation.mutate(sacco)}
+                                isToggling={
+                                    toggleActiveMutation.isPending &&
+                                    toggleActiveMutation.variables?.id === sacco.id
+                                }
+                            />
+                        ))}
+                    </div>
+                ) : (
+                    // Desktop: Table View
+                    <div className="rounded-lg border bg-card">
+                        <Table>
+                            <TableHeader>
+                                <TableRow className="bg-muted/50">
+                                    <TableHead className="w-[30%]">Sacco Name</TableHead>
+                                    <TableHead className="w-[15%]">Status</TableHead>
+                                    <TableHead className="w-[15%] text-center">Vehicles</TableHead>
+                                    <TableHead className="w-[15%] text-center">Users</TableHead>
+                                    <TableHead className="w-[15%] text-center">Routes</TableHead>
+                                    <TableHead className="w-[10%] text-right">Actions</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {filteredSaccos.map((sacco) => (
+                                    <DesktopSaccoRow
+                                        key={sacco.id}
+                                        sacco={sacco}
+                                        onSelect={() => setSelectedSacco(sacco)}
+                                        onEdit={() => handleEditSacco(sacco)}
+                                        onToggleActive={() => toggleActiveMutation.mutate(sacco)}
+                                        isToggling={
+                                            toggleActiveMutation.isPending &&
+                                            toggleActiveMutation.variables?.id === sacco.id
+                                        }
+                                    />
+                                ))}
+                            </TableBody>
+                        </Table>
+                    </div>
+                )}
 
                 <SaccoPagination
                     page={page}
@@ -337,7 +347,335 @@ export default function SaccoListView({
     )
 }
 
-// Pagination controls
+// ─── Toolbar Component ──────────────────────────────────────────────────────
+
+interface SaccoToolbarProps {
+    searchQuery: string
+    onSearchChange: (value: string) => void
+    onAddSacco: () => void
+    total: number
+    isMobile: boolean
+}
+
+function SaccoToolbar({
+    searchQuery,
+    onSearchChange,
+    onAddSacco,
+    total,
+    isMobile,
+}: SaccoToolbarProps) {
+    return (
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex items-center gap-2">
+                <h2 className="text-base font-medium">Saccos</h2>
+                <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-mono">
+                    {total}
+                </Badge>
+            </div>
+            <div className="flex items-center gap-2">
+                <div className="relative flex-1 sm:flex-none">
+                    <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
+                    <Input
+                        type="search"
+                        placeholder="Search saccos..."
+                        value={searchQuery}
+                        onChange={(e) => onSearchChange(e.target.value)}
+                        className="h-8 pl-7 pr-7 text-xs bg-muted/30 border-muted-foreground/10 focus-visible:ring-0 w-full sm:w-44"
+                        aria-label="Search saccos"
+                    />
+                    {searchQuery && (
+                        <button
+                            className="absolute right-0 top-0 h-full px-2 text-muted-foreground/50 hover:text-foreground"
+                            onClick={() => onSearchChange("")}
+                            aria-label="Clear search"
+                        >
+                            ✕
+                        </button>
+                    )}
+                </div>
+                <Button size="sm" onClick={onAddSacco} className="gap-1.5">
+                    <Plus className="size-3.5" />
+                    <span className="hidden sm:inline text-xs">Add</span>
+                </Button>
+            </div>
+        </div>
+    )
+}
+
+// ─── Desktop Table Row ──────────────────────────────────────────────────────
+
+interface DesktopSaccoRowProps {
+    sacco: Sacco
+    onSelect: () => void
+    onEdit: () => void
+    onToggleActive: () => void
+    isToggling?: boolean
+}
+
+function DesktopSaccoRow({
+    sacco,
+    onSelect,
+    onEdit,
+    onToggleActive,
+    isToggling,
+}: DesktopSaccoRowProps) {
+    return (
+        <TableRow
+            className="group cursor-pointer hover:bg-muted/50 transition-colors"
+            onClick={onSelect}
+        >
+            <TableCell>
+                <div className="flex items-center gap-3">
+                    <div className={cn(
+                        "size-2 rounded-full shrink-0",
+                        sacco.isActive ? "bg-emerald-500" : "bg-muted-foreground/30"
+                    )} />
+                    <div className="min-w-0">
+                        <p className="truncate font-medium">{sacco.name}</p>
+                        {sacco.headquarters && (
+                            <p className="flex items-center gap-1 text-xs text-muted-foreground/70">
+                                <MapPin className="size-3" />
+                                {sacco.headquarters}
+                            </p>
+                        )}
+                    </div>
+                </div>
+            </TableCell>
+            <TableCell>
+                <Badge
+                    variant={sacco.isActive ? "default" : "secondary"}
+                    className="text-[10px] h-5 px-1.5 font-medium"
+                >
+                    {sacco.isActive ? "Active" : "Inactive"}
+                </Badge>
+            </TableCell>
+            <TableCell className="text-center">
+                <div className="flex items-center justify-center gap-1.5">
+                    <Bus className="size-3.5 text-muted-foreground" />
+                    <span className="font-semibold">{sacco.vehicleCount ?? 0}</span>
+                </div>
+            </TableCell>
+            <TableCell className="text-center">
+                <div className="flex items-center justify-center gap-1.5">
+                    <Users2 className="size-3.5 text-muted-foreground" />
+                    <span className="font-semibold">{sacco.userCount ?? 0}</span>
+                </div>
+            </TableCell>
+            <TableCell className="text-center">
+                <div className="flex items-center justify-center gap-1.5">
+                    <RouteIcon className="size-3.5 text-muted-foreground" />
+                    <span className="font-semibold">{sacco.routeCount ?? 0}</span>
+                </div>
+            </TableCell>
+            <TableCell className="text-right">
+                <div
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    className="flex items-center justify-end gap-1"
+                >
+                    <Switch
+                        checked={sacco.isActive}
+                        disabled={isToggling}
+                        onCheckedChange={onToggleActive}
+                        className="scale-75 data-[state=checked]:bg-emerald-500"
+                        aria-label={sacco.isActive ? "Deactivate" : "Activate"}
+                    />
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground/50 hover:text-foreground hover:bg-transparent"
+                                aria-label={`Actions for ${sacco.name}`}
+                            >
+                                <MoreVertical className="size-3.5" />
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem onClick={onSelect}>
+                                <Eye className="size-3.5 mr-2" />
+                                View details
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={onEdit}>
+                                <Pencil className="size-3.5 mr-2" />
+                                Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                onClick={onToggleActive}
+                                className={sacco.isActive ? "text-destructive" : "text-emerald-600"}
+                            >
+                                {sacco.isActive ? (
+                                    <>
+                                        <PowerOff className="size-3.5 mr-2" />
+                                        Deactivate
+                                    </>
+                                ) : (
+                                    <>
+                                        <Power className="size-3.5 mr-2" />
+                                        Activate
+                                    </>
+                                )}
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                </div>
+            </TableCell>
+        </TableRow>
+    )
+}
+
+// ─── Mobile Compact Card ────────────────────────────────────────────────────
+
+interface MobileSaccoCardProps {
+    sacco: Sacco
+    onSelect: () => void
+    onEdit: () => void
+    onToggleActive: () => void
+    isToggling?: boolean
+}
+
+function MobileSaccoCard({
+    sacco,
+    onSelect,
+    onEdit,
+    onToggleActive,
+    isToggling,
+}: MobileSaccoCardProps) {
+    return (
+        <div
+            role="button"
+            tabIndex={0}
+            onClick={onSelect}
+            onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    onSelect()
+                }
+            }}
+            className="rounded-lg border bg-card p-3 transition-all hover:bg-accent/30 hover:border-muted-foreground/20 cursor-pointer"
+        >
+            {/* Header: Name + Status + Actions */}
+            <div className="flex items-start gap-2">
+                <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                        <div className={cn(
+                            "size-2 rounded-full shrink-0",
+                            sacco.isActive ? "bg-emerald-500" : "bg-muted-foreground/30"
+                        )} />
+                        <p className="truncate font-medium text-sm">
+                            {sacco.name}
+                        </p>
+                    </div>
+                    {sacco.headquarters && (
+                        <p className="flex items-center gap-1 text-xs text-muted-foreground/70 mt-0.5">
+                            <MapPin className="size-3" />
+                            <span className="truncate">{sacco.headquarters}</span>
+                        </p>
+                    )}
+                </div>
+
+                <Badge
+                    variant={sacco.isActive ? "default" : "secondary"}
+                    className="text-[10px] h-5 px-1.5 font-medium shrink-0"
+                >
+                    {sacco.isActive ? "Active" : "Inactive"}
+                </Badge>
+
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0 text-muted-foreground/50 hover:text-foreground"
+                            aria-label={`Actions for ${sacco.name}`}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <MoreVertical className="size-4" />
+                        </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-44">
+                        <DropdownMenuItem onClick={(e) => {
+                            e.stopPropagation()
+                            onSelect()
+                        }}>
+                            <Eye className="size-3.5 mr-2" />
+                            View details
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={(e) => {
+                            e.stopPropagation()
+                            onEdit()
+                        }}>
+                            <Pencil className="size-3.5 mr-2" />
+                            Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                onToggleActive()
+                            }}
+                            className={sacco.isActive ? "text-destructive" : "text-emerald-600"}
+                        >
+                            {sacco.isActive ? (
+                                <>
+                                    <PowerOff className="size-3.5 mr-2" />
+                                    Deactivate
+                                </>
+                            ) : (
+                                <>
+                                    <Power className="size-3.5 mr-2" />
+                                    Activate
+                                </>
+                            )}
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
+            </div>
+
+            {/* Stats Grid - Compact */}
+            <div className="grid grid-cols-3 gap-1.5 mt-2.5">
+                <div className="bg-muted/30 rounded-md p-1.5 text-center">
+                    <div className="flex items-center justify-center gap-1">
+                        <Bus className="size-3 text-muted-foreground" />
+                        <span className="text-sm font-semibold">{sacco.vehicleCount ?? 0}</span>
+                    </div>
+                    <p className="text-[9px] text-muted-foreground">Vehicles</p>
+                </div>
+                <div className="bg-muted/30 rounded-md p-1.5 text-center">
+                    <div className="flex items-center justify-center gap-1">
+                        <Users2 className="size-3 text-muted-foreground" />
+                        <span className="text-sm font-semibold">{sacco.userCount ?? 0}</span>
+                    </div>
+                    <p className="text-[9px] text-muted-foreground">Members</p>
+                </div>
+                <div className="bg-muted/30 rounded-md p-1.5 text-center">
+                    <div className="flex items-center justify-center gap-1">
+                        <RouteIcon className="size-3 text-muted-foreground" />
+                        <span className="text-sm font-semibold">{sacco.routeCount ?? 0}</span>
+                    </div>
+                    <p className="text-[9px] text-muted-foreground">Routes</p>
+                </div>
+            </div>
+
+            {/* Status Toggle - Compact */}
+            <div className="flex items-center justify-end gap-2 mt-2 pt-2 border-t">
+                <span className="text-[10px] text-muted-foreground">Status</span>
+                <Switch
+                    checked={sacco.isActive}
+                    disabled={isToggling}
+                    onCheckedChange={onToggleActive}
+                    className="scale-75 data-[state=checked]:bg-emerald-500"
+                    aria-label={sacco.isActive ? "Deactivate" : "Activate"}
+                    onClick={(e) => e.stopPropagation()}
+                />
+            </div>
+        </div>
+    )
+}
+
+// ─── Pagination ─────────────────────────────────────────────────────────────
+
 interface SaccoPaginationProps {
     page: number
     totalPages: number
@@ -379,7 +717,8 @@ function SaccoPagination({ page, totalPages, onPageChange, disabled }: SaccoPagi
     )
 }
 
-// Edit/Create form — Dialog (modal) on desktop, Drawer (bottom sheet) on mobile
+// ─── Form Modal ─────────────────────────────────────────────────────────────
+
 interface SaccoFormModalProps {
     open: boolean
     onOpenChange: (open: boolean) => void
@@ -404,7 +743,6 @@ function SaccoFormModal({
         ? "Register a new sacco on the platform"
         : "Update sacco details and contact information"
 
-    // Mobile: Drawer from bottom (unchanged)
     if (isMobile) {
         return (
             <Drawer open={open} onOpenChange={onOpenChange}>
@@ -413,9 +751,11 @@ function SaccoFormModal({
                         <div className="flex justify-center pt-2 pb-1">
                             <div className="h-1.5 w-12 rounded-full bg-muted-foreground/30" />
                         </div>
-
                         <div className="sticky top-0 z-10 bg-background border-b px-4 py-3 flex items-start justify-between shrink-0">
-
+                            <DrawerHeader className="p-0">
+                                <DrawerTitle className="text-base">{title}</DrawerTitle>
+                                <DrawerDescription className="text-xs">{description}</DrawerDescription>
+                            </DrawerHeader>
                             <Button
                                 variant="ghost"
                                 size="icon"
@@ -425,7 +765,6 @@ function SaccoFormModal({
                                 <X className="size-4" />
                             </Button>
                         </div>
-
                         <div className="flex-1 overflow-y-auto px-4 py-4">
                             <SaccoForm
                                 mode={mode}
@@ -440,15 +779,13 @@ function SaccoFormModal({
         )
     }
 
-    // Desktop: centered modal (Dialog) instead of side Sheet
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-2xl p-0 max-h-[90vh] overflow-y-auto">
-                <div className="sticky top-0 z-10 bg-background border-b px-6 py-4 flex items-center justify-between">
-                    <DialogHeader className="space-y-0.5">
-                        <DialogDescription className="text-xs sm:text-sm">
-                            {description}
-                        </DialogDescription>
+                <div className="sticky top-0 z-10 bg-background border-b px-6 py-4">
+                    <DialogHeader>
+                        <DialogTitle className="text-lg">{title}</DialogTitle>
+                        <DialogDescription className="text-sm">{description}</DialogDescription>
                     </DialogHeader>
                 </div>
                 <div className="px-6 py-6">
@@ -464,7 +801,16 @@ function SaccoFormModal({
     )
 }
 
-// Mobile-friendly Details Dialog
+// ─── Details Dialog ─────────────────────────────────────────────────────────
+
+interface SaccoDetailsDialogProps {
+    sacco: Sacco | null
+    open: boolean
+    onOpenChange: () => void
+    onEdit?: (sacco: Sacco) => void
+    onToggleActive?: (sacco: Sacco) => void
+}
+
 function SaccoDetailsDialog({
     sacco,
     open,
@@ -476,26 +822,27 @@ function SaccoDetailsDialog({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="w-[calc(100%-2rem)] sm:max-w-md p-4 sm:p-5 max-h-[90vh] overflow-y-auto">                <DialogHeader className="space-y-1.5">
-                <DialogTitle className="text-sm sm:text-base flex items-center gap-2 min-w-0">
-                    <Building2 className="size-4 text-muted-foreground shrink-0" />
-                    <span className="truncate text-foreground min-w-0">{sacco.name}</span>
-                </DialogTitle>
-                <DialogDescription className="flex flex-wrap items-center gap-2 text-xs">
-                    {sacco.registrationNumber
-                        ? `Reg. ${sacco.registrationNumber}`
-                        : "No registration number"}
-                    <span className="flex items-center gap-1.5 text-[10px]">
-                        <span className={cn(
-                            "size-1.5 rounded-full shrink-0",
-                            sacco.isActive ? "bg-emerald-500" : "bg-muted-foreground/30"
-                        )} />
-                        <span className="text-muted-foreground">
-                            {sacco.isActive ? "Active" : "Inactive"}
+            <DialogContent className="w-[calc(100%-2rem)] sm:max-w-md p-4 sm:p-5 max-h-[90vh] overflow-y-auto">
+                <DialogHeader className="space-y-1.5">
+                    <DialogTitle className="text-sm sm:text-base flex items-center gap-2 min-w-0">
+                        <Building2 className="size-4 text-muted-foreground shrink-0" />
+                        <span className="truncate text-foreground min-w-0">{sacco.name}</span>
+                    </DialogTitle>
+                    <DialogDescription className="flex flex-wrap items-center gap-2 text-xs">
+                        {sacco.registrationNumber
+                            ? `Reg. ${sacco.registrationNumber}`
+                            : "No registration number"}
+                        <span className="flex items-center gap-1.5 text-[10px]">
+                            <span className={cn(
+                                "size-1.5 rounded-full shrink-0",
+                                sacco.isActive ? "bg-emerald-500" : "bg-muted-foreground/30"
+                            )} />
+                            <span className="text-muted-foreground">
+                                {sacco.isActive ? "Active" : "Inactive"}
+                            </span>
                         </span>
-                    </span>
-                </DialogDescription>
-            </DialogHeader>
+                    </DialogDescription>
+                </DialogHeader>
 
                 <div className="flex flex-col gap-3 py-2">
                     {sacco.headquarters && (
@@ -528,7 +875,6 @@ function SaccoDetailsDialog({
                             <Mail className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
                             <div className="flex flex-col gap-0.5 min-w-0">
                                 {sacco.emails.map((email, index) => (
-
                                     <a key={index}
                                         href={`mailto:${email.email}`}
                                         className="text-primary hover:underline break-words"
@@ -545,6 +891,24 @@ function SaccoDetailsDialog({
                             </div>
                         </div>
                     )}
+
+                    <div className="grid grid-cols-3 gap-2 pt-1">
+                        <div className="bg-muted/30 rounded-lg p-2 text-center">
+                            <Bus className="size-4 mx-auto text-muted-foreground" />
+                            <p className="text-sm font-bold mt-0.5">{sacco.vehicleCount ?? 0}</p>
+                            <p className="text-[10px] text-muted-foreground">Vehicles</p>
+                        </div>
+                        <div className="bg-muted/30 rounded-lg p-2 text-center">
+                            <Users2 className="size-4 mx-auto text-muted-foreground" />
+                            <p className="text-sm font-bold mt-0.5">{sacco.userCount ?? 0}</p>
+                            <p className="text-[10px] text-muted-foreground">Members</p>
+                        </div>
+                        <div className="bg-muted/30 rounded-lg p-2 text-center">
+                            <RouteIcon className="size-4 mx-auto text-muted-foreground" />
+                            <p className="text-sm font-bold mt-0.5">{sacco.routeCount ?? 0}</p>
+                            <p className="text-[10px] text-muted-foreground">Routes</p>
+                        </div>
+                    </div>
                 </div>
 
                 <div className="flex flex-col sm:flex-row gap-2 pt-2">
@@ -553,7 +917,7 @@ function SaccoDetailsDialog({
                         size="sm"
                         className="w-full sm:flex-1 text-xs"
                         onClick={() => {
-                            onOpenChange(false)
+                            onOpenChange()
                             onEdit?.(sacco)
                         }}
                     >
@@ -565,7 +929,7 @@ function SaccoDetailsDialog({
                         className="w-full sm:flex-1 gap-1.5 text-xs"
                         onClick={() => {
                             onToggleActive?.(sacco)
-                            onOpenChange(false)
+                            onOpenChange()
                         }}
                     >
                         {sacco.isActive ? (
@@ -586,135 +950,91 @@ function SaccoDetailsDialog({
     )
 }
 
-// Minimal Sacco Card
-function SaccoCard({
-    sacco,
-    onSelect,
-    onEdit,
-    onToggleActive,
-    isToggling,
-}: SaccoCardProps) {
-    return (
-        <div
-            role="button"
-            tabIndex={0}
-            onClick={onSelect}
-            onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault()
-                    onSelect()
-                }
-            }}
-            className="group flex items-center gap-3 rounded-lg border bg-card px-3 py-2.5 transition-all hover:bg-accent/30 hover:border-muted-foreground/20 cursor-pointer"
-        >
-            <div className={cn(
-                "size-2 rounded-full transition-colors shrink-0",
-                sacco.isActive ? "bg-emerald-500" : "bg-muted-foreground/30"
-            )} />
+// ─── Skeleton ───────────────────────────────────────────────────────────────
 
-            <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 min-w-0">
-                    <p className="truncate text-sm font-medium min-w-0">
-                        {sacco.name}
-                    </p>
-                    {sacco.registrationNumber && (
-                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">
-                            {sacco.registrationNumber}
-                        </span>
-                    )}
+interface SaccoListSkeletonProps {
+    isMobile?: boolean
+}
+
+function SaccoListSkeleton({ isMobile }: SaccoListSkeletonProps) {
+    if (isMobile) {
+        return (
+            <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                    <Skeleton className="h-5 w-24" />
+                    <Skeleton className="h-7 w-32" />
                 </div>
-                {sacco.headquarters && (
-                    <p className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground/70">
-                        <MapPin className="size-3 shrink-0" />
-                        {sacco.headquarters}
-                    </p>
-                )}
+                {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="rounded-lg border p-3 space-y-2.5">
+                        <div className="flex items-start justify-between">
+                            <div className="space-y-1.5 flex-1">
+                                <Skeleton className="h-4 w-3/4" />
+                                <Skeleton className="h-3 w-1/2" />
+                            </div>
+                            <Skeleton className="h-5 w-14" />
+                            <Skeleton className="h-7 w-7 rounded" />
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                            {Array.from({ length: 3 }).map((_, j) => (
+                                <div key={j} className="bg-muted/30 rounded-md p-1.5 space-y-0.5">
+                                    <Skeleton className="h-4 w-8 mx-auto" />
+                                    <Skeleton className="h-2 w-10 mx-auto" />
+                                </div>
+                            ))}
+                        </div>
+                        <div className="flex items-center justify-end gap-2 pt-2 border-t">
+                            <Skeleton className="h-5 w-12" />
+                            <Skeleton className="h-5 w-8 rounded" />
+                        </div>
+                    </div>
+                ))}
             </div>
+        )
+    }
 
-            <div
-                className="flex shrink-0 items-center gap-0.5"
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => e.stopPropagation()}
-            >
-                <Switch
-                    checked={sacco.isActive}
-                    disabled={isToggling}
-                    onCheckedChange={onToggleActive}
-                    className="scale-75 data-[state=checked]:bg-emerald-500"
-                    aria-label={
-                        sacco.isActive
-                            ? `Deactivate ${sacco.name}`
-                            : `Activate ${sacco.name}`
-                    }
-                />
-
-                <DropdownMenu>
-                    <DropdownMenuTrigger
-                        className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground/50 hover:text-foreground"
-                        aria-label={`Actions for ${sacco.name}`}
-                    >
-                        <MoreVertical className="size-3.5" />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-36">
-                        <DropdownMenuItem onClick={onSelect} className="text-xs">
-                            View details
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={onEdit} className="text-xs">
-                            Edit
-                        </DropdownMenuItem>
-                    </DropdownMenuContent>
-                </DropdownMenu>
-
-                <ChevronRight className="size-3.5 text-muted-foreground/30 group-hover:text-muted-foreground/60 transition-colors" />
-            </div>
-        </div>
-    )
-}
-
-// Minimal Search Bar
-function SaccoSearchBar({ value, onChange, className }: SaccoSearchBarProps) {
-    return (
-        <div className={cn("relative", className)}>
-            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
-            <Input
-                type="search"
-                placeholder="Search..."
-                value={value}
-                onChange={(e) => onChange(e.target.value)}
-                className="h-8 pl-7 pr-7 text-xs bg-muted/30 border-muted-foreground/10 focus-visible:ring-0"
-                aria-label="Search saccos"
-            />
-            {value && (
-                <Button
-                    variant="ghost"
-                    size="sm"
-                    className="absolute right-0 top-0 h-full px-2 text-muted-foreground/50 hover:text-foreground"
-                    onClick={() => onChange("")}
-                    aria-label="Clear search"
-                >
-                    ✕
-                </Button>
-            )}
-        </div>
-    )
-}
-
-// Minimal Skeleton
-function SaccoListSkeleton() {
     return (
         <div className="space-y-2">
             <div className="flex items-center justify-between">
                 <Skeleton className="h-5 w-16" />
                 <Skeleton className="h-7 w-24" />
             </div>
-            {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-12 w-full rounded-lg" />
-            ))}
+            <div className="rounded-lg border">
+                <div className="p-4 border-b bg-muted/50">
+                    <div className="grid grid-cols-6 gap-4">
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-full" />
+                    </div>
+                </div>
+                {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className="p-4 border-b last:border-0">
+                        <div className="grid grid-cols-6 gap-4 items-center">
+                            <Skeleton className="h-5 w-3/4" />
+                            <Skeleton className="h-5 w-16" />
+                            <Skeleton className="h-5 w-12 mx-auto" />
+                            <Skeleton className="h-5 w-12 mx-auto" />
+                            <Skeleton className="h-5 w-12 mx-auto" />
+                            <Skeleton className="h-7 w-20 ml-auto" />
+                        </div>
+                    </div>
+                ))}
+            </div>
         </div>
     )
 }
 
-// Minimal Empty State
+// ─── Empty State ────────────────────────────────────────────────────────────
+
+interface EmptyStateProps {
+    title: string
+    description: string
+    actionLabel?: string
+    onAction?: () => void
+}
+
 function EmptyState({ title, description, actionLabel, onAction }: EmptyStateProps) {
     return (
         <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-10 px-4 text-center">
@@ -733,34 +1053,4 @@ function EmptyState({ title, description, actionLabel, onAction }: EmptyStatePro
             )}
         </div>
     )
-}
-
-// Types
-interface SaccoCardProps {
-    sacco: Sacco
-    onSelect: () => void
-    onEdit: () => void
-    onToggleActive: () => void
-    isToggling?: boolean
-}
-
-interface SaccoDetailsDialogProps {
-    sacco: Sacco | null
-    open: boolean
-    onOpenChange: (open: boolean) => void
-    onEdit?: (sacco: Sacco) => void
-    onToggleActive?: (sacco: Sacco) => void
-}
-
-interface SaccoSearchBarProps {
-    value: string
-    onChange: (value: string) => void
-    className?: string
-}
-
-interface EmptyStateProps {
-    title: string
-    description: string
-    actionLabel?: string
-    onAction?: () => void
 }

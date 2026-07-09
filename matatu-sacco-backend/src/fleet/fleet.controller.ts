@@ -58,6 +58,7 @@ export class FleetController {
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('withQueueStatus') withQueueStatus?: string,
   ) {
     const saccoId = user.role === UserRole.SUPER_ADMIN
       ? undefined
@@ -69,9 +70,9 @@ export class FleetController {
       search,
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
+      withQueueStatus: withQueueStatus === 'true',
     });
   }
-
   // ── GET /fleet/:id ────────────────────────────────────────────────────────
 
   @Get(':id')

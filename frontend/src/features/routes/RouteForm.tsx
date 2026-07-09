@@ -32,7 +32,8 @@ import { SaccoCombobox } from "../sacco/SaccoCombobox"
 const routeSchema = z.object({
     origin: z.string().min(1, "Origin is required"),
     destination: z.string().min(1, "Destination is required"),
-    description: z.string().min(1, "Description is required"),
+    description: z.string().optional(),
+    fare: z.string().min(1, "Fare is required").regex(/^\d+(\.\d{1,2})?$/, "Enter a valid fare amount"),
     stages: z.array(
         z.object({
             value: z.string().min(1, "Stage cannot be empty"),
@@ -71,6 +72,7 @@ export function RouteForm({
             origin: "",
             destination: "",
             description: "",
+            fare: "",
             stages: [],
             saccoId: "",
         },
@@ -87,7 +89,8 @@ export function RouteForm({
             form.reset({
                 origin: route.origin,
                 destination: route.destination,
-                description: route.description,
+                description: route.description || "",
+                fare: route.fare ? String(route.fare) : "",
                 stages: (route.stages || []).map((s) => ({ value: s })),
                 saccoId: route.saccoId,
             })
@@ -100,7 +103,8 @@ export function RouteForm({
             createRouteRequest({
                 origin: values.origin,
                 destination: values.destination,
-                description: values.description,
+                description: values.description || "",
+                fare: parseFloat(values.fare),
                 stages: values.stages
                     .map((s) => s.value.trim())
                     .filter((s) => s !== ""),
@@ -126,7 +130,8 @@ export function RouteForm({
             updateRouteRequest(id, {
                 origin: values.origin,
                 destination: values.destination,
-                description: values.description,
+                description: values.description || "",
+                fare: parseFloat(values.fare),
                 stages: values.stages
                     .map((s) => s.value.trim())
                     .filter((s) => s !== ""),
@@ -223,13 +228,46 @@ export function RouteForm({
                     />
                 </div>
 
+                {/* Fare */}
+                <Controller
+                    name="fare"
+                    control={form.control}
+                    render={({ field, fieldState }) => (
+                        <Field data-invalid={fieldState.invalid}>
+                            <FieldLabel htmlFor="fare">
+                                Fare (KES)
+                                <span className="text-xs text-muted-foreground ml-1">per passenger</span>
+                            </FieldLabel>
+                            <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                                    KES
+                                </span>
+                                <Input
+                                    {...field}
+                                    id="fare"
+                                    type="text"
+                                    placeholder="500.00"
+                                    className="pl-12"
+                                    aria-invalid={fieldState.invalid}
+                                />
+                            </div>
+                            {fieldState.invalid && (
+                                <FieldError errors={[fieldState.error]} />
+                            )}
+                            <p className="text-xs text-muted-foreground mt-1">
+                                Enter the fare amount per passenger (e.g., 500 or 500.00)
+                            </p>
+                        </Field>
+                    )}
+                />
+
                 {/* Description */}
                 <Controller
                     name="description"
                     control={form.control}
                     render={({ field, fieldState }) => (
                         <Field data-invalid={fieldState.invalid}>
-                            <FieldLabel htmlFor="description">Description</FieldLabel>
+                            <FieldLabel htmlFor="description">Description (Optional)</FieldLabel>
                             <Textarea
                                 {...field}
                                 id="description"

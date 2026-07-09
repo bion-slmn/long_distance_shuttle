@@ -5,6 +5,7 @@ export class CreateRouteDto {
     declare description: string;
     declare stages?: string[];
     declare saccoId: string;
+    declare fare: string
 }
 
 

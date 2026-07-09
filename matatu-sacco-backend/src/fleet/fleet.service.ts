@@ -6,10 +6,42 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, QueryFailedError, ILike } from 'typeorm';
+import { Repository, QueryFailedError, ILike, SelectQueryBuilder } from 'typeorm';
 import { Fleet, VehicleStatus } from './entities/fleet.entity';
+import { QueueStatus } from 'src/route/entities/route-queue.entity';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
+
+
+export interface FindAllFleetOptions {
+  saccoId?: string;
+  status?: VehicleStatus;
+  page?: number;
+  limit?: number;
+  minimalFields?: boolean;
+  search?: string;
+  withQueueStatus?: boolean;
+}
+
+type FleetListItem = Omit<Fleet, 'generateId'> & {
+  queue?: {
+    status: QueueStatus;
+    clockedInAt: Date;
+    route: {
+      id: string;
+      origin: string;
+      destination: string;
+    };
+  } | null;
+};
+
+export interface PaginatedFleet {
+  data: FleetListItem[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
 
 export class CreateFleetDto {
   declare numberPlate: string;
@@ -25,22 +57,8 @@ export class UpdateFleetDto {
   declare notes?: string;
 }
 
-export interface FindAllFleetOptions {
-  saccoId?: string;
-  status?: VehicleStatus;
-  page?: number;
-  limit?: number;
-  minimalFields?: boolean;
-  search?: string; // matches against numberPlate
-}
 
-export interface PaginatedFleet {
-  data: Fleet[];
-  total: number;
-  page: number;
-  limit: number;
-  totalPages: number;
-}
+
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -86,33 +104,41 @@ export class FleetService {
       limit = 20,
       minimalFields = false,
       search,
+      withQueueStatus = false,
     } = options;
-
-    const where: any = {};
-
-    if (saccoId) {
-      where.saccoId = saccoId;
-    }
-
-    if (status) {
-      where.status = status;
-    }
-
-    if (search?.trim()) {
-      where.numberPlate = ILike(`%${search.trim()}%`);
-    }
 
     const take = limit > 0 ? limit : 20;
     const currentPage = page > 0 ? page : 1;
     const skip = (currentPage - 1) * take;
 
-    const [data, total] = await this.fleetRepository.findAndCount({
-      where,
-      select: minimalFields ? { id: true, numberPlate: true } : undefined,
-      order: { numberPlate: 'ASC' },
-      skip,
-      take,
-    });
+    const qb = this.fleetRepository.createQueryBuilder('fleet');
+
+    if (minimalFields) {
+      qb.select(['fleet.id', 'fleet.numberPlate']);
+    }
+
+    if (saccoId) {
+      qb.andWhere('fleet.saccoId = :saccoId', { saccoId });
+    }
+
+    if (status) {
+      qb.andWhere('fleet.status = :status', { status });
+    }
+
+    if (search?.trim()) {
+      qb.andWhere('fleet.numberPlate ILIKE :search', { search: `%${search.trim()}%` });
+    }
+
+    if (withQueueStatus) {
+      this.addQueueStatusJoin(qb);
+    }
+
+    qb.orderBy('fleet.numberPlate', 'ASC').skip(skip).take(take);
+
+    const total = await qb.getCount();
+    const data = withQueueStatus
+      ? await this.getManyWithQueueStatus(qb)
+      : await qb.getMany();
 
     return {
       data,
@@ -121,6 +147,56 @@ export class FleetService {
       limit: take,
       totalPages: Math.ceil(total / take) || 0,
     };
+  }
+
+  private addQueueStatusJoin(qb: SelectQueryBuilder<Fleet>): void {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    qb.leftJoin(
+      (subQb) =>
+        subQb
+          .select('rq.*')
+          .addSelect(
+            'ROW_NUMBER() OVER (PARTITION BY rq."vehicleId" ORDER BY rq."clockedInAt" DESC)',
+            'rn',
+          )
+          .from('route_queues', 'rq')
+          .where('rq."clockedInAt" >= :startOfDay'),
+      'latest_queue',
+      'latest_queue."vehicleId" = fleet.id AND latest_queue.rn = 1',
+    )
+      .leftJoin('routes', 'queue_route', 'queue_route.id = latest_queue."routeId"')
+      .addSelect('latest_queue.status', 'queueStatus')
+      .addSelect('latest_queue."routeId"', 'queueRouteId')
+      .addSelect('queue_route.origin', 'queueOrigin')
+      .addSelect('queue_route.destination', 'queueDestination')
+      .addSelect('latest_queue."clockedInAt"', 'queueClockedInAt')
+      .setParameter('startOfDay', startOfDay);
+  }
+
+  private async getManyWithQueueStatus(qb: SelectQueryBuilder<Fleet>): Promise<FleetListItem[]> {
+    const { entities, raw } = await qb.getRawAndEntities();
+    return entities.map((entity, i) => {
+      const row = raw[i];
+
+      const queue = row?.queueStatus
+        ? {
+          status: row.queueStatus as QueueStatus,
+          clockedInAt: row.queueClockedInAt,
+          route: {
+            id: row.queueRouteId,
+            origin: row.queueOrigin,
+            destination: row.queueDestination,
+          },
+        }
+        : null;
+
+      return {
+        ...entity,
+        queue,
+      };
+    });
   }
 
   // ── Find by status ────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ import {
     ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, QueryFailedError, Repository } from 'typeorm';
+import { ILike, QueryFailedError, Repository, SelectQueryBuilder } from 'typeorm';
 import { Sacco, SaccoContact, SaccoEmail } from './entities/sacco.entity';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
@@ -18,6 +18,11 @@ export interface CreateSaccoDto {
     emails?: SaccoEmail[];
     headquarters?: string;
 }
+type SaccoListItem = Omit<Sacco, 'generateId'> & {
+    vehicleCount?: number;
+    userCount?: number;
+    routeCount?: number;
+};
 
 
 export interface FindAllSaccosOptions {
@@ -27,10 +32,11 @@ export interface FindAllSaccosOptions {
     limit?: number;
     minimalFields?: boolean;
     search?: string;
+    withCounts?: boolean;
 }
 
 export interface PaginatedSaccos {
-    data: Sacco[];
+    data: SaccoListItem[];
     total: number;
     page: number;
     limit: number;
@@ -118,6 +124,8 @@ export class SaccoService {
     }
 
     // ── Find all ──────────────────────────────────────────────────────────────
+
+
     async findAll(options: FindAllSaccosOptions = {}): Promise<PaginatedSaccos> {
         const {
             includeInactive = false,
@@ -126,33 +134,41 @@ export class SaccoService {
             limit = 20,
             minimalFields = false,
             search,
+            withCounts = false,
         } = options;
-
-        const where: any = {};
-
-        if (!includeInactive) {
-            where.isActive = true;
-        }
-
-        if (saccoId) {
-            where.id = saccoId;
-        }
-
-        if (search?.trim()) {
-            where.name = ILike(`%${search.trim()}%`);
-        }
 
         const take = limit > 0 ? limit : 20;
         const currentPage = page > 0 ? page : 1;
         const skip = (currentPage - 1) * take;
 
-        const [data, total] = await this.saccoRepository.findAndCount({
-            where,
-            select: minimalFields ? { id: true, name: true } : undefined,
-            order: { name: 'ASC' },
-            skip,
-            take,
-        });
+        const qb = this.saccoRepository.createQueryBuilder('sacco');
+
+        if (minimalFields) {
+            qb.select(['sacco.id', 'sacco.name']);
+        }
+
+        if (!includeInactive) {
+            qb.andWhere('sacco.isActive = :isActive', { isActive: true });
+        }
+
+        if (saccoId) {
+            qb.andWhere('sacco.id = :saccoId', { saccoId });
+        }
+
+        if (search?.trim()) {
+            qb.andWhere('sacco.name ILIKE :search', { search: `%${search.trim()}%` });
+        }
+
+        if (withCounts) {
+            this.addCountSelects(qb);
+        }
+
+        qb.orderBy('sacco.name', 'ASC').skip(skip).take(take);
+
+        const total = await qb.getCount();
+        const data = withCounts
+            ? await this.getManyWithCounts(qb)
+            : await qb.getMany();
 
         return {
             data,
@@ -162,6 +178,32 @@ export class SaccoService {
             totalPages: Math.ceil(total / take) || 0,
         };
     }
+
+    private addCountSelects(qb: SelectQueryBuilder<Sacco>): void {
+        qb.addSelect((subQb) =>
+            subQb.select('COUNT(*)', 'count').from('fleet', 'f').where('f."saccoId" = sacco.id'),
+            'vehicleCount'
+        )
+            .addSelect((subQb) =>
+                subQb.select('COUNT(*)', 'count').from('users', 'u').where('u."saccoId" = sacco.id'),
+                'userCount'
+            )
+            .addSelect((subQb) =>
+                subQb.select('COUNT(*)', 'count').from('routes', 'r').where('r."saccoId" = sacco.id'),
+                'routeCount'
+            );
+    }
+
+    private async getManyWithCounts(qb: SelectQueryBuilder<Sacco>): Promise<SaccoListItem[]> {
+        const { entities, raw } = await qb.getRawAndEntities();
+        return entities.map((entity, i) => ({
+            ...entity,
+            vehicleCount: Number(raw[i]?.vehicleCount ?? 0),
+            userCount: Number(raw[i]?.userCount ?? 0),
+            routeCount: Number(raw[i]?.routeCount ?? 0),
+        }));
+    }
+
 
     async findOneScoped(id: string, saccoId?: string): Promise<Sacco> {
         const sacco = await this.findOne(id);

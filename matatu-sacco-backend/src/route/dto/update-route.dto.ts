@@ -8,6 +8,7 @@ export class UpdateRouteDto {
   declare description?: string;
   declare stages?: string[];
   declare isActive?: boolean;
+  declare fare?: string
 }
 
 export class UpdateQueueDto {

@@ -35,18 +35,63 @@ export interface CreateManagerPayload {
     saccoId?: string;
 }
 
+export interface User {
+    id: string;
+    fullName: string;
+    email?: string | null;
+    phoneNumber?: string | null;
+    role: UserRole;
+    saccoId?: string | null;
+    createdAt?: string;
+}
+
 export interface AuthResponse {
     access_token: string;
     refresh_token: string;
-    user: {
-        id: string;
-        fullName: string;
-        email?: string;
-        phoneNumber?: string;
-        role: UserRole;
-        saccoId?: string;
+    user: User;
+}
+
+export interface GetUsersParams {
+    saccoId?: string;
+    page?: number;
+    limit?: number;
+    search?: string
+}
+
+export interface PaginatedUsersResponse {
+    data: User[];
+    meta: {
+        total: number;
+        page: number;
+        limit: number;
+        totalPages: number;
     };
 }
+
+export interface UpdateUserPayload {
+    fullName?: string;
+    email?: string;
+    phoneNumber?: string;
+    role?: UserRole;
+    saccoId?: string;
+}
+
+export const updateUserRequest = async (id: string, payload: UpdateUserPayload): Promise<User> => {
+    const { data } = await api.patch<User>(`/auth/users/${id}`, payload);
+    return data;
+};
+
+export const deleteUserRequest = async (id: string): Promise<{ success: boolean; message: string }> => {
+    const { data } = await api.delete<{ success: boolean; message: string }>(`/auth/users/${id}`);
+    return data;
+};
+
+export const getUsersRequest = async (
+    params?: GetUsersParams,
+): Promise<PaginatedUsersResponse> => {
+    const { data } = await api.get<PaginatedUsersResponse>('/auth/users', { params });
+    return data;
+};
 
 // ─── API calls ──────────────────────────────────────────────────────────────
 

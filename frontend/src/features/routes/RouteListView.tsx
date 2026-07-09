@@ -1,5 +1,5 @@
 // src/features/routes/RouteListView.tsx
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
     MoreVertical,
@@ -11,6 +11,9 @@ import {
     Power,
     PowerOff,
     ChevronRight,
+    ChevronLeft,
+    Eye,
+    DollarSign,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -34,6 +37,14 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog"
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "@/components/ui/table"
 import { cn } from "@/lib/utils"
 
 import { getRoutesRequest, updateRouteRequest, type Route } from "@/api/routeApi"
@@ -51,9 +62,20 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
     const [searchQuery, setSearchQuery] = useState("")
     const [selectedRoute, setSelectedRoute] = useState<Route | null>(null)
     const [routeToToggle, setRouteToToggle] = useState<Route | null>(null)
+    const [isMobile, setIsMobile] = useState(false)
 
     const queryClient = useQueryClient()
     const queryKey = ["routes", saccoId]
+
+    // Check if mobile
+    useEffect(() => {
+        const checkMobile = () => {
+            setIsMobile(window.innerWidth < 768)
+        }
+        checkMobile()
+        window.addEventListener('resize', checkMobile)
+        return () => window.removeEventListener('resize', checkMobile)
+    }, [])
 
     const { data: routes, isLoading, error } = useQuery({
         queryKey,
@@ -101,6 +123,7 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
             filtered = filtered.filter((r) =>
                 r.origin.toLowerCase().includes(query) ||
                 r.destination.toLowerCase().includes(query) ||
+                r.description?.toLowerCase().includes(query) ||
                 r.stages?.some(stage => stage.toLowerCase().includes(query))
             )
         }
@@ -138,8 +161,18 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
         queryClient.invalidateQueries({ queryKey })
     }
 
+    const formatCurrency = (amount: number | string) => {
+        const num = typeof amount === 'string' ? parseFloat(amount) : amount
+        return new Intl.NumberFormat('en-KE', {
+            style: 'currency',
+            currency: 'KES',
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0,
+        }).format(num)
+    }
+
     if (isLoading) {
-        return <RouteListSkeleton />
+        return <RouteListSkeleton isMobile={isMobile} />
     }
 
     if (error) {
@@ -182,6 +215,7 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
                         onSearchChange={setSearchQuery}
                         onAddRoute={handleAddRoute}
                         totalCount={routes.length}
+                        isMobile={isMobile}
                     />
                     <EmptyState
                         title="No matching routes"
@@ -209,23 +243,58 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
                     onSearchChange={setSearchQuery}
                     onAddRoute={handleAddRoute}
                     totalCount={routes.length}
+                    isMobile={isMobile}
                 />
 
-                <div className="grid gap-2">
-                    {filteredRoutes.map((route) => (
-                        <RouteCard
-                            key={route.id}
-                            route={route}
-                            onSelect={() => setSelectedRoute(route)}
-                            onEdit={() => handleEditRoute(route)}
-                            onToggle={() => handleToggleRoute(route)}
-                            isToggling={
-                                toggleMutation.isPending &&
-                                toggleMutation.variables?.id === route.id
-                            }
-                        />
-                    ))}
-                </div>
+                {isMobile ? (
+                    <div className="grid gap-2">
+                        {filteredRoutes.map((route) => (
+                            <MobileRouteCard
+                                key={route.id}
+                                route={route}
+                                onSelect={() => setSelectedRoute(route)}
+                                onEdit={() => handleEditRoute(route)}
+                                onToggle={() => handleToggleRoute(route)}
+                                isToggling={
+                                    toggleMutation.isPending &&
+                                    toggleMutation.variables?.id === route.id
+                                }
+                                formatCurrency={formatCurrency}
+                            />
+                        ))}
+                    </div>
+                ) : (
+                    <div className="rounded-lg border bg-card">
+                        <Table>
+                            <TableHeader>
+                                <TableRow className="bg-muted/50">
+                                    <TableHead className="w-[25%]">Route</TableHead>
+                                    <TableHead className="w-[12%]">Status</TableHead>
+                                    <TableHead className="w-[13%] text-center">Fare</TableHead>
+                                    <TableHead className="w-[13%] text-center">Stages</TableHead>
+                                    <TableHead className="w-[27%]">Description</TableHead>
+                                    <TableHead className="w-[10%] text-right">Actions</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {filteredRoutes.map((route) => (
+                                    <DesktopRouteRow
+                                        key={route.id}
+                                        route={route}
+                                        onSelect={() => setSelectedRoute(route)}
+                                        onEdit={() => handleEditRoute(route)}
+                                        onToggle={() => handleToggleRoute(route)}
+                                        isToggling={
+                                            toggleMutation.isPending &&
+                                            toggleMutation.variables?.id === route.id
+                                        }
+                                        formatCurrency={formatCurrency}
+                                    />
+                                ))}
+                            </TableBody>
+                        </Table>
+                    </div>
+                )}
             </div>
 
             <RouteDetailsDialog
@@ -238,6 +307,7 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
                         setSelectedRoute(null)
                     }
                 }}
+                formatCurrency={formatCurrency}
             />
 
             <RouteForm
@@ -288,13 +358,14 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
     )
 }
 
-// ─── Subcomponents ──────────────────────────────────────────────────────────
+// ─── Toolbar ─────────────────────────────────────────────────────────────────
 
 interface RouteToolbarProps {
     searchQuery: string
     onSearchChange: (value: string) => void
     onAddRoute: () => void
     totalCount: number
+    isMobile: boolean
 }
 
 function RouteToolbar({
@@ -302,14 +373,15 @@ function RouteToolbar({
     onSearchChange,
     onAddRoute,
     totalCount,
+    isMobile,
 }: RouteToolbarProps) {
     return (
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="flex items-center gap-2">
                 <h2 className="text-base font-medium">Routes</h2>
-                <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+                <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-mono">
                     {totalCount}
-                </span>
+                </Badge>
             </div>
             <div className="flex items-center gap-2">
                 <div className="relative flex-1 sm:flex-none">
@@ -341,21 +413,144 @@ function RouteToolbar({
     )
 }
 
-interface RouteCardProps {
+// ─── Desktop Table Row ──────────────────────────────────────────────────────
+
+interface DesktopRouteRowProps {
     route: Route
     onSelect: () => void
     onEdit: () => void
     onToggle: () => void
     isToggling?: boolean
+    formatCurrency: (amount: number | string) => string
 }
 
-function RouteCard({
+function DesktopRouteRow({
     route,
     onSelect,
     onEdit,
     onToggle,
     isToggling,
-}: RouteCardProps) {
+    formatCurrency,
+}: DesktopRouteRowProps) {
+    return (
+        <TableRow
+            className="group cursor-pointer hover:bg-muted/50 transition-colors"
+            onClick={onSelect}
+        >
+            <TableCell>
+                <div className="flex items-center gap-3">
+                    <RouteIcon className="size-4 text-muted-foreground/50 shrink-0" />
+                    <div className="min-w-0">
+                        <p className="truncate font-medium">
+                            {route.origin} → {route.destination}
+                        </p>
+                    </div>
+                </div>
+            </TableCell>
+            <TableCell>
+                <Badge
+                    variant={route.isActive ? "default" : "secondary"}
+                    className="text-[10px] h-5 px-1.5 font-medium"
+                >
+                    {route.isActive ? "Active" : "Inactive"}
+                </Badge>
+            </TableCell>
+            <TableCell className="text-center">
+                <div className="flex items-center justify-center gap-1.5">
+                    <DollarSign className="size-3.5 text-muted-foreground" />
+                    <span className="font-semibold">
+                        {route.fare ? formatCurrency(route.fare) : "—"}
+                    </span>
+                </div>
+            </TableCell>
+            <TableCell className="text-center">
+                <div className="flex items-center justify-center gap-1.5">
+                    <MapPin className="size-3.5 text-muted-foreground" />
+                    <span className="font-semibold">{route.stages?.length || 0}</span>
+                </div>
+            </TableCell>
+            <TableCell>
+                <p className="truncate text-sm text-muted-foreground">
+                    {route.description || "—"}
+                </p>
+            </TableCell>
+            <TableCell className="text-right">
+                <div
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    className="flex items-center justify-end gap-1"
+                >
+                    <Switch
+                        checked={route.isActive}
+                        disabled={isToggling}
+                        onCheckedChange={onToggle}
+                        className="scale-75 data-[state=checked]:bg-emerald-500"
+                        aria-label={route.isActive ? "Deactivate" : "Activate"}
+                    />
+                    <DropdownMenu>
+                        <DropdownMenuTrigger >
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground/50 hover:text-foreground hover:bg-transparent"
+                                aria-label={`Actions for route ${route.origin} → ${route.destination}`}
+                            >
+                                <MoreVertical className="size-3.5" />
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem onClick={onSelect}>
+                                <Eye className="size-3.5 mr-2" />
+                                View details
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={onEdit}>
+                                <Pencil className="size-3.5 mr-2" />
+                                Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                onClick={onToggle}
+                                className={route.isActive ? "text-destructive" : "text-emerald-600"}
+                            >
+                                {route.isActive ? (
+                                    <>
+                                        <PowerOff className="size-3.5 mr-2" />
+                                        Deactivate
+                                    </>
+                                ) : (
+                                    <>
+                                        <Power className="size-3.5 mr-2" />
+                                        Activate
+                                    </>
+                                )}
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                </div>
+            </TableCell>
+        </TableRow>
+    )
+}
+
+// ─── Mobile Card ────────────────────────────────────────────────────────────
+
+interface MobileRouteCardProps {
+    route: Route
+    onSelect: () => void
+    onEdit: () => void
+    onToggle: () => void
+    isToggling?: boolean
+    formatCurrency: (amount: number | string) => string
+}
+
+function MobileRouteCard({
+    route,
+    onSelect,
+    onEdit,
+    onToggle,
+    isToggling,
+    formatCurrency,
+}: MobileRouteCardProps) {
     return (
         <div
             role="button"
@@ -368,72 +563,66 @@ function RouteCard({
                 }
             }}
             className={cn(
-                "group flex items-center gap-3 rounded-lg border bg-card px-3 py-2.5 transition-all hover:bg-accent/30 hover:border-muted-foreground/20 cursor-pointer",
+                "rounded-lg border bg-card p-3 transition-all hover:bg-accent/30 hover:border-muted-foreground/20 cursor-pointer",
                 !route.isActive && "opacity-60"
             )}
         >
-            <RouteIcon className="size-4 text-muted-foreground/50 shrink-0" />
-
-            <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                    <p className="truncate text-sm font-medium">
-                        {route.origin} → {route.destination}
-                    </p>
-                    <Badge
-                        variant={route.isActive ? "default" : "secondary"}
-                        className="text-[10px] h-5 px-1.5 font-medium"
-                    >
-                        {route.isActive ? "Active" : "Inactive"}
-                    </Badge>
-                    {route.stages && route.stages.length > 0 && (
-                        <span className="text-xs text-muted-foreground/60">
-                            {route.stages.length} stage{route.stages.length > 1 ? "s" : ""}
-                        </span>
+            {/* Header */}
+            <div className="flex items-start gap-2">
+                <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                        <RouteIcon className="size-4 text-muted-foreground/50 shrink-0" />
+                        <p className="truncate font-medium text-sm">
+                            {route.origin} → {route.destination}
+                        </p>
+                    </div>
+                    {route.description && (
+                        <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                            {route.description}
+                        </p>
                     )}
                 </div>
-                {route.stages && route.stages.length > 0 && (
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground/70">
-                        Via: {route.stages.join(" → ")}
-                    </p>
-                )}
-            </div>
 
-            <div
-                className="flex shrink-0 items-center gap-0.5"
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => e.stopPropagation()}
-            >
-                <Switch
-                    checked={route.isActive}
-                    disabled={isToggling}
-                    onCheckedChange={onToggle}
-                    className="scale-75 data-[state=checked]:bg-emerald-500"
-                    aria-label={route.isActive ? "Deactivate route" : "Activate route"}
-                />
+                <Badge
+                    variant={route.isActive ? "default" : "secondary"}
+                    className="text-[10px] h-5 px-1.5 font-medium shrink-0"
+                >
+                    {route.isActive ? "Active" : "Inactive"}
+                </Badge>
 
                 <DropdownMenu>
                     <DropdownMenuTrigger >
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7 text-muted-foreground/50 hover:text-foreground hover:bg-transparent"
+                            className="h-7 w-7 shrink-0 text-muted-foreground/50 hover:text-foreground"
                             aria-label={`Actions for route ${route.origin} → ${route.destination}`}
+                            onClick={(e) => e.stopPropagation()}
                         >
-                            <MoreVertical className="size-3.5" />
+                            <MoreVertical className="size-4" />
                         </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-44">
-                        <DropdownMenuItem onClick={onSelect}>
-                            <MapPin className="size-3.5 mr-2" />
+                        <DropdownMenuItem onClick={(e) => {
+                            e.stopPropagation()
+                            onSelect()
+                        }}>
+                            <Eye className="size-3.5 mr-2" />
                             View details
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={onEdit}>
+                        <DropdownMenuItem onClick={(e) => {
+                            e.stopPropagation()
+                            onEdit()
+                        }}>
                             <Pencil className="size-3.5 mr-2" />
                             Edit
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
-                            onClick={onToggle}
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                onToggle()
+                            }}
                             className={route.isActive ? "text-destructive" : "text-emerald-600"}
                         >
                             {route.isActive ? (
@@ -450,18 +639,52 @@ function RouteCard({
                         </DropdownMenuItem>
                     </DropdownMenuContent>
                 </DropdownMenu>
+            </div>
 
-                <ChevronRight className="size-3.5 text-muted-foreground/30 group-hover:text-muted-foreground/60 transition-colors" />
+            {/* Stats Grid */}
+            <div className="grid grid-cols-2 gap-1.5 mt-2.5">
+                <div className="bg-muted/30 rounded-md p-1.5 text-center">
+                    <div className="flex items-center justify-center gap-1">
+                        <DollarSign className="size-3 text-muted-foreground" />
+                        <span className="text-sm font-semibold">
+                            {route.fare ? formatCurrency(route.fare) : "—"}
+                        </span>
+                    </div>
+                    <p className="text-[9px] text-muted-foreground">Fare</p>
+                </div>
+                <div className="bg-muted/30 rounded-md p-1.5 text-center">
+                    <div className="flex items-center justify-center gap-1">
+                        <MapPin className="size-3 text-muted-foreground" />
+                        <span className="text-sm font-semibold">{route.stages?.length || 0}</span>
+                    </div>
+                    <p className="text-[9px] text-muted-foreground">Stages</p>
+                </div>
+            </div>
+
+            {/* Status Toggle */}
+            <div className="flex items-center justify-end gap-2 mt-2 pt-2 border-t">
+                <span className="text-[10px] text-muted-foreground">Status</span>
+                <Switch
+                    checked={route.isActive}
+                    disabled={isToggling}
+                    onCheckedChange={onToggle}
+                    className="scale-75 data-[state=checked]:bg-emerald-500"
+                    aria-label={route.isActive ? "Deactivate" : "Activate"}
+                    onClick={(e) => e.stopPropagation()}
+                />
             </div>
         </div>
     )
 }
+
+// ─── Details Dialog ─────────────────────────────────────────────────────────
 
 interface RouteDetailsDialogProps {
     route: Route | null
     open: boolean
     onOpenChange: () => void
     onEdit: () => void
+    formatCurrency: (amount: number | string) => string
 }
 
 function RouteDetailsDialog({
@@ -469,12 +692,13 @@ function RouteDetailsDialog({
     open,
     onOpenChange,
     onEdit,
+    formatCurrency,
 }: RouteDetailsDialogProps) {
     if (!route) return null
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-md p-5">
+            <DialogContent className="sm:max-w-md p-5 max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2 text-foreground">
                         <RouteIcon className="size-4 text-muted-foreground" />
@@ -498,9 +722,53 @@ function RouteDetailsDialog({
                         <p className="text-sm text-muted-foreground">{route.description}</p>
                     )}
 
-                    <RoadRoute origin={route.origin} destination={route.destination} stages={route.stages} />
+                    {/* Fare and Stages Stats */}
+                    <div className="grid grid-cols-2 gap-3">
+                        <div className="bg-muted/30 rounded-lg p-3 text-center">
+                            <DollarSign className="size-4 mx-auto text-muted-foreground" />
+                            <p className="text-lg font-bold mt-1">
+                                {formatCurrency(route.fare || 0)}
+                            </p>
+                            <p className="text-[10px] text-muted-foreground">Fare per passenger</p>
+                        </div>
+                        <div className="bg-muted/30 rounded-lg p-3 text-center">
+                            <MapPin className="size-4 mx-auto text-muted-foreground" />
+                            <p className="text-lg font-bold mt-1">{route.stages?.length || 0}</p>
+                            <p className="text-[10px] text-muted-foreground">
+                                {route.stages?.length === 1 ? "Stage" : "Stages"}
+                            </p>
+                        </div>
+                    </div>
 
-                    <div className="grid grid-cols-2 gap-2 text-xs">
+                    {/* Road Route Visualization */}
+                    <RoadRoute
+                        origin={route.origin}
+                        destination={route.destination}
+                        stages={route.stages}
+                    />
+
+                    {/* Stages List (as backup/alternative view) */}
+                    {route.stages && route.stages.length > 0 && (
+                        <div>
+                            <p className="text-xs font-medium text-muted-foreground mb-1.5">Route Stops</p>
+                            <div className="flex flex-wrap gap-1.5">
+                                <Badge variant="outline" className="text-xs bg-primary/5">
+                                    {route.origin} (Start)
+                                </Badge>
+                                {route.stages.map((stage, index) => (
+                                    <Badge key={index} variant="secondary" className="text-xs">
+                                        {stage}
+                                    </Badge>
+                                ))}
+                                <Badge variant="outline" className="text-xs bg-primary/5">
+                                    {route.destination} (End)
+                                </Badge>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Metadata */}
+                    <div className="grid grid-cols-2 gap-2 text-xs pt-1 border-t">
                         <div>
                             <p className="font-medium text-muted-foreground">Created</p>
                             <p className="text-foreground">
@@ -529,6 +797,8 @@ function RouteDetailsDialog({
         </Dialog>
     )
 }
+
+// ─── Road Route Visualization ──────────────────────────────────────────────
 
 interface RoadRouteProps {
     origin: string
@@ -635,19 +905,83 @@ function RoadRoute({ origin, destination, stages = [] }: RoadRouteProps) {
     )
 }
 
-function RouteListSkeleton() {
+// ─── Skeleton ───────────────────────────────────────────────────────────────
+
+interface RouteListSkeletonProps {
+    isMobile?: boolean
+}
+
+function RouteListSkeleton({ isMobile }: RouteListSkeletonProps) {
+    if (isMobile) {
+        return (
+            <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                    <Skeleton className="h-5 w-24" />
+                    <Skeleton className="h-7 w-32" />
+                </div>
+                {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="rounded-lg border p-3 space-y-2.5">
+                        <div className="flex items-start justify-between">
+                            <div className="space-y-1.5 flex-1">
+                                <Skeleton className="h-4 w-3/4" />
+                                <Skeleton className="h-3 w-1/2" />
+                            </div>
+                            <Skeleton className="h-5 w-14" />
+                            <Skeleton className="h-7 w-7 rounded" />
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5">
+                            {Array.from({ length: 2 }).map((_, j) => (
+                                <div key={j} className="bg-muted/30 rounded-md p-1.5 space-y-0.5">
+                                    <Skeleton className="h-4 w-12 mx-auto" />
+                                    <Skeleton className="h-2 w-8 mx-auto" />
+                                </div>
+                            ))}
+                        </div>
+                        <div className="flex items-center justify-end gap-2 pt-2 border-t">
+                            <Skeleton className="h-5 w-12" />
+                            <Skeleton className="h-5 w-8 rounded" />
+                        </div>
+                    </div>
+                ))}
+            </div>
+        )
+    }
+
     return (
         <div className="space-y-2">
             <div className="flex items-center justify-between">
                 <Skeleton className="h-5 w-16" />
                 <Skeleton className="h-7 w-24" />
             </div>
-            {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-12 w-full rounded-lg" />
-            ))}
+            <div className="rounded-lg border">
+                <div className="p-4 border-b bg-muted/50">
+                    <div className="grid grid-cols-6 gap-4">
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-full" />
+                    </div>
+                </div>
+                {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className="p-4 border-b last:border-0">
+                        <div className="grid grid-cols-6 gap-4 items-center">
+                            <Skeleton className="h-5 w-3/4" />
+                            <Skeleton className="h-5 w-16" />
+                            <Skeleton className="h-5 w-16 mx-auto" />
+                            <Skeleton className="h-5 w-12 mx-auto" />
+                            <Skeleton className="h-5 w-20" />
+                            <Skeleton className="h-7 w-20 ml-auto" />
+                        </div>
+                    </div>
+                ))}
+            </div>
         </div>
     )
 }
+
+// ─── Empty State ────────────────────────────────────────────────────────────
 
 interface EmptyStateProps {
     title: string

@@ -49,6 +49,7 @@ export class SaccoController {
         @Query('limit') limit?: string,
         @Query('minimalFields') minimalFields?: string,
         @Query('search') search?: string,
+        @Query('withCounts') withCounts?: string,
     ) {
         return this.saccoService.findAll({
             includeInactive: includeInactive === 'true',
@@ -56,9 +57,9 @@ export class SaccoController {
             limit: limit ? Number(limit) : undefined,
             minimalFields: minimalFields === 'true',
             search,
+            withCounts: withCounts === 'true',
         });
     }
-
     // ── GET /saccos/:id ───────────────────────────────────────────────────────
 
     @Get(':id')

@@ -38,6 +38,9 @@ export interface Sacco {
     isActive: boolean;
     createdAt: string;
     updatedAt?: string;
+    vehicleCount?: number
+    userCount?: number
+    routeCount?: number
 }
 
 // ─── Requests ────────────────────────────────────────────────────────────────
@@ -55,6 +58,7 @@ interface GetSaccosOptions {
     limit?: number;
     minimalFields?: boolean;
     search?: string;
+    withCounts?: boolean
 }
 
 export async function getSaccosRequest(
@@ -66,6 +70,7 @@ export async function getSaccosRequest(
         limit = 20,
         minimalFields = false,
         search,
+        withCounts = false,
     } = options;
 
     const params = new URLSearchParams({
@@ -76,6 +81,7 @@ export async function getSaccosRequest(
 
     if (minimalFields) params.set("minimalFields", "true");
     if (search?.trim()) params.set("search", search.trim());
+    if (withCounts) params.set("withCounts", "true");
 
     const res = await api.get(`/saccos?${params.toString()}`);
     return res.data;

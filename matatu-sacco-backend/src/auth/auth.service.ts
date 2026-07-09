@@ -5,7 +5,7 @@ import {
     ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { FindOptionsWhere, ILike, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
@@ -51,6 +51,31 @@ export interface AuthResponse extends TokenPair {
         fullName: string;
         role: UserRole;
         saccoId: string | null;
+    };
+}
+
+export interface UpdateUserDto {
+    fullName?: string;
+    email?: string;
+    phoneNumber?: string;
+    role?: UserRole;
+    saccoId?: string;
+}
+
+export interface GetUsersQuery {
+    saccoId?: string;
+    search?: string;
+    page?: number;
+    limit?: number;
+}
+
+export interface PaginatedUsers {
+    data: ReturnType<AuthService['sanitizeUser']>[];
+    meta: {
+        total: number;
+        page: number;
+        limit: number;
+        totalPages: number;
     };
 }
 
@@ -257,6 +282,39 @@ export class AuthService {
         return this.sanitizeUser(saved);
     }
 
+    // ── List users (scoped by Sacco, or all if super admin) ─────────────────
+    async getUsers(query: GetUsersQuery): Promise<PaginatedUsers> {
+        const page = Math.max(1, query.page ?? 1);
+        const limit = Math.min(100, Math.max(1, query.limit ?? 20));
+
+        const where: FindOptionsWhere<User> = {};
+
+        if (query.saccoId) {
+            where.saccoId = query.saccoId;
+        }
+
+        if (query.search?.trim()) {
+            where.fullName = ILike(`%${query.search.trim()}%`);
+        }
+
+        const [users, total] = await this.userRepository.findAndCount({
+            where,
+            order: { createdAt: 'DESC' },
+            skip: (page - 1) * limit,
+            take: limit,
+        });
+
+        return {
+            data: users.map((u) => this.sanitizeUser(u)),
+            meta: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit),
+            },
+        };
+    }
+
     private async findActiveUserByIdentifier(identifier: string): Promise<User | null> {
         const isEmail = identifier.includes('@');
 
@@ -319,5 +377,92 @@ export class AuthService {
             where: { phoneNumber: phoneNumber.trim() },
         });
         if (exists) throw new ConflictException('A user with this phone number already exists.');
+    }
+
+    // ── Update user ───────────────────────────────────────────────────────────
+    async updateUser(
+        id: string,
+        dto: UpdateUserDto,
+        requester: { sub: string; role: UserRole; saccoId: string | null },
+    ) {
+        const user = await this.userRepository.findOne({ where: { id } });
+        if (!user) {
+            throw new BadRequestException('User not found.');
+        }
+
+        // Sacco admins can only edit users within their own Sacco, and can't
+        // reassign someone to a different Sacco or promote to SUPER_ADMIN.
+        if (requester.role === UserRole.SACCO_ADMIN) {
+            if (user.saccoId !== requester.saccoId) {
+                throw new UnauthorizedException(
+                    'You can only edit users within your own Sacco.',
+                );
+            }
+            if (dto.saccoId && dto.saccoId !== requester.saccoId) {
+                throw new UnauthorizedException(
+                    'You cannot move a user to a different Sacco.',
+                );
+            }
+            if (dto.role === UserRole.SUPER_ADMIN) {
+                throw new UnauthorizedException(
+                    'You cannot assign the super admin role.',
+                );
+            }
+        } else if (requester.role !== UserRole.SUPER_ADMIN) {
+            throw new UnauthorizedException(
+                'Only Sacco admins or super admins can edit users.',
+            );
+        }
+
+        if (dto.email && dto.email.toLowerCase().trim() !== user.email) {
+            await this.assertNoDuplicateEmail(dto.email);
+        }
+        if (dto.phoneNumber && dto.phoneNumber.trim() !== user.phoneNumber) {
+            await this.assertNoDuplicatePhone(dto.phoneNumber);
+        }
+
+        if (dto.fullName !== undefined) user.fullName = dto.fullName.trim();
+        if (dto.email !== undefined) user.email = dto.email.toLowerCase().trim();
+        if (dto.phoneNumber !== undefined) user.phoneNumber = dto.phoneNumber.trim();
+        if (dto.role !== undefined) user.role = dto.role;
+        if (dto.saccoId !== undefined) user.saccoId = dto.saccoId;
+
+        const saved = await this.userRepository.save(user);
+        return this.sanitizeUser(saved);
+    }
+
+    // ── Delete (deactivate) user ─────────────────────────────────────────────
+    // Soft delete: flips isActive off rather than removing the row, so
+    // historical records (trips, orders, etc.) tied to this user stay intact.
+    async deleteUser(
+        id: string,
+        requester: { sub: string; role: UserRole; saccoId: string | null },
+    ) {
+        const user = await this.userRepository.findOne({ where: { id } });
+        if (!user) {
+            throw new BadRequestException('User not found.');
+        }
+
+        if (requester.role === UserRole.SACCO_ADMIN) {
+            if (user.saccoId !== requester.saccoId) {
+                throw new UnauthorizedException(
+                    'You can only remove users within your own Sacco.',
+                );
+            }
+        } else if (requester.role !== UserRole.SUPER_ADMIN) {
+            throw new UnauthorizedException(
+                'Only Sacco admins or super admins can remove users.',
+            );
+        }
+
+        if (user.id === requester.sub) {
+            throw new BadRequestException('You cannot delete your own account.');
+        }
+
+        user.isActive = false;
+        user.tokenVersion += 1; // invalidate any existing tokens for this user
+        await this.userRepository.save(user);
+
+        return { success: true, message: 'User removed.' };
     }
 }

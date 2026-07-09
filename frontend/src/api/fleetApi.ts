@@ -1,5 +1,6 @@
 // src/api/fleetApi.ts
 import api from "./axios";
+import type { QueueStatus } from "./routeApi";
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -20,6 +21,12 @@ export interface Vehicle {
     notes?: string;
     createdAt: string;
     updatedAt: string;
+    // Queue status fields (optional, only when withQueueStatus=true)
+    queueStatus?: QueueStatus | null;
+    queueRouteId?: string | null;
+    queueOrigin?: string | null;
+    queueDestination?: string | null;
+    queueClockedInAt?: string | null;
 }
 
 export interface PaginatedFleet {
@@ -49,6 +56,7 @@ export interface GetFleetOptions {
     page?: number;
     limit?: number;
     search?: string;
+    withQueueStatus?: boolean;
 }
 
 // ─── Requests ────────────────────────────────────────────────────────────
@@ -63,14 +71,22 @@ export async function createFleetRequest(
 export async function getFleetRequest(
     options: GetFleetOptions = {},
 ): Promise<PaginatedFleet> {
-    const { status, page = 1, limit = 20, search } = options;
+    const {
+        status,
+        page = 1,
+        limit = 20,
+        search,
+        withQueueStatus = false,
+    } = options;
 
     const params = new URLSearchParams({
         page: String(page),
         limit: String(limit),
     });
+
     if (status) params.set("status", status);
     if (search?.trim()) params.set("search", search.trim());
+    if (withQueueStatus) params.set("withQueueStatus", "true");
 
     const res = await api.get(`/fleet?${params.toString()}`);
     return res.data;

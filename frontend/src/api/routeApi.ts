@@ -22,6 +22,7 @@ export interface Route {
     isActive: boolean;
     createdAt: string;
     updatedAt: string;
+    fare: number
 }
 
 
@@ -62,6 +63,7 @@ export interface CreateRoutePayload {
     description: string;
     stages?: string[];
     saccoId: string;
+    fare: number
 }
 
 export interface UpdateRoutePayload {
@@ -70,6 +72,7 @@ export interface UpdateRoutePayload {
     description?: string;
     stages?: string[];
     isActive?: boolean;
+    fare?: number
 }
 
 export interface CreateQueuePayload {

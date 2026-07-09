@@ -8,8 +8,13 @@ import {
     UseGuards,
     Res,
     UnauthorizedException,
+    Get,
+    Query,
+    Patch,
+    Param,
+    Delete,
 } from '@nestjs/common';
-import { AuthService, type CreateManagerDto, type CreateStaffDto } from './auth.service';
+import { AuthService, type UpdateUserDto, type CreateManagerDto, type CreateStaffDto } from './auth.service';
 import { UserRole } from './entities/user.entity';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { Roles } from '../decorators/roles.decorator';
@@ -134,6 +139,30 @@ export class AuthController {
         return this.authService.createStaffUser(body, req.user);
     }
 
+    @Get('users')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+    @HttpCode(HttpStatus.OK)
+    getUsers(
+        @Query('saccoId') saccoId: string | undefined,
+        @Query('page') page: string | undefined,
+        @Query('limit') limit: string | undefined,
+        @Query('search') search: string | undefined,
+        @Req() req: any,
+    ) {
+        // Sacco admins are locked to their own sacco regardless of what's
+        // passed in the query string — they can't override it to see everyone.
+        // Super admins can pass a saccoId to filter, or omit it to get all users.
+        const scopedSaccoId =
+            req.user.role === UserRole.SACCO_ADMIN ? req.user.saccoId : saccoId;
+
+        return this.authService.getUsers({
+            saccoId: scopedSaccoId,
+            page: page ? Number(page) : undefined,
+            limit: limit ? Number(limit) : undefined,
+            search: search
+        });
+    }
+
     // ── Manager creation ─────────────────────────────────────────────────────
     // POST /auth/managers — super-admin-only, creates sacco managers
     @Post('managers')
@@ -141,5 +170,28 @@ export class AuthController {
     @HttpCode(HttpStatus.CREATED)
     createManager(@Body() dto: CreateManagerDto) {
         return this.authService.createManager(dto);
+    }
+
+
+    // ── Update user ───────────────────────────────────────────────────────────
+    // PATCH /auth/users/:id — sacco admins (own sacco only) or super admins
+    @Patch('users/:id')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+    @HttpCode(HttpStatus.OK)
+    updateUser(
+        @Param('id') id: string,
+        @Body() dto: UpdateUserDto,
+        @Req() req: any,
+    ) {
+        return this.authService.updateUser(id, dto, req.user);
+    }
+
+    // ── Delete user ───────────────────────────────────────────────────────────
+    // DELETE /auth/users/:id — sacco admins (own sacco only) or super admins
+    @Delete('users/:id')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+    @HttpCode(HttpStatus.OK)
+    deleteUser(@Param('id') id: string, @Req() req: any) {
+        return this.authService.deleteUser(id, req.user);
     }
 }
