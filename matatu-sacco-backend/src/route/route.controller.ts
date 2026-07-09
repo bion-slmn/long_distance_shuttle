@@ -14,15 +14,15 @@ import {
   ForbiddenException,
   Query,
 } from '@nestjs/common';
-import { RouteService, CreateRouteDto, UpdateRouteDto } from './route.service';
+import { RouteService, } from './route.service';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { RolesGuard } from '../guards/roles.guard';
 import { Roles } from '../decorators/roles.decorator';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import { UserRole } from '../auth/entities/user.entity';
-import { UpdateQueueDto } from './dto/update-route.dto';
+import { UpdateQueueDto, UpdateRouteDto } from './dto/update-route.dto';
 import { QueueStatus } from './entities/route-queue.entity';
-import { CreateQueueDto } from './dto/create-route.dto';
+import { CreateQueueDto, CreateRouteDto } from './dto/create-route.dto';
 
 @Controller('routes')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -59,74 +59,10 @@ export class RouteController {
     return this.routeService.findAll(saccoId);
   }
 
-  // ── GET /routes/:id ───────────────────────────────────────────────────────
-
-  @Get(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
-  findOne(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: any,
-  ) {
-    const saccoId = user.role === UserRole.SUPER_ADMIN
-      ? undefined
-      : user.saccoId;
-
-    return this.routeService.findOneScoped(id, saccoId);
-  }
-
-  // ── PATCH /routes/:id ─────────────────────────────────────────────────────
-
-  @Patch(':id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
-  @HttpCode(HttpStatus.OK)
-  update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: UpdateRouteDto,
-    @CurrentUser() user: any,
-  ) {
-    const saccoId = user.role === UserRole.SUPER_ADMIN
-      ? undefined
-      : user.saccoId;
-
-    return this.routeService.update(id, body, saccoId);
-  }
-
-  // ── POST /routes/:id/stops ────────────────────────────────────────────────
-
-  @Post(':id/stops')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
-  @HttpCode(HttpStatus.OK)
-  addStop(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body('stop') stop: string,
-    @CurrentUser() user: any,
-  ) {
-    const saccoId = user.role === UserRole.SUPER_ADMIN
-      ? undefined
-      : user.saccoId;
-
-    return this.routeService.addStop(id, stop, saccoId);
-  }
-
-  // ── DELETE /routes/:id/stops/:stop ────────────────────────────────────────
-
-  @Delete(':id/stops/:stop')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
-  @HttpCode(HttpStatus.OK)
-  removeStop(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Param('stop') stop: string,
-    @CurrentUser() user: any,
-  ) {
-    const saccoId = user.role === UserRole.SUPER_ADMIN
-      ? undefined
-      : user.saccoId;
-
-    return this.routeService.removeStop(id, stop, saccoId);
-  }
-
   // =========================================================================
   // ─── ROUTE QUEUE ENDPOINTS ───────────────────────────────────────────────
+  // Registered BEFORE the dynamic ':id' routes below, since 'queue' would
+  // otherwise be swallowed by @Get(':id') as a literal id value.
   // =========================================================================
 
   // ── POST /routes/queue/clock-in ──────────────────────────────────────────
@@ -142,7 +78,6 @@ export class RouteController {
   }
 
   // ── GET /routes/queue/available ──────────────────────────────────────────
-  // Example: GET /routes/queue/available?routeId=uuid&date=2026-06-24
   @Get('queue/available')
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
   findAvailableVehicles(
@@ -154,14 +89,19 @@ export class RouteController {
   }
 
   // ── GET /routes/queue ────────────────────────────────────────────────────
-  // Example: GET /routes/queue?routeId=uuid&status=WAITING
+  // Example: GET /routes/queue?routeId=uuid&status=WAITING&date=2026-07-09
   @Get('queue')
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
   findAllQueueEntries(
     @Query('routeId') routeId?: string,
     @Query('status') status?: QueueStatus,
+    @Query('date') dateString?: string,
   ) {
-    return this.routeService.findAllQueueEntries({ routeId, status });
+    return this.routeService.findAllQueueEntries({
+      routeId,
+      status,
+      date: dateString ? new Date(dateString) : undefined,
+    });
   }
 
   // ── GET /routes/queue/:id ────────────────────────────────────────────────
@@ -194,5 +134,76 @@ export class RouteController {
   ) {
     const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
     return this.routeService.removeVehicleFromQueue(id, saccoId);
+  }
+
+  // =========================================================================
+  // ─── DYNAMIC ':id' ROUTE ENDPOINTS ───────────────────────────────────────
+  // Must come AFTER all literal-prefixed routes above.
+  // =========================================================================
+
+  // ── GET /routes/:id ───────────────────────────────────────────────────────
+
+  @Get(':id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
+  findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: any,
+  ) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN
+      ? undefined
+      : user.saccoId;
+
+    return this.routeService.findOneScoped(id, saccoId);
+  }
+
+  // ── PATCH /routes/:id ─────────────────────────────────────────────────────
+
+  @Patch(':id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateRouteDto,
+    @CurrentUser() user: any,
+  ) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN
+      ? undefined
+      : user.saccoId;
+
+    return this.routeService.update(id, body, saccoId);
+  }
+
+  // ── POST /routes/:id/stages ───────────────────────────────────────────────
+
+  @Post(':id/stages')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  addStage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body('stage') stage: string,
+    @CurrentUser() user: any,
+  ) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN
+      ? undefined
+      : user.saccoId;
+
+    return this.routeService.addStage(id, stage, saccoId);
+  }
+
+  // ── DELETE /routes/:id/stages/:stage ──────────────────────────────────────
+
+  @Delete(':id/stages/:stage')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  removeStage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('stage') stage: string,
+    @CurrentUser() user: any,
+  ) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN
+      ? undefined
+      : user.saccoId;
+
+    return this.routeService.removeStage(id, stage, saccoId);
   }
 }

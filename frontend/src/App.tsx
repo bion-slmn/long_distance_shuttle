@@ -9,6 +9,8 @@ import ProtectedRoute from './features/auth/ProtectedRoute'
 import CreateSaccoForm from './features/sacco/CreateSaccoForm'
 import SaccoListView from './features/sacco/SaccoListView'
 import { FleetListView } from './features/fleet/FleetListView'
+import { RouteListView } from './features/routes/RouteListView'
+import { RouteQueueView } from './features/queue/RouteQueueView'
 
 function App() {
   return (
@@ -29,11 +31,10 @@ function App() {
           path="/admin/users"
           element={
             <ProtectedRoute allowedRoles={["SUPER_ADMIN", "SACCO_ADMIN"]}>
-              <AdminCreateUser />
-              <CreateSaccoForm />
-              <SaccoListView />
-              <FleetListView />
+
+              <RouteQueueView />
             </ProtectedRoute>
+
           }
         />
       </Routes>

@@ -10,24 +10,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Repository } from 'typeorm';
 import { Route } from './entities/route.entity';
 import { QueueStatus, RouteQueue } from './entities/route-queue.entity';
-import { CreateQueueDto } from './dto/create-route.dto';
-import { UpdateQueueDto } from './dto/update-route.dto';
-
-// ─── DTOs ─────────────────────────────────────────────────────────────────────
-
-export class CreateRouteDto {
-  declare origin: string;
-  declare destination: string;
-  declare stops?: string[];
-  declare saccoId: string;
-}
-
-export class UpdateRouteDto {
-  declare origin?: string;
-  declare destination?: string;
-  declare stops?: string[];
-  declare isActive?: boolean;
-}
+import { CreateQueueDto, CreateRouteDto } from './dto/create-route.dto';
+import { UpdateQueueDto, UpdateRouteDto } from './dto/update-route.dto';
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -43,15 +27,9 @@ export class RouteService {
 
   // ─── ROUTE QUEUE CRUD OPERATIONS ───────────────────────────────────────────
 
-  /**
-   * 1. CLOCK-IN A VEHICLE (Create Queue Entry)
-   * Triggers when a driver arrives at the terminal and checks into a route
-   */
   async clockInVehicle(dto: CreateQueueDto, saccoId?: string): Promise<RouteQueue> {
-    // Verify the route exists (and falls under the user's Sacco if scoped)
     const route = await this.findOneScoped(dto.routeId, saccoId);
 
-    // Prevent a vehicle from double-queuing actively if it's already waiting or boarding
     const activeQueueEntry = await this.queueRepository.findOne({
       where: [
         { vehicleId: dto.vehicleId, status: QueueStatus.WAITING },
@@ -73,24 +51,32 @@ export class RouteService {
     return await this.queueRepository.save(queueEntry);
   }
 
-  /**
-   * 2. FETCH ALL QUEUE ENTRIES (Read All)
-   * Useful for logs or getting full dispatch histories
-   */
-  async findAllQueueEntries(filters?: { routeId?: string; status?: QueueStatus }): Promise<RouteQueue[]> {
+  async findAllQueueEntries(filters?: {
+    routeId?: string;
+    status?: QueueStatus;
+    date?: Date;
+  }): Promise<RouteQueue[]> {
+    // Default to "today" unless a specific date is explicitly passed —
+    // keeps the live queue board from showing stale entries from prior days.
+    const targetDate = filters?.date ?? new Date();
+
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
     return await this.queueRepository.find({
       where: {
         ...(filters?.routeId && { routeId: filters.routeId }),
         ...(filters?.status && { status: filters.status }),
+        clockedInAt: Between(startOfDay, endOfDay),
       },
       relations: { vehicle: true, route: true },
       order: { clockedInAt: 'DESC' },
     });
   }
 
-  /**
-   * 3. FETCH SINGLE QUEUE RECORD (Read One)
-   */
   async findOneQueueEntry(id: string): Promise<RouteQueue> {
     const entry = await this.queueRepository.findOne({
       where: { id },
@@ -102,14 +88,9 @@ export class RouteService {
     return entry;
   }
 
-  /**
-   * 4. UPDATE QUEUE STATUS/DETAILS (Update)
-   * Useful if a vehicle is manually reassigned to another route or shifts to BOARDING
-   */
   async updateQueueEntry(id: string, dto: UpdateQueueDto, saccoId?: string): Promise<RouteQueue> {
     const entry = await this.findOneQueueEntry(id);
 
-    // Security check: ensure the route belongs to the correct Sacco
     if (saccoId && entry.route.saccoId !== saccoId) {
       throw new ForbiddenException('Access denied to this route queue data.');
     }
@@ -120,10 +101,6 @@ export class RouteService {
     return await this.queueRepository.save(entry);
   }
 
-  /**
-   * 5. REMOVE VEHICLE FROM QUEUE (Delete / Clock-Out)
-   * Triggers if a vehicle breaks down in the yard or leaves the stage prematurely
-   */
   async removeVehicleFromQueue(id: string, saccoId?: string): Promise<{ deleted: boolean }> {
     const entry = await this.findOneQueueEntry(id);
 
@@ -134,11 +111,8 @@ export class RouteService {
     await this.queueRepository.remove(entry);
     return { deleted: true };
   }
-  /**
-     * Finds all available waiting vehicles for a specific route on a chosen calendar day
-     */
+
   async findAvailableVehiclesForRoute(routeId: string, targetDate: Date) {
-    // Create boundaries for the target date (from 00:00:00 to 23:59:59)
     const startOfDay = new Date(targetDate);
     startOfDay.setHours(0, 0, 0, 0);
 
@@ -148,18 +122,17 @@ export class RouteService {
     return await this.queueRepository.find({
       where: {
         routeId: routeId,
-        status: QueueStatus.WAITING, // Only show vehicles that haven't departed or started boarding
-        clockedInAt: Between(startOfDay, endOfDay), // Match the specific calendar date
+        status: QueueStatus.WAITING,
+        clockedInAt: Between(startOfDay, endOfDay),
       },
       relations: {
-        vehicle: true, //  Tells TypeORM explicitly to join the Fleet/Vehicle relation
-      }, order: {
-        clockedInAt: 'ASC', // FIFO ordering! The vehicle that checked in earliest shows up first
+        vehicle: true,
+      },
+      order: {
+        clockedInAt: 'ASC',
       },
     });
   }
-
-
 
   // ── Create ────────────────────────────────────────────────────────────────
 
@@ -170,6 +143,9 @@ export class RouteService {
     if (!dto.destination?.trim()) {
       throw new BadRequestException('Destination is required.');
     }
+    if (!dto.description?.trim()) {
+      throw new BadRequestException('Description is required.');
+    }
 
     const origin = dto.origin.trim().toUpperCase();
     const destination = dto.destination.trim().toUpperCase();
@@ -178,7 +154,6 @@ export class RouteService {
       throw new BadRequestException('Origin and destination cannot be the same.');
     }
 
-    // Prevent duplicate route for the same sacco
     const exists = await this.routeRepository.findOne({
       where: { saccoId: dto.saccoId, origin, destination },
     });
@@ -188,14 +163,14 @@ export class RouteService {
       );
     }
 
-    // Normalize stops — uppercase, trim, remove duplicates and empty strings
-    const stops = this.normalizeStops(dto.stops ?? []);
+    const stages = this.normalizeStages(dto.stages ?? []);
 
     const route = this.routeRepository.create({
       saccoId: dto.saccoId,
       origin,
       destination,
-      stops,
+      description: dto.description.trim(),
+      stages,
       isActive: true,
     });
 
@@ -245,47 +220,50 @@ export class RouteService {
     if (route.origin === route.destination) {
       throw new BadRequestException('Origin and destination cannot be the same.');
     }
-    if (dto.stops !== undefined) route.stops = this.normalizeStops(dto.stops);
+    if (dto.description !== undefined) {
+      route.description = dto.description.trim();
+    }
+    if (dto.stages !== undefined) route.stages = this.normalizeStages(dto.stages);
     if (dto.isActive !== undefined) route.isActive = dto.isActive;
 
     return this.routeRepository.save(route);
   }
 
-  // ── Add / remove a stop ───────────────────────────────────────────────────
+  // ── Add / remove a stage ──────────────────────────────────────────────────
 
-  async addStop(id: string, stop: string, saccoId?: string): Promise<Route> {
+  async addStage(id: string, stage: string, saccoId?: string): Promise<Route> {
     const route = await this.findOneScoped(id, saccoId);
-    const normalized = stop.trim().toUpperCase();
+    const normalized = stage.trim().toUpperCase();
 
     if (!normalized) {
-      throw new BadRequestException('Stop name cannot be empty.');
+      throw new BadRequestException('Stage name cannot be empty.');
     }
     if (normalized === route.origin || normalized === route.destination) {
       throw new BadRequestException(
-        'Stop cannot be the same as origin or destination.'
+        'Stage cannot be the same as origin or destination.'
       );
     }
-    if (route.stops.includes(normalized)) {
-      throw new BadRequestException(`"${normalized}" is already a stop on this route.`);
+    if (route.stages.includes(normalized)) {
+      throw new BadRequestException(`"${normalized}" is already a stage on this route.`);
     }
 
-    route.stops = [...route.stops, normalized];
+    route.stages = [...route.stages, normalized];
     return this.routeRepository.save(route);
   }
 
-  async removeStop(id: string, stop: string, saccoId?: string): Promise<Route> {
+  async removeStage(id: string, stage: string, saccoId?: string): Promise<Route> {
     const route = await this.findOneScoped(id, saccoId);
-    const normalized = stop.trim().toUpperCase();
-    route.stops = route.stops.filter(s => s !== normalized);
+    const normalized = stage.trim().toUpperCase();
+    route.stages = route.stages.filter(s => s !== normalized);
     return this.routeRepository.save(route);
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
 
-  private normalizeStops(stops: string[]): string[] {
+  private normalizeStages(stages: string[]): string[] {
     return [
       ...new Set(
-        stops
+        stages
           .map(s => s.trim().toUpperCase())
           .filter(s => s.length > 0)
       ),

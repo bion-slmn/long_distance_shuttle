@@ -1,4 +1,13 @@
-export class CreateRouteDto { }
+// src/route/dto/create-route.dto.ts (or wherever CreateRouteDto lives)
+export class CreateRouteDto {
+    declare origin: string;
+    declare destination: string;
+    declare description: string;
+    declare stages?: string[];
+    declare saccoId: string;
+}
+
+
 
 
 export class CreateQueueDto {

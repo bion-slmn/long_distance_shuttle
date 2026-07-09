@@ -2,9 +2,16 @@ import { PartialType } from '@nestjs/mapped-types';
 import { CreateRouteDto } from './create-route.dto';
 import { QueueStatus } from '../entities/route-queue.entity';
 
-export class UpdateRouteDto extends PartialType(CreateRouteDto) {}
+export class UpdateRouteDto {
+  declare origin?: string;
+  declare destination?: string;
+  declare description?: string;
+  declare stages?: string[];
+  declare isActive?: boolean;
+}
 
 export class UpdateQueueDto {
   declare status?: QueueStatus;
   declare routeId?: string;
 }
+

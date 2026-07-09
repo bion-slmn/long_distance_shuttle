@@ -30,9 +30,12 @@ export class Route {
     @Column({ type: 'varchar', length: 100 })
     declare destination: string;
 
+    @Column({ type: 'varchar', length: 100 })
+    declare description: string;
+
     // Ordered stops between origin and destination
     @Column({ type: 'jsonb', default: [] })
-    declare stops: string[];
+    declare stages: string[];
 
     @Column({ type: 'boolean', default: true })
     declare isActive: boolean;
