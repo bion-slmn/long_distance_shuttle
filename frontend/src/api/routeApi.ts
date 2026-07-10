@@ -64,6 +64,7 @@ export interface CreateRoutePayload {
     stages?: string[];
     saccoId: string;
     fare: number
+    createReturnLeg?: boolean;
 }
 
 export interface UpdateRoutePayload {

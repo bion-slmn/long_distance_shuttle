@@ -1,13 +1,14 @@
 // src/features/fleet/FleetListView.tsx
 import { useState, useEffect } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { motion, AnimatePresence } from "motion/react"
 import {
     MoreVertical,
     Plus,
     Search,
-    Car,
-    AlertCircle,
-    CheckCircle,
+    Truck,
+    Wrench,
+    CheckCircle2,
     XCircle,
     Pencil,
     Trash2,
@@ -21,8 +22,6 @@ import {
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Skeleton } from "@/components/ui/skeleton"
 import { Input } from "@/components/ui/input"
 import {
     DropdownMenu,
@@ -46,14 +45,6 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select"
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table"
 import { cn, formatDate, formatUpdatedAt } from "@/lib/utils"
 
 import {
@@ -85,29 +76,41 @@ interface FleetListViewProps {
     onVehicleSelect?: (vehicle: Vehicle) => void
 }
 
-const STATUS_COLORS = {
-    [VehicleStatus.ACTIVE]: "bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border-emerald-500/20",
-    [VehicleStatus.MAINTENANCE]: "bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400 border-amber-500/20",
-    [VehicleStatus.RETIRED]: "bg-red-500/10 text-red-600 dark:bg-red-500/20 dark:text-red-400 border-red-500/20",
+// ─── Design tokens (matches FleetManager) ────────────────────────────────────
+
+const STATUS_BADGE: Record<VehicleStatus, string> = {
+    [VehicleStatus.ACTIVE]:
+        "bg-emerald-50 text-emerald-700 border-emerald-100",
+    [VehicleStatus.MAINTENANCE]: "bg-rose-50 text-rose-700 border-rose-100",
+    [VehicleStatus.RETIRED]: "bg-slate-100 text-slate-500 border-slate-200",
 }
 
 const STATUS_ICONS = {
-    [VehicleStatus.ACTIVE]: CheckCircle,
-    [VehicleStatus.MAINTENANCE]: AlertCircle,
+    [VehicleStatus.ACTIVE]: CheckCircle2,
+    [VehicleStatus.MAINTENANCE]: Wrench,
     [VehicleStatus.RETIRED]: XCircle,
 }
 
-const QUEUE_STATUS_COLORS: Record<string, string> = {
-    WAITING: "bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400 border-blue-500/20",
-    BOARDING: "bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400 border-amber-500/20",
-    DISPATCHED: "bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border-emerald-500/20",
+const STATUS_LABELS: Record<VehicleStatus, string> = {
+    [VehicleStatus.ACTIVE]: "Active",
+    [VehicleStatus.MAINTENANCE]: "Repair",
+    [VehicleStatus.RETIRED]: "Retired",
+}
+
+const QUEUE_STATUS_BADGE: Record<string, string> = {
+    WAITING: "bg-amber-50 text-amber-700 border-amber-100",
+    BOARDING: "bg-violet-50 text-violet-700 border-violet-100",
+    DISPATCHED: "bg-emerald-50 text-emerald-700 border-emerald-100",
 }
 
 const QUEUE_STATUS_LABELS: Record<string, string> = {
     WAITING: "Waiting",
-    BOARDING: "Boarding",
-    DISPATCHED: "Dispatched",
+    BOARDING: "Loading",
+    DISPATCHED: "En Route",
 }
+
+const inputClass =
+    "w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white text-slate-900"
 
 export function FleetListView({
     saccoId,
@@ -127,14 +130,11 @@ export function FleetListView({
     const queryClient = useQueryClient()
     const PAGE_SIZE = 20
 
-    // Check if mobile
     useEffect(() => {
-        const checkMobile = () => {
-            setIsMobile(window.innerWidth < 768)
-        }
+        const checkMobile = () => setIsMobile(window.innerWidth < 768)
         checkMobile()
-        window.addEventListener('resize', checkMobile)
-        return () => window.removeEventListener('resize', checkMobile)
+        window.addEventListener("resize", checkMobile)
+        return () => window.removeEventListener("resize", checkMobile)
     }, [])
 
     const queryKey = ["fleet", "list", { saccoId, status: statusFilter, page, search: searchQuery }]
@@ -156,7 +156,6 @@ export function FleetListView({
     const total = response?.total ?? 0
     const totalPages = response?.totalPages ?? 1
 
-    // Status change mutation
     const statusMutation = useMutation({
         mutationFn: ({ id, status }: { id: string; status: VehicleStatus }) =>
             setFleetVehicleStatusRequest(id, status),
@@ -190,7 +189,6 @@ export function FleetListView({
         },
     })
 
-    // Delete vehicle (soft delete via status change)
     const deleteMutation = useMutation({
         mutationFn: (vehicle: Vehicle) =>
             setFleetVehicleStatusRequest(vehicle.id, VehicleStatus.RETIRED),
@@ -241,39 +239,22 @@ export function FleetListView({
 
     if (error) {
         return (
-            <div className="flex flex-col items-center justify-center gap-4 rounded-lg border border-destructive/50 bg-destructive/5 py-12 px-4 text-center">
-                <p className="text-sm text-destructive">Failed to load vehicles</p>
-                <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
+            <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border border-rose-200 bg-rose-50 py-12 px-4 text-center">
+                <p className="text-sm font-medium text-rose-600">Failed to load vehicles</p>
+                <Button
+                    size="sm"
+                    onClick={() => window.location.reload()}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg"
+                >
                     Retry
                 </Button>
             </div>
         )
     }
 
-    if (!vehicles || vehicles.length === 0) {
-        return (
-            <>
-                <EmptyState
-                    title="No vehicles found"
-                    description="Get started by adding your first vehicle to the fleet."
-                    actionLabel="Add Vehicle"
-                    onAction={handleAddVehicle}
-                />
-                <FleetForm
-                    open={showForm}
-                    onOpenChange={setShowForm}
-                    mode={formMode}
-                    vehicle={editingVehicle}
-                    saccoId={saccoId}
-                    onSuccess={handleFormSuccess}
-                />
-            </>
-        )
-    }
-
     return (
         <>
-            <div className={cn("space-y-4", className)}>
+            <div className={cn("bg-white rounded-2xl border border-slate-200 p-6 shadow-xs flex flex-col", className)}>
                 <FleetToolbar
                     searchQuery={searchQuery}
                     onSearchChange={setSearchQuery}
@@ -281,42 +262,33 @@ export function FleetListView({
                     onStatusFilterChange={setStatusFilter}
                     onAddVehicle={handleAddVehicle}
                     totalCount={total}
-                    isMobile={isMobile}
                 />
 
-                {isMobile ? (
-                    <div className="grid gap-2">
-                        {vehicles.map((vehicle) => (
-                            <MobileVehicleCard
-                                key={vehicle.id}
-                                vehicle={vehicle}
-                                onSelect={() => {
-                                    setSelectedVehicle(vehicle)
-                                    onVehicleSelect?.(vehicle)
-                                }}
-                                onEdit={() => handleEditVehicle(vehicle)}
-                                onStatusChange={(status) => handleStatusChange(vehicle, status)}
-                                onDelete={() => handleDelete(vehicle)}
-                                isUpdating={statusMutation.isPending}
-                            />
-                        ))}
-                    </div>
+                {!vehicles || vehicles.length === 0 ? (
+                    <EmptyState
+                        title="No vehicles found"
+                        description="Get started by adding your first vehicle to the fleet."
+                        actionLabel="Add Vehicle"
+                        onAction={handleAddVehicle}
+                    />
                 ) : (
-                    <div className="rounded-lg border bg-card overflow-x-auto">
-                        <Table>
-                            <TableHeader>
-                                <TableRow className="bg-muted/50">
-                                    <TableHead className="w-[20%]">Vehicle</TableHead>
-                                    <TableHead className="w-[12%]">Status</TableHead>
-                                    <TableHead className="w-[10%] text-center">Seats</TableHead>
-                                    <TableHead className="w-[18%]">Queue Status</TableHead>
-                                    <TableHead className="w-[20%]">Route</TableHead>
-                                    <TableHead className="w-[10%]">Notes</TableHead>
-                                    <TableHead className="w-[10%] text-right">Actions</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {vehicles.map((vehicle) => (
+                    <div className="flex-1 overflow-y-auto max-h-[600px] pr-1 space-y-3">
+                        <AnimatePresence initial={false}>
+                            {vehicles.map((vehicle) =>
+                                isMobile ? (
+                                    <MobileVehicleCard
+                                        key={vehicle.id}
+                                        vehicle={vehicle}
+                                        onSelect={() => {
+                                            setSelectedVehicle(vehicle)
+                                            onVehicleSelect?.(vehicle)
+                                        }}
+                                        onEdit={() => handleEditVehicle(vehicle)}
+                                        onStatusChange={(status) => handleStatusChange(vehicle, status)}
+                                        onDelete={() => handleDelete(vehicle)}
+                                        isUpdating={statusMutation.isPending}
+                                    />
+                                ) : (
                                     <DesktopVehicleRow
                                         key={vehicle.id}
                                         vehicle={vehicle}
@@ -329,9 +301,9 @@ export function FleetListView({
                                         onDelete={() => handleDelete(vehicle)}
                                         isUpdating={statusMutation.isPending}
                                     />
-                                ))}
-                            </TableBody>
-                        </Table>
+                                )
+                            )}
+                        </AnimatePresence>
                     </div>
                 )}
 
@@ -365,24 +337,23 @@ export function FleetListView({
             />
 
             <Dialog open={!!vehicleToDelete} onOpenChange={() => setVehicleToDelete(null)}>
-                <DialogContent className="sm:max-w-md">
+                <DialogContent className="sm:max-w-md rounded-2xl">
                     <DialogHeader>
-                        <DialogTitle>Retire Vehicle</DialogTitle>
-                        <DialogDescription>
+                        <DialogTitle className="font-display text-slate-900">Retire Vehicle</DialogTitle>
+                        <DialogDescription className="text-slate-500">
                             Are you sure you want to retire {vehicleToDelete?.numberPlate}? This action can be reversed.
                         </DialogDescription>
                     </DialogHeader>
                     <DialogFooter className="flex flex-col-reverse sm:flex-row gap-2">
                         <Button
                             variant="outline"
-                            className="w-full sm:w-auto"
+                            className="w-full sm:w-auto rounded-lg border-slate-200 text-slate-600 font-bold text-xs"
                             onClick={() => setVehicleToDelete(null)}
                         >
                             Cancel
                         </Button>
                         <Button
-                            variant="destructive"
-                            className="w-full sm:w-auto"
+                            className="w-full sm:w-auto rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs"
                             onClick={confirmDelete}
                             disabled={deleteMutation.isPending}
                         >
@@ -408,31 +379,27 @@ function FleetPagination({ page, totalPages, onPageChange, disabled }: FleetPagi
     if (totalPages <= 1) return null
 
     return (
-        <div className="flex items-center justify-between pt-2">
-            <p className="text-xs text-muted-foreground">
+        <div className="flex items-center justify-between pt-4 mt-1 border-t border-slate-100">
+            <p className="text-xs text-slate-400 font-mono">
                 Page {page} of {totalPages}
             </p>
             <div className="flex items-center gap-1.5">
-                <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 gap-1 text-xs px-2"
+                <button
+                    className="py-1.5 px-2.5 text-xs font-bold border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg flex items-center gap-1 transition-all disabled:opacity-40 disabled:pointer-events-none"
                     disabled={disabled || page <= 1}
                     onClick={() => onPageChange(page - 1)}
                 >
                     <ChevronLeft className="size-3.5" />
                     Prev
-                </Button>
-                <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 gap-1 text-xs px-2"
+                </button>
+                <button
+                    className="py-1.5 px-2.5 text-xs font-bold border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg flex items-center gap-1 transition-all disabled:opacity-40 disabled:pointer-events-none"
                     disabled={disabled || page >= totalPages}
                     onClick={() => onPageChange(page + 1)}
                 >
                     Next
                     <ChevronRight className="size-3.5" />
-                </Button>
+                </button>
             </div>
         </div>
     )
@@ -447,7 +414,6 @@ interface FleetToolbarProps {
     onStatusFilterChange: (value: VehicleStatus | "all") => void
     onAddVehicle: () => void
     totalCount: number
-    isMobile: boolean
 }
 
 function FleetToolbar({
@@ -457,30 +423,33 @@ function FleetToolbar({
     onStatusFilterChange,
     onAddVehicle,
     totalCount,
-    isMobile,
 }: FleetToolbarProps) {
     return (
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div className="flex items-center gap-2">
-                <h2 className="text-base font-medium">Fleet</h2>
-                <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-mono">
-                    {totalCount}
-                </Badge>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+            <div>
+                <div className="flex items-center gap-2">
+                    <Truck className="w-5 h-5 text-emerald-600" />
+                    <h3 className="text-lg font-bold font-display text-slate-900">
+                        Sacco Shuttle Fleet ({totalCount})
+                    </h3>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">Manage statuses, drivers, and maintenance schedules</p>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
+
+            <div className="flex flex-wrap items-center gap-2">
                 <div className="relative flex-1 sm:flex-none">
-                    <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
-                    <Input
+                    <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+                    <input
                         type="search"
                         placeholder="Search vehicles..."
                         value={searchQuery}
                         onChange={(e) => onSearchChange(e.target.value)}
-                        className="h-8 pl-7 pr-7 text-xs bg-muted/30 border-muted-foreground/10 focus-visible:ring-0 w-full sm:w-44"
+                        className="py-1.5 pl-7 pr-6 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white text-slate-900 w-full sm:w-44"
                         aria-label="Search vehicles"
                     />
                     {searchQuery && (
                         <button
-                            className="absolute right-0 top-0 h-full px-2 text-muted-foreground/50 hover:text-foreground"
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
                             onClick={() => onSearchChange("")}
                             aria-label="Clear search"
                         >
@@ -493,29 +462,139 @@ function FleetToolbar({
                     value={statusFilter}
                     onValueChange={(value) => onStatusFilterChange(value as VehicleStatus | "all")}
                 >
-                    <SelectTrigger className="h-8 w-[140px] text-xs bg-muted/30 border-muted-foreground/10">
-                        <SelectValue placeholder="Filter by status" />
+                    <SelectTrigger className="h-auto py-1.5 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-600 w-[130px]">
+                        <SelectValue placeholder="All Statuses" />
                     </SelectTrigger>
                     <SelectContent>
-                        <SelectItem value="all">All Status</SelectItem>
+                        <SelectItem value="all">All Statuses</SelectItem>
                         {Object.values(VehicleStatus).map((status) => (
                             <SelectItem key={status} value={status}>
-                                {status.charAt(0) + status.slice(1).toLowerCase()}
+                                {STATUS_LABELS[status]}
                             </SelectItem>
                         ))}
                     </SelectContent>
                 </Select>
 
-                <Button size="sm" onClick={onAddVehicle} className="gap-1.5">
-                    <Plus className="size-3.5" />
-                    <span className="hidden sm:inline text-xs">Add</span>
-                </Button>
+                <button
+                    onClick={onAddVehicle}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 shadow transition-all duration-200 active:scale-[0.98]"
+                >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add
+                </button>
             </div>
         </div>
     )
 }
 
-// ─── Desktop Table Row ──────────────────────────────────────────────────────
+// ─── Status pill (shared) ───────────────────────────────────────────────────
+
+function VehicleStatusBadge({ status }: { status: VehicleStatus }) {
+    const Icon = STATUS_ICONS[status]
+    return (
+        <span
+            className={cn(
+                "inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border uppercase font-mono",
+                STATUS_BADGE[status]
+            )}
+        >
+            <Icon className="w-3 h-3" />
+            {STATUS_LABELS[status]}
+        </span>
+    )
+}
+
+function QueueStatusBadge({ status }: { status: string }) {
+    return (
+        <span
+            className={cn(
+                "inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border uppercase font-mono",
+                QUEUE_STATUS_BADGE[status]
+            )}
+        >
+            {status === "BOARDING" ? (
+                <span className="w-1.5 h-1.5 bg-violet-600 rounded-full animate-ping" />
+            ) : (
+                <Clock className="w-3 h-3" />
+            )}
+            {QUEUE_STATUS_LABELS[status] || status}
+        </span>
+    )
+}
+
+// ─── Row action menu (shared) ───────────────────────────────────────────────
+
+interface RowActionsProps {
+    vehicle: Vehicle
+    onSelect: () => void
+    onEdit: () => void
+    onStatusChange: (status: VehicleStatus) => void
+    onDelete: () => void
+    isUpdating?: boolean
+}
+
+function RowActionsMenu({ vehicle, onSelect, onEdit, onStatusChange, onDelete, isUpdating }: RowActionsProps) {
+    return (
+        <DropdownMenu>
+            <DropdownMenuTrigger>
+                <button
+                    className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-all disabled:opacity-40"
+                    aria-label={`Actions for ${vehicle.numberPlate}`}
+                    disabled={isUpdating}
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <MoreVertical className="size-3.5" />
+                </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48 rounded-xl border-slate-200">
+                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onSelect() }} className="text-xs font-medium">
+                    <Eye className="size-3.5 mr-2" />
+                    View details
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit() }} className="text-xs font-medium">
+                    <Pencil className="size-3.5 mr-2" />
+                    Edit
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                    onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.ACTIVE) }}
+                    disabled={vehicle.status === VehicleStatus.ACTIVE}
+                    className="text-xs font-bold text-emerald-600"
+                >
+                    <CheckCircle2 className="size-3.5 mr-2" />
+                    Set Active
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                    onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.MAINTENANCE) }}
+                    disabled={vehicle.status === VehicleStatus.MAINTENANCE}
+                    className="text-xs font-bold text-rose-600"
+                >
+                    <Wrench className="size-3.5 mr-2" />
+                    Send to Shop
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                    onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.RETIRED) }}
+                    disabled={vehicle.status === VehicleStatus.RETIRED}
+                    className="text-xs font-bold text-slate-500"
+                >
+                    <XCircle className="size-3.5 mr-2" />
+                    Set Retired
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                    onClick={(e) => { e.stopPropagation(); onDelete() }}
+                    className="text-xs font-bold text-rose-600"
+                    disabled={vehicle.status === VehicleStatus.RETIRED}
+                >
+                    <Trash2 className="size-3.5 mr-2" />
+                    Retire Vehicle
+                </DropdownMenuItem>
+            </DropdownMenuContent>
+        </DropdownMenu>
+    )
+}
+
+// ─── Desktop Row (card style, matches FleetManager) ─────────────────────────
 
 interface DesktopVehicleRowProps {
     vehicle: VehicleWithQueue
@@ -534,152 +613,84 @@ function DesktopVehicleRow({
     onDelete,
     isUpdating,
 }: DesktopVehicleRowProps) {
-    const StatusIcon = STATUS_ICONS[vehicle.status]
     const saccoName = useSaccoName(vehicle.saccoId)
-
     const queue = vehicle.queue
-    const queueStatus = queue?.status
-    const queueRoute = queue?.route
-    const clockedInAt = queue?.clockedInAt
 
     return (
-        <TableRow
-            className="group cursor-pointer hover:bg-muted/50 transition-colors"
+        <motion.div
+            layout
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            role="button"
+            tabIndex={0}
             onClick={onSelect}
+            onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    onSelect()
+                }
+            }}
+            className="border border-slate-200 hover:border-slate-300 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 transition-all cursor-pointer"
         >
-            <TableCell>
-                <div className="flex items-center gap-3">
-                    <Car className="size-4 text-muted-foreground/50 shrink-0" />
-                    <div className="min-w-0">
-                        <p className="truncate font-medium">{vehicle.numberPlate}</p>
-                        {saccoName && (
-                            <p className="text-xs text-muted-foreground/70 truncate">{saccoName}</p>
-                        )}
-                    </div>
-                </div>
-            </TableCell>
-            <TableCell>
-                <Badge
-                    variant="outline"
-                    className={cn(
-                        "text-[10px] h-5 px-1.5 font-medium border",
-                        STATUS_COLORS[vehicle.status]
+            <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-base font-display text-slate-900">
+                        {vehicle.numberPlate}
+                    </span>
+                    {saccoName && (
+                        <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200">
+                            {saccoName}
+                        </span>
                     )}
-                >
-                    <StatusIcon className="size-2.5 mr-1" />
-                    {vehicle.status.charAt(0) + vehicle.status.slice(1).toLowerCase()}
-                </Badge>
-            </TableCell>
-            <TableCell className="text-center font-semibold">
-                {vehicle.seatingCapacity}
-            </TableCell>
-            <TableCell>
-                {queueStatus ? (
-                    <Badge
-                        variant="outline"
-                        className={cn(
-                            "text-[10px] h-5 px-1.5 font-medium border",
-                            QUEUE_STATUS_COLORS[queueStatus]
-                        )}
-                    >
-                        <Clock className="size-2.5 mr-1" />
-                        {QUEUE_STATUS_LABELS[queueStatus] || queueStatus}
-                    </Badge>
-                ) : (
-                    <span className="text-xs text-muted-foreground">—</span>
-                )}
-            </TableCell>
-            <TableCell>
-                {queueRoute ? (
-                    <div className="text-xs">
-                        <p className="font-medium truncate">
-                            {queueRoute.origin} → {queueRoute.destination}
-                        </p>
-                        {clockedInAt && (
-                            <p className="text-[10px] text-muted-foreground">
-                                {new Date(clockedInAt).toLocaleTimeString()}
-                            </p>
-                        )}
-                    </div>
-                ) : (
-                    <span className="text-xs text-muted-foreground">—</span>
-                )}
-            </TableCell>
-            <TableCell>
-                <p className="truncate text-xs text-muted-foreground">
-                    {vehicle.notes || "—"}
-                </p>
-            </TableCell>
-            <TableCell className="text-right">
-                <div
-                    onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => e.stopPropagation()}
-                    className="flex items-center justify-end gap-1"
-                >
-                    <DropdownMenu>
-                        <DropdownMenuTrigger >
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-muted-foreground/50 hover:text-foreground hover:bg-transparent"
-                                aria-label={`Actions for ${vehicle.numberPlate}`}
-                                disabled={isUpdating}
-                            >
-                                <MoreVertical className="size-3.5" />
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-48">
-                            <DropdownMenuItem onClick={onSelect}>
-                                <Eye className="size-3.5 mr-2" />
-                                View details
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={onEdit}>
-                                <Pencil className="size-3.5 mr-2" />
-                                Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                                onClick={() => onStatusChange(VehicleStatus.ACTIVE)}
-                                disabled={vehicle.status === VehicleStatus.ACTIVE}
-                                className="text-emerald-600 dark:text-emerald-400"
-                            >
-                                <CheckCircle className="size-3.5 mr-2" />
-                                Set Active
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                                onClick={() => onStatusChange(VehicleStatus.MAINTENANCE)}
-                                disabled={vehicle.status === VehicleStatus.MAINTENANCE}
-                                className="text-amber-600 dark:text-amber-400"
-                            >
-                                <AlertCircle className="size-3.5 mr-2" />
-                                Set Maintenance
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                                onClick={() => onStatusChange(VehicleStatus.RETIRED)}
-                                disabled={vehicle.status === VehicleStatus.RETIRED}
-                                className="text-red-600 dark:text-red-400"
-                            >
-                                <XCircle className="size-3.5 mr-2" />
-                                Set Retired
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                                onClick={onDelete}
-                                className="text-destructive"
-                                disabled={vehicle.status === VehicleStatus.RETIRED}
-                            >
-                                <Trash2 className="size-3.5 mr-2" />
-                                Retire Vehicle
-                            </DropdownMenuItem>
-                        </DropdownMenuContent>
-                    </DropdownMenu>
+                    <VehicleStatusBadge status={vehicle.status} />
+                    {queue?.status && <QueueStatusBadge status={queue.status} />}
                 </div>
-            </TableCell>
-        </TableRow>
+
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500 mt-2">
+                    <p className="flex items-center gap-1">
+                        <Users className="w-3 h-3" />
+                        Seats: <span className="font-mono font-medium text-slate-700">{vehicle.seatingCapacity}</span>
+                    </p>
+                    {queue?.route && (
+                        <>
+                            <p>•</p>
+                            <p className="flex items-center gap-1 min-w-0">
+                                <Route className="w-3 h-3 shrink-0" />
+                                <span className="truncate">
+                                    {queue.route.origin} → {queue.route.destination}
+                                </span>
+                            </p>
+                        </>
+                    )}
+                    {vehicle.notes && (
+                        <>
+                            <p>•</p>
+                            <p className="truncate max-w-[220px]">{vehicle.notes}</p>
+                        </>
+                    )}
+                </div>
+            </div>
+
+            <div
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+                className="flex items-center gap-2 shrink-0"
+            >
+                <RowActionsMenu
+                    vehicle={vehicle}
+                    onSelect={onSelect}
+                    onEdit={onEdit}
+                    onStatusChange={onStatusChange}
+                    onDelete={onDelete}
+                    isUpdating={isUpdating}
+                />
+            </div>
+        </motion.div>
     )
 }
 
-// ─── Mobile Minimalistic Card ──────────────────────────────────────────────
+// ─── Mobile Card ────────────────────────────────────────────────────────────
 
 interface MobileVehicleCardProps {
     vehicle: VehicleWithQueue
@@ -698,14 +709,14 @@ function MobileVehicleCard({
     onDelete,
     isUpdating,
 }: MobileVehicleCardProps) {
-    const StatusIcon = STATUS_ICONS[vehicle.status]
-
     const queue = vehicle.queue
-    const queueStatus = queue?.status
-    const queueRoute = queue?.route
 
     return (
-        <div
+        <motion.div
+            layout
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95 }}
             role="button"
             tabIndex={0}
             onClick={onSelect}
@@ -715,116 +726,50 @@ function MobileVehicleCard({
                     onSelect()
                 }
             }}
-            className="rounded-lg border bg-card p-3 transition-all hover:bg-accent/30 hover:border-muted-foreground/20 cursor-pointer"
+            className="border border-slate-200 hover:border-slate-300 rounded-xl p-3.5 transition-all cursor-pointer"
         >
-            {/* Header row: plate on the left, status + menu on the right */}
             <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 min-w-0">
-                    <Car className="size-4 text-muted-foreground/40 shrink-0" />
-                    <p className="truncate font-semibold text-sm">
+                <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                    <Truck className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span className="font-bold text-sm font-display text-slate-900 truncate">
                         {vehicle.numberPlate}
-                    </p>
+                    </span>
                 </div>
-
-                <div className="flex items-center gap-1 shrink-0">
-                    <Badge
-                        variant="outline"
-                        className={cn(
-                            "text-[10px] h-5 px-1.5 font-medium border",
-                            STATUS_COLORS[vehicle.status]
-                        )}
-                    >
-                        <StatusIcon className="size-2.5 mr-1" />
-                        {vehicle.status.charAt(0) + vehicle.status.slice(1).toLowerCase()}
-                    </Badge>
-
-                    <DropdownMenu>
-                        <DropdownMenuTrigger>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 shrink-0 text-muted-foreground/30 hover:text-foreground"
-                                aria-label={`Actions for ${vehicle.numberPlate}`}
-                                onClick={(e) => e.stopPropagation()}
-                                disabled={isUpdating}
-                            >
-                                <MoreVertical className="size-4" />
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-44">
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onSelect() }}>
-                                <Eye className="size-3.5 mr-2" />
-                                View
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit() }}>
-                                <Pencil className="size-3.5 mr-2" />
-                                Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                                onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.ACTIVE) }}
-                                disabled={vehicle.status === VehicleStatus.ACTIVE}
-                                className="text-emerald-600 dark:text-emerald-400"
-                            >
-                                <CheckCircle className="size-3.5 mr-2" />
-                                Active
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                                onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.MAINTENANCE) }}
-                                disabled={vehicle.status === VehicleStatus.MAINTENANCE}
-                                className="text-amber-600 dark:text-amber-400"
-                            >
-                                <AlertCircle className="size-3.5 mr-2" />
-                                Maintenance
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                                onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.RETIRED) }}
-                                disabled={vehicle.status === VehicleStatus.RETIRED}
-                                className="text-red-600 dark:text-red-400"
-                            >
-                                <XCircle className="size-3.5 mr-2" />
-                                Retired
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                                onClick={(e) => { e.stopPropagation(); onDelete() }}
-                                className="text-destructive"
-                                disabled={vehicle.status === VehicleStatus.RETIRED}
-                            >
-                                <Trash2 className="size-3.5 mr-2" />
-                                Retire
-                            </DropdownMenuItem>
-                        </DropdownMenuContent>
-                    </DropdownMenu>
+                <div className="shrink-0">
+                    <RowActionsMenu
+                        vehicle={vehicle}
+                        onSelect={onSelect}
+                        onEdit={onEdit}
+                        onStatusChange={onStatusChange}
+                        onDelete={onDelete}
+                        isUpdating={isUpdating}
+                    />
                 </div>
             </div>
 
-            {/* Secondary row: seats, queue status, route — visible but subdued vs plate */}
-            <div className="flex items-center gap-3 mt-1.5 pl-5.5">
-                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 pl-5.5 text-xs text-slate-500">
+                <VehicleStatusBadge status={vehicle.status} />
+
+                <span className="flex items-center gap-1">
                     <Users className="size-3" />
                     {vehicle.seatingCapacity}
                 </span>
 
-                {queueStatus && (
-                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                        <Clock className="size-3" />
-                        {QUEUE_STATUS_LABELS[queueStatus] || queueStatus}
-                    </span>
-                )}
+                {queue?.status && <QueueStatusBadge status={queue.status} />}
 
-                {queueRoute && (
-                    <span className="flex items-center gap-1 min-w-0 text-xs text-muted-foreground">
+                {queue?.route && (
+                    <span className="flex items-center gap-1 min-w-0">
                         <Route className="size-3 shrink-0" />
                         <span className="truncate">
-                            {queueRoute.origin} → {queueRoute.destination}
+                            {queue.route.origin} → {queue.route.destination}
                         </span>
                     </span>
                 )}
             </div>
-        </div>
+        </motion.div>
     )
 }
+
 // ─── Details Dialog ─────────────────────────────────────────────────────────
 
 interface VehicleDetailsDialogProps {
@@ -844,34 +789,21 @@ function VehicleDetailsDialog({
 
     if (!vehicle) return null
 
-    const StatusIcon = STATUS_ICONS[vehicle.status]
     const queue = vehicle.queue
-    const queueStatus = queue?.status
-    const queueRoute = queue?.route
-    const clockedInAt = queue?.clockedInAt
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-md p-5 max-h-[90vh] overflow-y-auto">
+            <DialogContent className="sm:max-w-md p-5 max-h-[90vh] overflow-y-auto rounded-2xl">
                 <DialogHeader>
                     <div className="flex items-center gap-2">
-                        <Car className="size-4 text-muted-foreground shrink-0" />
-                        <DialogTitle className="truncate text-foreground min-w-0">
+                        <Truck className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <DialogTitle className="truncate font-display text-slate-900 min-w-0">
                             {vehicle.numberPlate}
                         </DialogTitle>
                     </div>
-                    <DialogDescription className="flex items-center gap-2">
-                        <Badge
-                            variant="outline"
-                            className={cn(
-                                "text-[10px] h-5 px-1.5 font-medium border",
-                                STATUS_COLORS[vehicle.status]
-                            )}
-                        >
-                            <StatusIcon className="size-2.5 mr-1" />
-                            {vehicle.status.charAt(0) + vehicle.status.slice(1).toLowerCase()}
-                        </Badge>
-                        <span className="text-xs text-muted-foreground">
+                    <DialogDescription className="flex items-center gap-2 pt-1">
+                        <VehicleStatusBadge status={vehicle.status} />
+                        <span className="text-xs text-slate-400">
                             {vehicle.seatingCapacity} seats
                         </span>
                     </DialogDescription>
@@ -880,69 +812,65 @@ function VehicleDetailsDialog({
                 <div className="flex flex-col gap-3 py-2">
                     {saccoName && (
                         <div>
-                            <p className="text-xs font-medium text-muted-foreground">Sacco</p>
-                            <p className="text-sm">{saccoName}</p>
+                            <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Sacco</p>
+                            <p className="text-sm text-slate-900">{saccoName}</p>
                         </div>
                     )}
 
-                    {/* Queue Status */}
                     <div>
-                        <p className="text-xs font-medium text-muted-foreground">Queue Status</p>
-                        {queueStatus ? (
-                            <div className="space-y-1">
-                                <Badge
-                                    variant="outline"
-                                    className={cn(
-                                        "text-[10px] h-5 px-1.5 font-medium border",
-                                        QUEUE_STATUS_COLORS[queueStatus]
-                                    )}
-                                >
-                                    <Clock className="size-2.5 mr-1" />
-                                    {QUEUE_STATUS_LABELS[queueStatus] || queueStatus}
-                                </Badge>
-                                {queueRoute && (
-                                    <p className="text-sm">
-                                        {queueRoute.origin} → {queueRoute.destination}
+                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Queue Status</p>
+                        {queue?.status ? (
+                            <div className="space-y-1 mt-1">
+                                <QueueStatusBadge status={queue.status} />
+                                {queue.route && (
+                                    <p className="text-sm text-slate-900">
+                                        {queue.route.origin} → {queue.route.destination}
                                     </p>
                                 )}
-                                {clockedInAt && (
-                                    <p className="text-xs text-muted-foreground">
-                                        Clocked in: {new Date(clockedInAt).toLocaleString()}
+                                {queue.clockedInAt && (
+                                    <p className="text-xs text-slate-400">
+                                        Clocked in: {new Date(queue.clockedInAt).toLocaleString()}
                                     </p>
                                 )}
                             </div>
                         ) : (
-                            <p className="text-sm text-muted-foreground">Not in queue</p>
+                            <p className="text-sm text-slate-400">Not in queue</p>
                         )}
                     </div>
 
                     {vehicle.notes && (
                         <div>
-                            <p className="text-xs font-medium text-muted-foreground">Notes</p>
-                            <p className="text-sm whitespace-pre-wrap">{vehicle.notes}</p>
+                            <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Notes</p>
+                            <p className="text-sm text-slate-900 whitespace-pre-wrap">{vehicle.notes}</p>
                         </div>
                     )}
 
                     <div className="grid grid-cols-2 gap-2 text-xs">
                         <div>
-                            <p className="font-medium text-muted-foreground">Added on</p>
-                            <p>{formatDate(vehicle.createdAt)}</p>
+                            <p className="font-bold text-slate-500 uppercase tracking-wider">Added on</p>
+                            <p className="text-slate-700 font-mono mt-0.5">{formatDate(vehicle.createdAt)}</p>
                         </div>
                         <div>
-                            <p className="font-medium text-muted-foreground">Last updated</p>
-                            <p>{formatUpdatedAt(vehicle.updatedAt)}</p>
+                            <p className="font-bold text-slate-500 uppercase tracking-wider">Last updated</p>
+                            <p className="text-slate-700 font-mono mt-0.5">{formatUpdatedAt(vehicle.updatedAt)}</p>
                         </div>
                     </div>
                 </div>
 
                 <div className="flex gap-2 pt-2">
-                    <Button variant="outline" size="sm" className="flex-1" onClick={onEdit}>
-                        <Pencil className="size-3.5 mr-1.5" />
+                    <button
+                        onClick={onEdit}
+                        className="flex-1 py-2 px-3 text-xs font-bold border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg flex items-center justify-center gap-1.5 transition-all"
+                    >
+                        <Pencil className="size-3.5" />
                         Edit
-                    </Button>
-                    <Button size="sm" className="flex-1" onClick={onOpenChange}>
+                    </button>
+                    <button
+                        onClick={onOpenChange}
+                        className="flex-1 py-2 px-3 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-all"
+                    >
                         Close
-                    </Button>
+                    </button>
                 </div>
             </DialogContent>
         </Dialog>
@@ -956,61 +884,24 @@ interface FleetListSkeletonProps {
 }
 
 function FleetListSkeleton({ isMobile }: FleetListSkeletonProps) {
-    if (isMobile) {
-        return (
-            <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                    <Skeleton className="h-5 w-24" />
-                    <Skeleton className="h-7 w-32" />
-                </div>
-                {Array.from({ length: 4 }).map((_, i) => (
-                    <div key={i} className="rounded-lg border p-3 space-y-2">
-                        <div className="flex items-center gap-2">
-                            <Skeleton className="h-4 w-4 rounded" />
-                            <Skeleton className="h-4 flex-1" />
-                            <Skeleton className="h-5 w-14" />
-                            <Skeleton className="h-7 w-7 rounded" />
-                        </div>
-                        <div className="flex items-center gap-3">
-                            <Skeleton className="h-3 w-10" />
-                            <Skeleton className="h-3 w-12" />
-                            <Skeleton className="h-3 w-16" />
-                        </div>
-                    </div>
-                ))}
-            </div>
-        )
-    }
-
     return (
-        <div className="space-y-2">
-            <div className="flex items-center justify-between">
-                <Skeleton className="h-5 w-16" />
-                <Skeleton className="h-7 w-24" />
-            </div>
-            <div className="rounded-lg border">
-                <div className="p-4 border-b bg-muted/50">
-                    <div className="grid grid-cols-7 gap-4">
-                        <Skeleton className="h-4 w-full" />
-                        <Skeleton className="h-4 w-full" />
-                        <Skeleton className="h-4 w-full" />
-                        <Skeleton className="h-4 w-full" />
-                        <Skeleton className="h-4 w-full" />
-                        <Skeleton className="h-4 w-full" />
-                        <Skeleton className="h-4 w-full" />
-                    </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs animate-pulse">
+            <div className="flex items-center justify-between mb-6">
+                <div className="space-y-2">
+                    <div className="h-5 w-40 bg-slate-100 rounded" />
+                    <div className="h-3 w-56 bg-slate-100 rounded" />
                 </div>
-                {Array.from({ length: 4 }).map((_, i) => (
-                    <div key={i} className="p-4 border-b last:border-0">
-                        <div className="grid grid-cols-7 gap-4 items-center">
-                            <Skeleton className="h-5 w-3/4" />
-                            <Skeleton className="h-5 w-16" />
-                            <Skeleton className="h-5 w-12 mx-auto" />
-                            <Skeleton className="h-5 w-20" />
-                            <Skeleton className="h-5 w-24" />
-                            <Skeleton className="h-5 w-20" />
-                            <Skeleton className="h-7 w-20 ml-auto" />
+                <div className="h-8 w-32 bg-slate-100 rounded-lg" />
+            </div>
+            <div className="space-y-3">
+                {Array.from({ length: isMobile ? 4 : 5 }).map((_, i) => (
+                    <div key={i} className="rounded-xl border border-slate-200 p-4 space-y-2">
+                        <div className="flex items-center gap-2">
+                            <div className="h-4 w-24 bg-slate-100 rounded" />
+                            <div className="h-4 w-16 bg-slate-100 rounded-full" />
+                            <div className="h-4 w-16 bg-slate-100 rounded-full" />
                         </div>
+                        <div className="h-3 w-2/3 bg-slate-100 rounded" />
                     </div>
                 ))}
             </div>
@@ -1029,19 +920,18 @@ interface EmptyStateProps {
 
 function EmptyState({ title, description, actionLabel, onAction }: EmptyStateProps) {
     return (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-10 px-4 text-center">
-            <div className="rounded-full bg-muted/30 p-2.5">
-                <Car className="size-5 text-muted-foreground/40" />
-            </div>
-            <div className="space-y-0.5">
-                <p className="text-sm font-medium">{title}</p>
-                <p className="text-xs text-muted-foreground">{description}</p>
-            </div>
+        <div className="text-center text-slate-400 py-12 border border-dashed border-slate-200 rounded-2xl">
+            <Truck className="w-12 h-12 text-slate-200 mx-auto mb-2" />
+            <p className="text-sm font-medium text-slate-500">{title}</p>
+            <p className="text-xs text-slate-400 mt-0.5">{description}</p>
             {actionLabel && onAction && (
-                <Button size="sm" variant="outline" onClick={onAction} className="gap-1.5 text-xs">
-                    <Plus className="size-3.5" />
+                <button
+                    onClick={onAction}
+                    className="mt-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2 px-4 rounded-lg inline-flex items-center gap-1.5 shadow transition-all duration-200 active:scale-[0.98]"
+                >
+                    <Plus className="w-3.5 h-3.5" />
                     {actionLabel}
-                </Button>
+                </button>
             )}
         </div>
     )

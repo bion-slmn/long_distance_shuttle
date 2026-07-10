@@ -1,27 +1,58 @@
 // src/features/queue/RouteQueueView.tsx
-import { useState, useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { format, parseISO } from "date-fns"
 import {
     Plus,
     Car,
     Clock,
-    Calendar,
+    Calendar as CalendarIcon,
     MoreVertical,
     LogOut,
     ArrowRight,
     Route as RouteIcon,
+    Users,
+    CheckCircle,
+    Clock as ClockIcon,
+    Truck,
+    ArrowRightCircle,
+    ArrowLeftCircle,
+    XCircle,
+    AlertTriangle,
+    Search,
+    ChevronRight,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Input } from "@/components/ui/input"
 import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Calendar } from "@/components/ui/calendar"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "@/components/ui/table"
 import { cn } from "@/lib/utils"
 
 import {
@@ -29,6 +60,7 @@ import {
     updateQueueEntryRequest,
     removeVehicleFromQueueRequest,
     getRouteRequest,
+    getRoutesRequest,
     QueueStatus,
     type RouteQueueEntry,
 } from "@/api/routeApi"
@@ -42,60 +74,86 @@ interface RouteQueueViewProps {
     className?: string
 }
 
-const LANES: { status: QueueStatus; label: string }[] = [
-    { status: QueueStatus.WAITING, label: "Waiting" },
-    { status: QueueStatus.BOARDING, label: "Boarding" },
-    { status: QueueStatus.DISPATCHED, label: "Dispatched" },
+const LANES: { status: QueueStatus; label: string; icon: any; color: string; bg: string; border: string }[] = [
+    {
+        status: QueueStatus.WAITING,
+        label: "Waiting",
+        icon: ClockIcon,
+        color: "text-amber-600 dark:text-amber-400",
+        bg: "bg-amber-50 dark:bg-amber-950/30",
+        border: "border-amber-200 dark:border-amber-800/30",
+    },
+    {
+        status: QueueStatus.BOARDING,
+        label: "Boarding",
+        icon: Users,
+        color: "text-blue-600 dark:text-blue-400",
+        bg: "bg-blue-50 dark:bg-blue-950/30",
+        border: "border-blue-200 dark:border-blue-800/30",
+    },
+    {
+        status: QueueStatus.DISPATCHED,
+        label: "Dispatched",
+        icon: Truck,
+        color: "text-emerald-600 dark:text-emerald-400",
+        bg: "bg-emerald-50 dark:bg-emerald-950/30",
+        border: "border-emerald-200 dark:border-emerald-800/30",
+    },
 ]
 
-// What tapping the primary action does, per current status
 const NEXT_STATUS: Partial<Record<QueueStatus, QueueStatus>> = {
     [QueueStatus.WAITING]: QueueStatus.BOARDING,
     [QueueStatus.BOARDING]: QueueStatus.DISPATCHED,
 }
 
-const NEXT_ACTION_LABEL: Partial<Record<QueueStatus, string>> = {
-    [QueueStatus.WAITING]: "Start Boarding",
-    [QueueStatus.BOARDING]: "Dispatch",
+const PREV_STATUS: Partial<Record<QueueStatus, QueueStatus>> = {
+    [QueueStatus.BOARDING]: QueueStatus.WAITING,
+    [QueueStatus.DISPATCHED]: QueueStatus.BOARDING,
 }
 
-// Soft background colors per status — applied to both the lane container and its cards
-const LANE_STYLES: Record<QueueStatus, { laneBg: string; cardBg: string }> = {
-    [QueueStatus.WAITING]: {
-        laneBg: "bg-amber-500/5 border-amber-500/20",
-        cardBg: "bg-amber-500/10 border-amber-500/20",
-    },
-    [QueueStatus.BOARDING]: {
-        laneBg: "bg-blue-500/5 border-blue-500/20",
-        cardBg: "bg-blue-500/10 border-blue-500/20",
-    },
-    [QueueStatus.DISPATCHED]: {
-        laneBg: "bg-emerald-500/5 border-emerald-500/20",
-        cardBg: "bg-emerald-500/10 border-emerald-500/20",
-    },
-}
-
-// Today's date as YYYY-MM-DD, used as the date input's default value and max bound
 function todayIso() {
     const d = new Date()
     return d.toISOString().slice(0, 10)
 }
 
 export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueueViewProps) {
-    const [internalRouteId, setInternalRouteId] = useState<string | undefined>(routeId)
+    const [selectedRouteId, setSelectedRouteId] = useState<string | undefined>(routeId)
     const [showClockIn, setShowClockIn] = useState(false)
     const [selectedDate, setSelectedDate] = useState<string>(todayIso())
+    const [dateOpen, setDateOpen] = useState(false)
+    const [isMobile, setIsMobile] = useState(false)
+    const [entryToRemove, setEntryToRemove] = useState<RouteQueueEntry | null>(null)
+    const [searchQuery, setSearchQuery] = useState("")
 
-    const selectedRouteId = routeId ?? internalRouteId
+    useEffect(() => {
+        const checkMobile = () => setIsMobile(window.innerWidth < 768)
+        checkMobile()
+        window.addEventListener("resize", checkMobile)
+        return () => window.removeEventListener("resize", checkMobile)
+    }, [])
+
     const isToday = selectedDate === todayIso()
 
     const handleRouteChange = (id: string) => {
-        setInternalRouteId(id)
+        setSelectedRouteId(id)
         onRouteChange?.(id)
+    }
+
+    const handleBackToDashboard = () => {
+        setSelectedRouteId(undefined)
+        onRouteChange?.("")
     }
 
     const queryClient = useQueryClient()
 
+    // Fetch all routes for the dashboard
+    const { data: allRoutes, isLoading: routesLoading } = useQuery({
+        queryKey: ["routes", "all"],
+        queryFn: getRoutesRequest,
+        staleTime: 5 * 60 * 1000,
+    })
+
+    // Fetch queue entries for the selected route
     const { data: route } = useQuery({
         queryKey: ["routes", "detail", selectedRouteId],
         queryFn: () => getRouteRequest(selectedRouteId!),
@@ -104,15 +162,52 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
 
     const queueQueryKey = ["queue", selectedRouteId, selectedDate]
 
-    const { data: entries, isLoading } = useQuery({
+    const { data: entries, isLoading: queueLoading } = useQuery({
         queryKey: queueQueryKey,
         queryFn: () => getQueueEntriesRequest({ routeId: selectedRouteId, date: selectedDate }),
         enabled: !!selectedRouteId,
-        // Only poll for live updates when viewing today — a past date's queue is historical
         refetchInterval: isToday ? 15_000 : false,
     })
 
-    const advanceMutation = useMutation({
+    // Fetch queue counts for all routes (dashboard view)
+    const { data: allQueueData, isLoading: countsLoading } = useQuery({
+        queryKey: ["queue", "all", "counts", selectedDate],
+        queryFn: async () => {
+            if (!allRoutes) return []
+
+            const counts = await Promise.all(
+                allRoutes.map(async (route) => {
+                    try {
+                        const entries = await getQueueEntriesRequest({
+                            routeId: route.id,
+                            date: selectedDate
+                        })
+                        return {
+                            routeId: route.id,
+                            waiting: entries.filter(e => e.status === QueueStatus.WAITING).length,
+                            boarding: entries.filter(e => e.status === QueueStatus.BOARDING).length,
+                            dispatched: entries.filter(e => e.status === QueueStatus.DISPATCHED).length,
+                            total: entries.length,
+                        }
+                    } catch {
+                        return {
+                            routeId: route.id,
+                            waiting: 0,
+                            boarding: 0,
+                            dispatched: 0,
+                            total: 0,
+                        }
+                    }
+                })
+            )
+            return counts
+        },
+        enabled: !!allRoutes && !selectedRouteId,
+        staleTime: 30 * 1000,
+        refetchInterval: isToday ? 30_000 : false,
+    })
+
+    const statusMutation = useMutation({
         mutationFn: ({ id, status }: { id: string; status: QueueStatus }) =>
             updateQueueEntryRequest(id, { status }),
         onMutate: async ({ id, status }) => {
@@ -157,30 +252,141 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
         return grouped
     }, [entries])
 
+    const filteredRoutes = useMemo(() => {
+        if (!allRoutes) return []
+        if (!searchQuery.trim()) return allRoutes
+
+        const query = searchQuery.toLowerCase().trim()
+        return allRoutes.filter((r) =>
+            r.origin.toLowerCase().includes(query) ||
+            r.destination.toLowerCase().includes(query) ||
+            r.stages?.some(stage => stage.toLowerCase().includes(query))
+        )
+    }, [allRoutes, searchQuery])
+
+    const handleAdvance = (entry: RouteQueueEntry) => {
+        const next = NEXT_STATUS[entry.status]
+        if (next) statusMutation.mutate({ id: entry.id, status: next })
+    }
+
+    const handleRetreat = (entry: RouteQueueEntry) => {
+        const prev = PREV_STATUS[entry.status]
+        if (prev) statusMutation.mutate({ id: entry.id, status: prev })
+    }
+
+    const handleRequestRemove = (entry: RouteQueueEntry) => {
+        setEntryToRemove(entry)
+    }
+
+    const confirmRemove = () => {
+        if (entryToRemove) {
+            removeMutation.mutate(entryToRemove.id)
+            setEntryToRemove(null)
+        }
+    }
+
+    // ─── Dashboard View ──────────────────────────────────────────────────────
+
     if (!selectedRouteId) {
         return (
-            <div className={cn("space-y-3", className)}>
-                <RouteCombobox value={selectedRouteId} onChange={handleRouteChange} />
-                <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-12 text-center">
-                    <RouteIcon className="size-5 text-muted-foreground/40" />
-                    <p className="text-sm text-muted-foreground">Select a route to view its queue</p>
+            <div className={cn("space-y-4", className)}>
+                {/* Header */}
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                        <h2 className="text-base font-medium">Queue Management</h2>
+                        <p className="text-sm text-muted-foreground">
+                            Select a route to manage its queue
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Popover open={dateOpen} onOpenChange={setDateOpen}>
+                            <PopoverTrigger asChild>
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8 gap-1.5 text-xs w-36 justify-start font-normal"
+                                >
+                                    <CalendarIcon className="size-3.5 text-muted-foreground/50" />
+                                    {format(parseISO(selectedDate), "MMM d, yyyy")}
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-auto p-0" align="start">
+                                <Calendar
+                                    mode="single"
+                                    selected={parseISO(selectedDate)}
+                                    onSelect={(date) => {
+                                        if (!date) return
+                                        setSelectedDate(format(date, "yyyy-MM-dd"))
+                                        setDateOpen(false)
+                                    }}
+                                    disabled={(date) => date > new Date()}
+                                    initialFocus
+                                />
+                            </PopoverContent>
+                        </Popover>
+                        {!isToday && (
+                            <Badge variant="secondary" className="text-[10px]">
+                                Past day
+                            </Badge>
+                        )}
+                    </div>
                 </div>
+
+                {/* Search */}
+                <div className="relative">
+                    <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/50" />
+                    <Input
+                        placeholder="Search routes by origin, destination, or stages..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="pl-9 h-9 text-sm"
+                    />
+                </div>
+
+                {/* Route Dashboard */}
+                {routesLoading || countsLoading ? (
+                    <RouteDashboardSkeleton isMobile={isMobile} />
+                ) : filteredRoutes.length === 0 ? (
+                    <EmptyDashboardState
+                        searchQuery={searchQuery}
+                        onClear={() => setSearchQuery("")}
+                    />
+                ) : (
+                    <RouteDashboard
+                        routes={filteredRoutes}
+                        counts={allQueueData || []}
+                        onSelectRoute={handleRouteChange}
+                        isMobile={isMobile}
+                        selectedDate={selectedDate}
+                    />
+                )}
             </div>
         )
     }
 
+    // ─── Queue Detail View ──────────────────────────────────────────────────
+
     return (
         <div className={cn("space-y-4", className)}>
-            {/* Route selector + header */}
-            <div className="space-y-3">
-                <RouteCombobox value={selectedRouteId} onChange={handleRouteChange} />
+            {/* Back button */}
+            <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 -ml-2 text-muted-foreground hover:text-foreground"
+                onClick={handleBackToDashboard}
+            >
+                <ArrowLeftCircle className="size-4" />
+                Back to all routes
+            </Button>
 
+            {/* Header */}
+            <div className="space-y-3">
                 {route && (
-                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                         <div>
-                            <p className="text-sm font-medium">
+                            <h2 className="text-base font-medium">
                                 {route.origin} → {route.destination}
-                            </p>
+                            </h2>
                             {route.stages?.length > 0 && (
                                 <p className="text-xs text-muted-foreground">
                                     via {route.stages.join(", ")}
@@ -188,25 +394,36 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                             )}
                         </div>
                         <div className="flex items-center gap-2 flex-wrap">
-                            <div className="relative">
-                                <Calendar className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/50 pointer-events-none" />
-                                <Input
-                                    type="date"
-                                    value={selectedDate}
-                                    onChange={(e) => setSelectedDate(e.target.value)}
-                                    max={todayIso()}
-                                    className="h-8 pl-7 text-xs w-36"
-                                    aria-label="Filter queue by date"
-                                />
-                            </div>
+                            <Popover open={dateOpen} onOpenChange={setDateOpen}>
+                                <PopoverTrigger asChild>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8 gap-1.5 text-xs w-36 justify-start font-normal"
+                                    >
+                                        <CalendarIcon className="size-3.5 text-muted-foreground/50" />
+                                        {format(parseISO(selectedDate), "MMM d, yyyy")}
+                                    </Button>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-auto p-0" align="start">
+                                    <Calendar
+                                        mode="single"
+                                        selected={parseISO(selectedDate)}
+                                        onSelect={(date) => {
+                                            if (!date) return
+                                            setSelectedDate(format(date, "yyyy-MM-dd"))
+                                            setDateOpen(false)
+                                        }}
+                                        disabled={(date) => date > new Date()}
+                                        initialFocus
+                                    />
+                                </PopoverContent>
+                            </Popover>
                             {!isToday && (
-                                <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">
-                                    Viewing past day
-                                </span>
+                                <Badge variant="secondary" className="text-[10px]">
+                                    Past day
+                                </Badge>
                             )}
-                            <span className="text-xs text-muted-foreground">
-                                {lanes[QueueStatus.WAITING].length} waiting · {lanes[QueueStatus.BOARDING].length} boarding
-                            </span>
                             <Button
                                 size="sm"
                                 onClick={() => setShowClockIn(true)}
@@ -221,23 +438,75 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                 )}
             </div>
 
-            {/* Three-lane board */}
-            {isLoading ? (
-                <QueueBoardSkeleton />
+            {/* Queue Stats Bar */}
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1">
+                    <ClockIcon className="size-3 text-amber-500" />
+                    {lanes[QueueStatus.WAITING].length} waiting
+                </span>
+                <span className="flex items-center gap-1">
+                    <Users className="size-3 text-blue-500" />
+                    {lanes[QueueStatus.BOARDING].length} boarding
+                </span>
+                <span className="flex items-center gap-1">
+                    <CheckCircle className="size-3 text-emerald-500" />
+                    {lanes[QueueStatus.DISPATCHED].length} dispatched
+                </span>
+            </div>
+
+            {/* Board */}
+            {queueLoading ? (
+                <QueueBoardSkeleton isMobile={isMobile} />
+            ) : isMobile ? (
+                <Tabs defaultValue={QueueStatus.WAITING} className="w-full">
+                    <TabsList className="grid grid-cols-3 w-full h-auto p-1 gap-1 bg-muted/50">
+                        {LANES.map((lane) => {
+                            const Icon = lane.icon
+                            const count = lanes[lane.status].length
+                            return (
+                                <TabsTrigger
+                                    key={lane.status}
+                                    value={lane.status}
+                                    className="flex flex-col items-center gap-1 py-2 data-[state=active]:shadow-sm"
+                                >
+                                    <span className="flex items-center gap-1.5">
+                                        <Icon className={cn("size-3.5", lane.color)} />
+                                        <span className="text-xs font-medium">{lane.label}</span>
+                                    </span>
+                                    <Badge variant="secondary" className="text-[9px] h-4 px-1.5 font-mono">
+                                        {count}
+                                    </Badge>
+                                </TabsTrigger>
+                            )
+                        })}
+                    </TabsList>
+
+                    {LANES.map((lane) => (
+                        <TabsContent key={lane.status} value={lane.status} className="mt-3">
+                            <QueueLane
+                                lane={lane}
+                                entries={lanes[lane.status]}
+                                onAdvance={handleAdvance}
+                                onRetreat={handleRetreat}
+                                onRequestRemove={handleRequestRemove}
+                                isUpdating={statusMutation.isPending}
+                                readOnly={!isToday}
+                                hideHeader
+                            />
+                        </TabsContent>
+                    ))}
+                </Tabs>
             ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     {LANES.map((lane) => (
                         <QueueLane
                             key={lane.status}
-                            label={lane.label}
-                            status={lane.status}
+                            lane={lane}
                             entries={lanes[lane.status]}
-                            onAdvance={(entry) => {
-                                const next = NEXT_STATUS[entry.status]
-                                if (next) advanceMutation.mutate({ id: entry.id, status: next })
-                            }}
-                            onRemove={(entry) => removeMutation.mutate(entry.id)}
-                            isUpdating={advanceMutation.isPending}
+                            onAdvance={handleAdvance}
+                            onRetreat={handleRetreat}
+                            onRequestRemove={handleRequestRemove}
+                            isUpdating={statusMutation.isPending}
                             readOnly={!isToday}
                         />
                     ))}
@@ -249,49 +518,248 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                 open={showClockIn}
                 onOpenChange={setShowClockIn}
             />
+
+            {/* Remove confirmation */}
+            <Dialog open={!!entryToRemove} onOpenChange={(open) => !open && setEntryToRemove(null)}>
+                <DialogContent className="sm:max-w-sm">
+                    <DialogHeader>
+                        <div className="flex items-center gap-2">
+                            <div className="flex size-8 items-center justify-center rounded-full bg-destructive/10">
+                                <AlertTriangle className="size-4 text-destructive" />
+                            </div>
+                            <DialogTitle>Remove from queue?</DialogTitle>
+                        </div>
+                        <DialogDescription className="pt-1">
+                            {entryToRemove?.vehicle.numberPlate} will be removed from the queue.
+                            This can't be undone — the vehicle will need to be clocked in again.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter className="flex flex-col-reverse sm:flex-row gap-2">
+                        <Button
+                            variant="outline"
+                            className="w-full sm:w-auto"
+                            onClick={() => setEntryToRemove(null)}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            variant="destructive"
+                            className="w-full sm:w-auto"
+                            onClick={confirmRemove}
+                            disabled={removeMutation.isPending}
+                        >
+                            {removeMutation.isPending ? "Removing..." : "Remove"}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }
 
-// ─── Subcomponents ──────────────────────────────────────────────────────────
+// ─── Route Dashboard ──────────────────────────────────────────────────────
 
-interface QueueLaneProps {
-    label: string
-    status: QueueStatus
-    entries: RouteQueueEntry[]
-    onAdvance: (entry: RouteQueueEntry) => void
-    onRemove: (entry: RouteQueueEntry) => void
-    isUpdating?: boolean
-    readOnly?: boolean
+interface RouteDashboardProps {
+    routes: any[]
+    counts: Array<{
+        routeId: string
+        waiting: number
+        boarding: number
+        dispatched: number
+        total: number
+    }>
+    onSelectRoute: (id: string) => void
+    isMobile: boolean
+    selectedDate: string
 }
 
-function QueueLane({ label, status, entries, onAdvance, onRemove, isUpdating, readOnly }: QueueLaneProps) {
-    const styles = LANE_STYLES[status]
+function RouteDashboard({ routes, counts, onSelectRoute, isMobile, selectedDate }: RouteDashboardProps) {
+    if (isMobile) {
+        return (
+            <div className="grid gap-2">
+                {routes.map((route) => {
+                    const count = counts.find(c => c.routeId === route.id) || { waiting: 0, boarding: 0, dispatched: 0, total: 0 }
+                    return (
+                        <div
+                            key={route.id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => onSelectRoute(route.id)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault()
+                                    onSelectRoute(route.id)
+                                }
+                            }}
+                            className="rounded-lg border bg-card p-3 transition-all hover:bg-accent/30 hover:border-muted-foreground/20 cursor-pointer"
+                        >
+                            <div className="flex items-center justify-between">
+                                <div className="min-w-0 flex-1">
+                                    <p className="truncate font-medium text-sm">
+                                        {route.origin} → {route.destination}
+                                    </p>
+                                    {route.stages?.length > 0 && (
+                                        <p className="text-xs text-muted-foreground/70 truncate">
+                                            via {route.stages.join(", ")}
+                                        </p>
+                                    )}
+                                </div>
+                                <ChevronRight className="size-4 text-muted-foreground/30" />
+                            </div>
+                            <div className="flex items-center gap-3 mt-2 text-xs">
+                                <span className="flex items-center gap-1">
+                                    <ClockIcon className="size-3 text-amber-500" />
+                                    {count.waiting}
+                                </span>
+                                <span className="flex items-center gap-1">
+                                    <Users className="size-3 text-blue-500" />
+                                    {count.boarding}
+                                </span>
+                                <span className="flex items-center gap-1">
+                                    <Truck className="size-3 text-emerald-500" />
+                                    {count.dispatched}
+                                </span>
+                                <Badge variant="secondary" className="text-[10px] h-4 px-1.5 ml-auto">
+                                    {count.total} total
+                                </Badge>
+                            </div>
+                        </div>
+                    )
+                })}
+            </div>
+        )
+    }
 
     return (
-        <div className={cn("rounded-lg border p-3 space-y-2", styles.laneBg)}>
-            <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    {label}
-                </p>
-                <span className="text-xs text-muted-foreground bg-background px-1.5 py-0.5 rounded-full border">
-                    {entries.length}
-                </span>
-            </div>
+        <div className="rounded-lg border bg-card overflow-x-auto">
+            <Table>
+                <TableHeader>
+                    <TableRow className="bg-muted/50">
+                        <TableHead className="w-[35%]">Route</TableHead>
+                        <TableHead className="w-[15%] text-center">Waiting</TableHead>
+                        <TableHead className="w-[15%] text-center">Boarding</TableHead>
+                        <TableHead className="w-[15%] text-center">Dispatched</TableHead>
+                        <TableHead className="w-[10%] text-center">Total</TableHead>
+                        <TableHead className="w-[10%] text-right">Action</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {routes.map((route) => {
+                        const count = counts.find(c => c.routeId === route.id) || { waiting: 0, boarding: 0, dispatched: 0, total: 0 }
+                        return (
+                            <TableRow
+                                key={route.id}
+                                className="group cursor-pointer hover:bg-muted/50 transition-colors"
+                                onClick={() => onSelectRoute(route.id)}
+                            >
+                                <TableCell>
+                                    <div className="min-w-0">
+                                        <p className="truncate font-medium">
+                                            {route.origin} → {route.destination}
+                                        </p>
+                                        {route.stages?.length > 0 && (
+                                            <p className="text-xs text-muted-foreground/70 truncate">
+                                                via {route.stages.join(", ")}
+                                            </p>
+                                        )}
+                                    </div>
+                                </TableCell>
+                                <TableCell className="text-center">
+                                    <Badge variant="secondary" className="text-xs font-medium bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400 border-amber-500/20">
+                                        {count.waiting}
+                                    </Badge>
+                                </TableCell>
+                                <TableCell className="text-center">
+                                    <Badge variant="secondary" className="text-xs font-medium bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400 border-blue-500/20">
+                                        {count.boarding}
+                                    </Badge>
+                                </TableCell>
+                                <TableCell className="text-center">
+                                    <Badge variant="secondary" className="text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border-emerald-500/20">
+                                        {count.dispatched}
+                                    </Badge>
+                                </TableCell>
+                                <TableCell className="text-center font-semibold">
+                                    {count.total}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-7 text-xs gap-1"
+                                        onClick={(e) => {
+                                            e.stopPropagation()
+                                            onSelectRoute(route.id)
+                                        }}
+                                    >
+                                        Manage
+                                        <ChevronRight className="size-3.5" />
+                                    </Button>
+                                </TableCell>
+                            </TableRow>
+                        )
+                    })}
+                </TableBody>
+            </Table>
+        </div>
+    )
+}
 
+// ─── Queue Lane ─────────────────────────────────────────────────────────────
+
+interface QueueLaneProps {
+    lane: typeof LANES[0]
+    entries: RouteQueueEntry[]
+    onAdvance: (entry: RouteQueueEntry) => void
+    onRetreat: (entry: RouteQueueEntry) => void
+    onRequestRemove: (entry: RouteQueueEntry) => void
+    isUpdating?: boolean
+    readOnly?: boolean
+    hideHeader?: boolean
+}
+
+function QueueLane({ lane, entries, onAdvance, onRetreat, onRequestRemove, isUpdating, readOnly, hideHeader }: QueueLaneProps) {
+    const Icon = lane.icon
+
+    return (
+        <div className={cn(
+            "rounded-lg border p-3 space-y-2 transition-all",
+            lane.bg,
+            lane.border
+        )}>
+            {/* Lane Header */}
+            {!hideHeader && (
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <Icon className={cn("size-4", lane.color)} />
+                        <span className="text-sm font-medium">{lane.label}</span>
+                    </div>
+                    <Badge variant="secondary" className="text-[10px] h-5 px-1.5 font-mono">
+                        {entries.length}
+                    </Badge>
+                </div>
+            )}
+
+            {/* Lane Content */}
             {entries.length === 0 ? (
-                <p className="text-xs text-muted-foreground/60 text-center py-6">No vehicles</p>
+                <div className="py-8 text-center">
+                    <p className="text-xs text-muted-foreground/50">Empty</p>
+                </div>
             ) : (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                     {entries.map((entry, index) => (
                         <QueueCard
                             key={entry.id}
                             entry={entry}
-                            position={status === QueueStatus.WAITING ? index + 1 : undefined}
+                            position={lane.status === QueueStatus.WAITING ? index + 1 : undefined}
                             onAdvance={() => onAdvance(entry)}
-                            onRemove={() => onRemove(entry)}
+                            onRetreat={() => onRetreat(entry)}
+                            onRequestRemove={() => onRequestRemove(entry)}
                             isUpdating={isUpdating}
                             readOnly={readOnly}
+                            laneColor={lane.color}
+                            nextAction={NEXT_STATUS[entry.status]}
+                            prevAction={PREV_STATUS[entry.status]}
                         />
                     ))}
                 </div>
@@ -300,81 +768,220 @@ function QueueLane({ label, status, entries, onAdvance, onRemove, isUpdating, re
     )
 }
 
+// ─── Queue Card ─────────────────────────────────────────────────────────────
+
 interface QueueCardProps {
     entry: RouteQueueEntry
     position?: number
     onAdvance: () => void
-    onRemove: () => void
+    onRetreat: () => void
+    onRequestRemove: () => void
     isUpdating?: boolean
     readOnly?: boolean
+    laneColor: string
+    nextAction?: QueueStatus
+    prevAction?: QueueStatus
 }
 
-function QueueCard({ entry, position, onAdvance, onRemove, isUpdating, readOnly }: QueueCardProps) {
+function QueueCard({
+    entry,
+    position,
+    onAdvance,
+    onRetreat,
+    onRequestRemove,
+    isUpdating,
+    readOnly,
+    laneColor,
+    nextAction,
+    prevAction,
+}: QueueCardProps) {
     const elapsed = useElapsedTime(entry.clockedInAt)
-    const nextLabel = NEXT_ACTION_LABEL[entry.status]
-    const styles = LANE_STYLES[entry.status]
-    const isInactive = entry.vehicle.status !== "ACTIVE"
 
     return (
-        <div className={cn("rounded-md border px-2 py-1.5 flex items-center gap-2", styles.cardBg)}>
-            {position !== undefined && (
-                <span className="shrink-0 text-[10px] font-semibold text-muted-foreground bg-muted rounded-full size-4 flex items-center justify-center">
-                    {position}
-                </span>
-            )}
+        <div className="group rounded-md border bg-card p-2.5 transition-all hover:shadow-sm hover:border-muted-foreground/20">
+            <div className="flex items-center gap-2">
+                {/* Position Badge (Waiting lane only) */}
+                {position !== undefined && (
+                    <Badge variant="secondary" className="h-5 w-5 p-0 text-[9px] font-mono flex items-center justify-center shrink-0">
+                        {position}
+                    </Badge>
+                )}
 
-            <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                    <p className="text-sm font-medium truncate">{entry.vehicle.numberPlate}</p>
-                    {isInactive && (
-                        <span className="shrink-0 size-1.5 rounded-full bg-amber-500" title={entry.vehicle.status} />
+                {/* Vehicle Info */}
+                <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                        <Car className="size-3 text-muted-foreground/50 shrink-0" />
+                        <p className="truncate text-sm font-medium">
+                            {entry.vehicle.numberPlate}
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                            <Clock className="size-2.5" />
+                            {elapsed}
+                        </span>
+                        <span>•</span>
+                        <span>{entry.vehicle.seatingCapacity} seats</span>
+                    </div>
+                </div>
+
+                {/* Actions - Icon only */}
+                <div className="flex items-center gap-0.5 shrink-0">
+                    {!readOnly && prevAction && (
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground/40 hover:text-foreground hover:bg-transparent transition-all hover:scale-110"
+                            onClick={onRetreat}
+                            disabled={isUpdating}
+                            aria-label="Move back to previous status"
+                            title="Move back to previous status"
+                        >
+                            <ArrowLeftCircle className="size-4" />
+                        </Button>
+                    )}
+
+                    {!readOnly && nextAction && (
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className={cn(
+                                "h-7 w-7 transition-all hover:scale-110",
+                                laneColor,
+                                "hover:bg-transparent"
+                            )}
+                            onClick={onAdvance}
+                            disabled={isUpdating}
+                            aria-label="Advance to next status"
+                            title="Advance to next status"
+                        >
+                            <ArrowRightCircle className="size-4" />
+                        </Button>
+                    )}
+
+                    {!readOnly && (
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-destructive/70 hover:text-destructive hover:bg-transparent transition-all hover:scale-110"
+                            onClick={onRequestRemove}
+                            aria-label="Remove from queue"
+                            title="Remove from queue"
+                        >
+                            <XCircle className="size-4" />
+                        </Button>
                     )}
                 </div>
-                <p className="text-[10px] text-muted-foreground">Added {elapsed} · {entry.vehicle.seatingCapacity} seats</p>
             </div>
-
-            {!readOnly && nextLabel && (
-                <Button
-                    size="icon"
-                    variant="secondary"
-                    className="h-6 w-6 shrink-0"
-                    onClick={onAdvance}
-                    disabled={isUpdating}
-                    aria-label={nextLabel}
-                >
-                    <ArrowRight className="size-3.5" />
-                </Button>
-            )}
-
-            {!readOnly && (
-                <DropdownMenu>
-                    <DropdownMenuTrigger>
-                        <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground/50">
-                            <MoreVertical className="size-3.5" />
-                        </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-40">
-                        <DropdownMenuItem onClick={onRemove} className="text-destructive">
-                            <LogOut className="size-3.5 mr-2" />
-                            Remove from queue
-                        </DropdownMenuItem>
-                    </DropdownMenuContent>
-                </DropdownMenu>
-            )}
         </div>
     )
 }
 
-function QueueBoardSkeleton() {
+// ─── Dashboard Skeleton ────────────────────────────────────────────────────
+
+function RouteDashboardSkeleton({ isMobile }: { isMobile?: boolean }) {
+    if (isMobile) {
+        return (
+            <div className="grid gap-2">
+                {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="rounded-lg border p-3 space-y-2">
+                        <Skeleton className="h-4 w-3/4" />
+                        <Skeleton className="h-3 w-1/2" />
+                        <div className="flex items-center gap-3">
+                            <Skeleton className="h-4 w-12" />
+                            <Skeleton className="h-4 w-12" />
+                            <Skeleton className="h-4 w-12" />
+                            <Skeleton className="h-4 w-16 ml-auto" />
+                        </div>
+                    </div>
+                ))}
+            </div>
+        )
+    }
+
     return (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="rounded-lg border bg-muted/20 p-3 space-y-2">
-                    <Skeleton className="h-4 w-16" />
-                    <Skeleton className="h-16 w-full rounded-md" />
-                    <Skeleton className="h-16 w-full rounded-md" />
+        <div className="rounded-lg border">
+            <div className="p-4 border-b bg-muted/50">
+                <div className="grid grid-cols-6 gap-4">
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-full" />
+                </div>
+            </div>
+            {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="p-4 border-b last:border-0">
+                    <div className="grid grid-cols-6 gap-4 items-center">
+                        <Skeleton className="h-5 w-3/4" />
+                        <Skeleton className="h-6 w-12 mx-auto" />
+                        <Skeleton className="h-6 w-12 mx-auto" />
+                        <Skeleton className="h-6 w-12 mx-auto" />
+                        <Skeleton className="h-5 w-12 mx-auto" />
+                        <Skeleton className="h-7 w-20 ml-auto" />
+                    </div>
                 </div>
             ))}
+        </div>
+    )
+}
+
+// ─── Queue Board Skeleton ──────────────────────────────────────────────────
+
+function QueueBoardSkeleton({ isMobile }: { isMobile?: boolean }) {
+    if (isMobile) {
+        return (
+            <div className="space-y-3">
+                <Skeleton className="h-12 w-full rounded-lg" />
+                <div className="rounded-lg border bg-card/50 p-3 space-y-2">
+                    <Skeleton className="h-12 w-full rounded-md" />
+                    <Skeleton className="h-12 w-full rounded-md" />
+                </div>
+            </div>
+        )
+    }
+
+    return (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="rounded-lg border bg-card/50 p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                        <Skeleton className="h-4 w-20" />
+                        <Skeleton className="h-5 w-8" />
+                    </div>
+                    <Skeleton className="h-12 w-full rounded-md" />
+                    <Skeleton className="h-12 w-full rounded-md" />
+                </div>
+            ))}
+        </div>
+    )
+}
+
+// ─── Empty Dashboard State ─────────────────────────────────────────────────
+
+interface EmptyDashboardStateProps {
+    searchQuery: string
+    onClear: () => void
+}
+
+function EmptyDashboardState({ searchQuery, onClear }: EmptyDashboardStateProps) {
+    return (
+        <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-12 px-4 text-center">
+            <div className="rounded-full bg-muted/30 p-2.5">
+                <Search className="size-5 text-muted-foreground/40" />
+            </div>
+            <div className="space-y-0.5">
+                <p className="text-sm font-medium">No routes found</p>
+                <p className="text-xs text-muted-foreground">
+                    {searchQuery ? `No routes match "${searchQuery}"` : "No routes available"}
+                </p>
+            </div>
+            {searchQuery && (
+                <Button size="sm" variant="outline" onClick={onClear} className="gap-1.5 text-xs">
+                    Clear search
+                </Button>
+            )}
         </div>
     )
 }

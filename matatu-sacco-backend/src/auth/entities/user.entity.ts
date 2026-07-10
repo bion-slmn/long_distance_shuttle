@@ -57,6 +57,9 @@ export class User {
     @Column({ type: 'uuid', nullable: true })
     declare saccoId: string | null;
 
+    @Column({ type: 'varchar', length: 100, nullable: true })
+    declare assignedStage: string | null;
+
     @CreateDateColumn({ type: 'timestamp' })
     declare createdAt: Date;
 
@@ -70,4 +73,6 @@ export class User {
     generateId() {
         this.id = uuidv7();
     }
+
+
 }

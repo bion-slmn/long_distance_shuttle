@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog"
 import { createRouteRequest, updateRouteRequest, type Route } from "@/api/routeApi"
 import { SaccoCombobox } from "../sacco/SaccoCombobox"
+import { Checkbox } from "@/components/ui/checkbox"
 
 // ─── Validation Schema ───────────────────────────────────────────────────────
 
@@ -40,6 +41,7 @@ const routeSchema = z.object({
         })
     ),
     saccoId: z.string().min(1, "Sacco is required"),
+    createReturnLeg: z.boolean().optional(),
 })
 
 type RouteFormValues = z.infer<typeof routeSchema>
@@ -75,6 +77,7 @@ export function RouteForm({
             fare: "",
             stages: [],
             saccoId: "",
+            createReturnLeg: false,
         },
     })
 
@@ -109,6 +112,7 @@ export function RouteForm({
                     .map((s) => s.value.trim())
                     .filter((s) => s !== ""),
                 saccoId: values.saccoId,
+                createReturnLeg: values.createReturnLeg,
             }),
         onSuccess: () => {
             toast.success("Route created successfully")
@@ -344,6 +348,32 @@ export function RouteForm({
                     )}
                 </div>
             </FieldGroup>
+            {/* Return leg (create mode only) */}
+            {!isEditMode && (
+                <Controller
+                    name="createReturnLeg"
+                    control={form.control}
+                    render={({ field }) => (
+                        <Field>
+                            <label className="flex items-start gap-2 cursor-pointer">
+                                <Checkbox
+                                    checked={field.value}
+                                    onCheckedChange={field.onChange}
+                                    className="mt-0.5"
+                                />
+                                <span>
+                                    <span className="text-sm font-medium">
+                                        Also create the return route
+                                    </span>
+                                    <p className="text-xs text-muted-foreground">
+                                        Creates {form.watch("destination") || "destination"} → {form.watch("origin") || "origin"} as a separate route automatically.
+                                    </p>
+                                </span>
+                            </label>
+                        </Field>
+                    )}
+                />
+            )}
 
             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
                 <Button
@@ -372,7 +402,7 @@ export function RouteForm({
     if (open !== undefined && onOpenChange !== undefined) {
         return (
             <Dialog open={open} onOpenChange={onOpenChange}>
-                <DialogContent className="sm:max-w-lg">
+                <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
                         <DialogTitle>{title}</DialogTitle>
                         <DialogDescription>{description}</DialogDescription>

@@ -7,6 +7,7 @@ import {
     Users,
     LogOut,
     ListOrdered,
+    Road,
 } from "lucide-react"
 
 import {
@@ -38,6 +39,7 @@ const NAV_ITEMS: NavItem[] = [
     { label: "Saccos", href: "/sacco", icon: Building2, roles: ["SUPER_ADMIN", "SACCO_ADMIN"] },
     { label: "Routes", href: "/routes", icon: RouteIcon, roles: ["SUPER_ADMIN", "SACCO_ADMIN"] },
     { label: "Fleet", href: "/vehicles", icon: Car, roles: ["SUPER_ADMIN", "SACCO_ADMIN"] },
+    { label: "Trips", href: "/trips", icon: Road, roles: ["SUPER_ADMIN", "SACCO_ADMIN"] },
     { label: "Route queue", href: "/routeQueue", icon: ListOrdered, roles: ["SUPER_ADMIN", "SACCO_ADMIN"] },
 ]
 

@@ -18,6 +18,7 @@ import SaccoPage from './pages/dashboard/saccoPage'
 import RoutePage from './pages/dashboard/routePage'
 import FleetPage from './pages/dashboard/FleetPage'
 import { DashboardLayout } from './layouts/DashboardLayout'
+import Trippage from './pages/dashboard/tripPage'
 
 function App() {
   return (
@@ -37,6 +38,7 @@ function App() {
           <Route path="/routes" element={<RoutePage />} />
           <Route path="/vehicles" element={<FleetPage />} />
           <Route path="/routeQueue" element={<RouteQueueView />} />
+          <Route path="/trips" element={<Trippage />} />
         </Route>
       </Routes>
       <Toaster />

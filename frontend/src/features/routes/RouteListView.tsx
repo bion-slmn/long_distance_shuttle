@@ -49,6 +49,7 @@ import { cn } from "@/lib/utils"
 
 import { getRoutesRequest, updateRouteRequest, type Route } from "@/api/routeApi"
 import { RouteForm } from "./RouteForm"
+import { useSaccoName } from "@/hooks/useSaccoName"
 
 interface RouteListViewProps {
     saccoId?: string
@@ -268,11 +269,11 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
                         <Table>
                             <TableHeader>
                                 <TableRow className="bg-muted/50">
-                                    <TableHead className="w-[25%]">Route</TableHead>
+                                    <TableHead className="w-[22%]">Route</TableHead>
                                     <TableHead className="w-[12%]">Status</TableHead>
                                     <TableHead className="w-[13%] text-center">Fare</TableHead>
                                     <TableHead className="w-[13%] text-center">Stages</TableHead>
-                                    <TableHead className="w-[27%]">Description</TableHead>
+                                    <TableHead className="w-[20%]">Sacco</TableHead>
                                     <TableHead className="w-[10%] text-right">Actions</TableHead>
                                 </TableRow>
                             </TableHeader>
@@ -432,19 +433,23 @@ function DesktopRouteRow({
     isToggling,
     formatCurrency,
 }: DesktopRouteRowProps) {
+    const saccoName = useSaccoName(route.saccoId)
+
     return (
         <TableRow
             className="group cursor-pointer hover:bg-muted/50 transition-colors"
             onClick={onSelect}
         >
             <TableCell>
-                <div className="flex items-center gap-3">
-                    <RouteIcon className="size-4 text-muted-foreground/50 shrink-0" />
-                    <div className="min-w-0">
-                        <p className="truncate font-medium">
-                            {route.origin} → {route.destination}
+                <div className="min-w-0">
+                    <p className="truncate font-medium">
+                        {route.origin} → {route.destination}
+                    </p>
+                    {route.stages && route.stages.length > 0 && (
+                        <p className="text-xs text-muted-foreground/70 truncate">
+                            via {route.stages.join(", ")}
                         </p>
-                    </div>
+                    )}
                 </div>
             </TableCell>
             <TableCell>
@@ -455,24 +460,14 @@ function DesktopRouteRow({
                     {route.isActive ? "Active" : "Inactive"}
                 </Badge>
             </TableCell>
-            <TableCell className="text-center">
-                <div className="flex items-center justify-center gap-1.5">
-                    <DollarSign className="size-3.5 text-muted-foreground" />
-                    <span className="font-semibold">
-                        {route.fare ? formatCurrency(route.fare) : "—"}
-                    </span>
-                </div>
+            <TableCell className="text-center font-semibold">
+                {route.fare ? formatCurrency(route.fare) : "—"}
             </TableCell>
-            <TableCell className="text-center">
-                <div className="flex items-center justify-center gap-1.5">
-                    <MapPin className="size-3.5 text-muted-foreground" />
-                    <span className="font-semibold">{route.stages?.length || 0}</span>
-                </div>
+            <TableCell className="text-center font-semibold">
+                {route.stages?.length || 0}
             </TableCell>
             <TableCell>
-                <p className="truncate text-sm text-muted-foreground">
-                    {route.description || "—"}
-                </p>
+                <p className="truncate text-sm">{saccoName || "—"}</p>
             </TableCell>
             <TableCell className="text-right">
                 <div
@@ -551,6 +546,8 @@ function MobileRouteCard({
     isToggling,
     formatCurrency,
 }: MobileRouteCardProps) {
+    const saccoName = useSaccoName(route.saccoId)
+
     return (
         <div
             role="button"
@@ -576,9 +573,14 @@ function MobileRouteCard({
                             {route.origin} → {route.destination}
                         </p>
                     </div>
-                    {route.description && (
-                        <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                            {route.description}
+                    {saccoName && (
+                        <p className="text-xs text-muted-foreground/70 mt-0.5 truncate">
+                            {saccoName}
+                        </p>
+                    )}
+                    {route.stages && route.stages.length > 0 && (
+                        <p className="text-xs text-muted-foreground/50 mt-0.5 truncate">
+                            via {route.stages.join(", ")}
                         </p>
                     )}
                 </div>
@@ -694,6 +696,8 @@ function RouteDetailsDialog({
     onEdit,
     formatCurrency,
 }: RouteDetailsDialogProps) {
+    const saccoName = useSaccoName(route?.saccoId)
+
     if (!route) return null
 
     return (
@@ -718,6 +722,13 @@ function RouteDetailsDialog({
                 </DialogHeader>
 
                 <div className="flex flex-col gap-4 py-2">
+                    {saccoName && (
+                        <div>
+                            <p className="text-xs font-medium text-muted-foreground">Sacco</p>
+                            <p className="text-sm text-foreground">{saccoName}</p>
+                        </div>
+                    )}
+
                     {route.description && (
                         <p className="text-sm text-muted-foreground">{route.description}</p>
                     )}
@@ -747,7 +758,7 @@ function RouteDetailsDialog({
                         stages={route.stages}
                     />
 
-                    {/* Stages List (as backup/alternative view) */}
+                    {/* Stages List */}
                     {route.stages && route.stages.length > 0 && (
                         <div>
                             <p className="text-xs font-medium text-muted-foreground mb-1.5">Route Stops</p>
