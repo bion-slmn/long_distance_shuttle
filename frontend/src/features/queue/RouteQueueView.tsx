@@ -61,8 +61,8 @@ import {
     removeVehicleFromQueueRequest,
     getRouteRequest,
     getRoutesRequest,
-    QueueStatus,
-    type RouteQueueEntry,
+    QueueEntryStatus,
+    type QueueEntry,
 } from "@/api/routeApi"
 import { RouteCombobox } from "@/features/routes/RouteCombobox"
 import { QueueClockInDialog } from "./QueueClockInDialog"
@@ -74,9 +74,9 @@ interface RouteQueueViewProps {
     className?: string
 }
 
-const LANES: { status: QueueStatus; label: string; icon: any; color: string; bg: string; border: string }[] = [
+const LANES: { status: QueueEntryStatus; label: string; icon: any; color: string; bg: string; border: string }[] = [
     {
-        status: QueueStatus.WAITING,
+        status: QueueEntryStatus.WAITING,
         label: "Waiting",
         icon: ClockIcon,
         color: "text-amber-600 dark:text-amber-400",
@@ -84,7 +84,7 @@ const LANES: { status: QueueStatus; label: string; icon: any; color: string; bg:
         border: "border-amber-200 dark:border-amber-800/30",
     },
     {
-        status: QueueStatus.BOARDING,
+        status: QueueEntryStatus.BOARDING,
         label: "Boarding",
         icon: Users,
         color: "text-blue-600 dark:text-blue-400",
@@ -92,7 +92,7 @@ const LANES: { status: QueueStatus; label: string; icon: any; color: string; bg:
         border: "border-blue-200 dark:border-blue-800/30",
     },
     {
-        status: QueueStatus.DISPATCHED,
+        status: QueueEntryStatus.DISPATCHED,
         label: "Dispatched",
         icon: Truck,
         color: "text-emerald-600 dark:text-emerald-400",
@@ -101,14 +101,14 @@ const LANES: { status: QueueStatus; label: string; icon: any; color: string; bg:
     },
 ]
 
-const NEXT_STATUS: Partial<Record<QueueStatus, QueueStatus>> = {
-    [QueueStatus.WAITING]: QueueStatus.BOARDING,
-    [QueueStatus.BOARDING]: QueueStatus.DISPATCHED,
+const NEXT_STATUS: Partial<Record<QueueEntryStatus, QueueEntryStatus>> = {
+    [QueueEntryStatus.WAITING]: QueueEntryStatus.BOARDING,
+    [QueueEntryStatus.BOARDING]: QueueEntryStatus.DISPATCHED,
 }
 
-const PREV_STATUS: Partial<Record<QueueStatus, QueueStatus>> = {
-    [QueueStatus.BOARDING]: QueueStatus.WAITING,
-    [QueueStatus.DISPATCHED]: QueueStatus.BOARDING,
+const PREV_STATUS: Partial<Record<QueueEntryStatus, QueueEntryStatus>> = {
+    [QueueEntryStatus.BOARDING]: QueueEntryStatus.WAITING,
+    [QueueEntryStatus.DISPATCHED]: QueueEntryStatus.BOARDING,
 }
 
 function todayIso() {
@@ -122,7 +122,7 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
     const [selectedDate, setSelectedDate] = useState<string>(todayIso())
     const [dateOpen, setDateOpen] = useState(false)
     const [isMobile, setIsMobile] = useState(false)
-    const [entryToRemove, setEntryToRemove] = useState<RouteQueueEntry | null>(null)
+    const [entryToRemove, setEntryToRemove] = useState<QueueEntry | null>(null)
     const [searchQuery, setSearchQuery] = useState("")
 
     useEffect(() => {
@@ -184,9 +184,9 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                         })
                         return {
                             routeId: route.id,
-                            waiting: entries.filter(e => e.status === QueueStatus.WAITING).length,
-                            boarding: entries.filter(e => e.status === QueueStatus.BOARDING).length,
-                            dispatched: entries.filter(e => e.status === QueueStatus.DISPATCHED).length,
+                            waiting: entries.filter(e => e.status === QueueEntryStatus.WAITING).length,
+                            boarding: entries.filter(e => e.status === QueueEntryStatus.BOARDING).length,
+                            dispatched: entries.filter(e => e.status === QueueEntryStatus.DISPATCHED).length,
                             total: entries.length,
                         }
                     } catch {
@@ -208,13 +208,13 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
     })
 
     const statusMutation = useMutation({
-        mutationFn: ({ id, status }: { id: string; status: QueueStatus }) =>
+        mutationFn: ({ id, status }: { id: string; status: QueueEntryStatus }) =>
             updateQueueEntryRequest(id, { status }),
         onMutate: async ({ id, status }) => {
             await queryClient.cancelQueries({ queryKey: queueQueryKey })
-            const previous = queryClient.getQueryData<RouteQueueEntry[]>(queueQueryKey)
+            const previous = queryClient.getQueryData<QueueEntry[]>(queueQueryKey)
 
-            queryClient.setQueryData<RouteQueueEntry[]>(queueQueryKey, (old) =>
+            queryClient.setQueryData<QueueEntry[]>(queueQueryKey, (old) =>
                 old?.map((e) => (e.id === id ? { ...e, status } : e))
             )
 
@@ -241,10 +241,10 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
     })
 
     const lanes = useMemo(() => {
-        const grouped: Record<QueueStatus, RouteQueueEntry[]> = {
-            [QueueStatus.WAITING]: [],
-            [QueueStatus.BOARDING]: [],
-            [QueueStatus.DISPATCHED]: [],
+        const grouped: Record<QueueEntryStatus, QueueEntry[]> = {
+            [QueueEntryStatus.WAITING]: [],
+            [QueueEntryStatus.BOARDING]: [],
+            [QueueEntryStatus.DISPATCHED]: [],
         }
         entries?.forEach((entry) => {
             grouped[entry.status]?.push(entry)
@@ -264,17 +264,17 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
         )
     }, [allRoutes, searchQuery])
 
-    const handleAdvance = (entry: RouteQueueEntry) => {
+    const handleAdvance = (entry: QueueEntry) => {
         const next = NEXT_STATUS[entry.status]
         if (next) statusMutation.mutate({ id: entry.id, status: next })
     }
 
-    const handleRetreat = (entry: RouteQueueEntry) => {
+    const handleRetreat = (entry: QueueEntry) => {
         const prev = PREV_STATUS[entry.status]
         if (prev) statusMutation.mutate({ id: entry.id, status: prev })
     }
 
-    const handleRequestRemove = (entry: RouteQueueEntry) => {
+    const handleRequestRemove = (entry: QueueEntry) => {
         setEntryToRemove(entry)
     }
 
@@ -442,15 +442,15 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
             <div className="flex items-center gap-4 text-xs text-muted-foreground">
                 <span className="flex items-center gap-1">
                     <ClockIcon className="size-3 text-amber-500" />
-                    {lanes[QueueStatus.WAITING].length} waiting
+                    {lanes[QueueEntryStatus.WAITING].length} waiting
                 </span>
                 <span className="flex items-center gap-1">
                     <Users className="size-3 text-blue-500" />
-                    {lanes[QueueStatus.BOARDING].length} boarding
+                    {lanes[QueueEntryStatus.BOARDING].length} boarding
                 </span>
                 <span className="flex items-center gap-1">
                     <CheckCircle className="size-3 text-emerald-500" />
-                    {lanes[QueueStatus.DISPATCHED].length} dispatched
+                    {lanes[QueueEntryStatus.DISPATCHED].length} dispatched
                 </span>
             </div>
 
@@ -458,7 +458,7 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
             {queueLoading ? (
                 <QueueBoardSkeleton isMobile={isMobile} />
             ) : isMobile ? (
-                <Tabs defaultValue={QueueStatus.WAITING} className="w-full">
+                <Tabs defaultValue={QueueEntryStatus.WAITING} className="w-full">
                     <TabsList className="grid grid-cols-3 w-full h-auto p-1 gap-1 bg-muted/50">
                         {LANES.map((lane) => {
                             const Icon = lane.icon
@@ -709,10 +709,10 @@ function RouteDashboard({ routes, counts, onSelectRoute, isMobile, selectedDate 
 
 interface QueueLaneProps {
     lane: typeof LANES[0]
-    entries: RouteQueueEntry[]
-    onAdvance: (entry: RouteQueueEntry) => void
-    onRetreat: (entry: RouteQueueEntry) => void
-    onRequestRemove: (entry: RouteQueueEntry) => void
+    entries: QueueEntry[]
+    onAdvance: (entry: QueueEntry) => void
+    onRetreat: (entry: QueueEntry) => void
+    onRequestRemove: (entry: QueueEntry) => void
     isUpdating?: boolean
     readOnly?: boolean
     hideHeader?: boolean
@@ -747,11 +747,15 @@ function QueueLane({ lane, entries, onAdvance, onRetreat, onRequestRemove, isUpd
                 </div>
             ) : (
                 <div className="space-y-1.5">
-                    {entries.map((entry, index) => (
+                    {entries.map((entry) => (
                         <QueueCard
                             key={entry.id}
                             entry={entry}
-                            position={lane.status === QueueStatus.WAITING ? index + 1 : undefined}
+                            // Backend now assigns a real position per queue —
+                            // use it directly instead of the array index, so the
+                            // number stays correct even if this lane's array is
+                            // ever filtered/reordered client-side.
+                            position={lane.status === QueueEntryStatus.WAITING ? entry.position : undefined}
                             onAdvance={() => onAdvance(entry)}
                             onRetreat={() => onRetreat(entry)}
                             onRequestRemove={() => onRequestRemove(entry)}
@@ -771,7 +775,7 @@ function QueueLane({ lane, entries, onAdvance, onRetreat, onRequestRemove, isUpd
 // ─── Queue Card ─────────────────────────────────────────────────────────────
 
 interface QueueCardProps {
-    entry: RouteQueueEntry
+    entry: QueueEntry
     position?: number
     onAdvance: () => void
     onRetreat: () => void
@@ -779,8 +783,8 @@ interface QueueCardProps {
     isUpdating?: boolean
     readOnly?: boolean
     laneColor: string
-    nextAction?: QueueStatus
-    prevAction?: QueueStatus
+    nextAction?: QueueEntryStatus
+    prevAction?: QueueEntryStatus
 }
 
 function QueueCard({

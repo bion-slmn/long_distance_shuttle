@@ -1,7 +1,7 @@
 // trip.service.ts
 import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { Trip, TripStatus } from './entities/trip.entity';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { UpdateTripDto } from './dto/update-trip.dto';
@@ -33,10 +33,15 @@ export class TripService {
     private readonly tripRepository: Repository<Trip>,
   ) { }
 
+  // Every method that can be called from inside a caller-owned transaction
+  // (RouteService.saveAndPromoteNextWaiting) takes an optional `manager` and
+  // resolves its repository from it. When no manager is passed, it falls back
+  // to the injected repository — same behavior as before for standalone calls.
+  private repo(manager?: EntityManager): Repository<Trip> {
+    return manager ? manager.getRepository(Trip) : this.tripRepository;
+  }
+
   // ── Manual/admin create ─────────────────────────────────────────────────
-  // Exists mainly for admin/testing use. The real, expected path is
-  // createFromQueueEntry() below, called by RouteService when a queue
-  // entry moves into BOARDING.
   async create(dto: CreateTripDto): Promise<Trip> {
     if (!dto.fare || dto.fare <= 0) {
       throw new BadRequestException('Fare must be greater than 0.');
@@ -56,14 +61,18 @@ export class TripService {
   }
 
   // ── Domain trigger: queue entry moves into BOARDING ─────────────────────
-  async createFromQueueEntry(params: {
-    queueEntryId: string;
-    routeId: string;
-    vehicleId: string;
-    saccoId: string;
-    fare: number;
-  }): Promise<Trip> {
-    const trip = this.tripRepository.create({
+  async createFromQueueEntry(
+    params: {
+      queueEntryId: string;
+      routeId: string;
+      vehicleId: string;
+      saccoId: string;
+      fare: number;
+    },
+    manager?: EntityManager,
+  ): Promise<Trip> {
+    const repo = this.repo(manager);
+    const trip = repo.create({
       queueEntryId: params.queueEntryId,
       routeId: params.routeId,
       vehicleId: params.vehicleId,
@@ -72,12 +81,12 @@ export class TripService {
       status: TripStatus.BOARDING,
     });
 
-    return await this.tripRepository.save(trip);
+    return await repo.save(trip);
   }
 
   // ── Domain trigger: queue entry moves BOARDING -> DISPATCHED ────────────
-  async markDeparted(tripId: string): Promise<Trip> {
-    const trip = await this.findOne(tripId);
+  async markDeparted(tripId: string, manager?: EntityManager): Promise<Trip> {
+    const trip = await this.findOne(tripId, manager);
 
     if (trip.status !== TripStatus.BOARDING) {
       throw new BadRequestException(
@@ -87,15 +96,13 @@ export class TripService {
 
     trip.status = TripStatus.EN_ROUTE;
     trip.departureTime = new Date();
-    return await this.tripRepository.save(trip);
+    return await this.repo(manager).save(trip);
   }
 
   // ── Domain trigger: vehicle gets clocked into any queue again ───────────
-  // Auto-close heuristic: the next clock-in is proof the prior trip ended.
-  // Returns null (not an error) if the vehicle had no active trip — a
-  // brand-new vehicle's first-ever clock-in has nothing to close.
-  async closeActiveTripForVehicle(vehicleId: string): Promise<Trip | null> {
-    const activeTrip = await this.tripRepository.findOne({
+  async closeActiveTripForVehicle(vehicleId: string, manager?: EntityManager): Promise<Trip | null> {
+    const repo = this.repo(manager);
+    const activeTrip = await repo.findOne({
       where: [
         { vehicleId, status: TripStatus.BOARDING },
         { vehicleId, status: TripStatus.EN_ROUTE },
@@ -106,7 +113,7 @@ export class TripService {
 
     activeTrip.status = TripStatus.COMPLETED;
     activeTrip.completedAt = new Date();
-    return await this.tripRepository.save(activeTrip);
+    return await repo.save(activeTrip);
   }
 
   // ── Passenger count — filled in as boarding progresses ──────────────────
@@ -119,23 +126,19 @@ export class TripService {
     return await this.tripRepository.save(trip);
   }
 
-  async findByQueueEntryId(queueEntryId: string): Promise<Trip | null> {
-    return await this.tripRepository.findOne({ where: { queueEntryId } });
+  async findByQueueEntryId(queueEntryId: string, manager?: EntityManager): Promise<Trip | null> {
+    return await this.repo(manager).findOne({ where: { queueEntryId } });
   }
 
   // ── Manual force-close/cancel ────────────────────────────────────────────
-  // Covers the "stuck trip" case (vehicle never re-clocks in — retired,
-  // broke down, driver kept it overnight) until/unless a scheduled cleanup
-  // job is added. A completed trip can't be cancelled — that's a real
-  // revenue record at that point, not an open trip.
-  async cancel(id: string, saccoId?: string): Promise<Trip> {
-    const trip = await this.findOneScoped(id, saccoId);
+  async cancel(id: string, saccoId?: string, manager?: EntityManager): Promise<Trip> {
+    const trip = await this.findOneScoped(id, saccoId, manager);
     if (trip.status === TripStatus.COMPLETED) {
       throw new BadRequestException('A completed trip cannot be cancelled.');
     }
     trip.status = TripStatus.CANCELLED;
     trip.completedAt = new Date();
-    return await this.tripRepository.save(trip);
+    return await this.repo(manager).save(trip);
   }
 
   // ── Find all (paginated, filterable) ─────────────────────────────────────
@@ -196,16 +199,16 @@ export class TripService {
   }
 
   // ── Find one ──────────────────────────────────────────────────────────────
-  async findOne(id: string): Promise<Trip> {
-    const trip = await this.tripRepository.findOne({ where: { id } });
+  async findOne(id: string, manager?: EntityManager): Promise<Trip> {
+    const trip = await this.repo(manager).findOne({ where: { id } });
     if (!trip) {
       throw new NotFoundException(`Trip "${id}" not found.`);
     }
     return trip;
   }
 
-  async findOneScoped(id: string, saccoId?: string): Promise<Trip> {
-    const trip = await this.findOne(id);
+  async findOneScoped(id: string, saccoId?: string, manager?: EntityManager): Promise<Trip> {
+    const trip = await this.findOne(id, manager);
     if (saccoId && trip.saccoId !== saccoId) {
       throw new ForbiddenException('You do not have access to this trip.');
     }
@@ -229,9 +232,6 @@ export class TripService {
   }
 
   // ── Remove ────────────────────────────────────────────────────────────────
-  // Completed trips are revenue history and can't be hard-deleted — same
-  // reasoning as RESTRICT on the sacco relation. Use cancel() instead for
-  // trips that shouldn't count.
   async remove(id: string, saccoId?: string): Promise<{ deleted: boolean }> {
     const trip = await this.findOneScoped(id, saccoId);
     if (trip.status === TripStatus.COMPLETED) {

@@ -12,7 +12,7 @@ import { uuidv7 } from 'uuidv7';
 import { Sacco } from '../../sacco/entities/sacco.entity';
 import { Route } from '../../route/entities/route.entity';
 import { Fleet as Vehicle } from '../../fleet/entities/fleet.entity';
-import { RouteQueue } from '../../route/entities/route-queue.entity';
+import { QueueEntry } from '../../route/entities/queue-entry.entity';
 import { User } from 'src/auth/entities/user.entity';
 
 export enum TripStatus {
@@ -102,12 +102,13 @@ export class Trip {
   @Column({ type: 'uuid', nullable: true })
   declare driverId: string | null;
 
-  // Link back to the queue entry that spawned this trip — purely for
-  // audit/debugging ("why did this trip get created"). SET NULL so
-  // cleaning up old queue entries never has to touch trip history.
-  @ManyToOne(() => RouteQueue, { nullable: true, onDelete: 'SET NULL' })
+  // Link back to the queue entry (a specific vehicle's slot in a day's
+  // queue) that spawned this trip — purely for audit/debugging ("why did
+  // this trip get created"). SET NULL so cleaning up old queue entries
+  // never has to touch trip history.
+  @ManyToOne(() => QueueEntry, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'queueEntryId' })
-  declare queueEntry: RouteQueue | null;
+  declare queueEntry: QueueEntry | null;
 
   @Column({ type: 'uuid', nullable: true })
   declare queueEntryId: string | null;

@@ -1,3 +1,4 @@
+// route-queue.entity.ts
 import {
     Entity,
     PrimaryColumn,
@@ -7,18 +8,21 @@ import {
     BeforeInsert,
     ManyToOne,
     JoinColumn,
+    OneToMany,
+    Unique,
 } from 'typeorm';
 import { uuidv7 } from 'uuidv7';
 import { Route } from './route.entity';
-import { Fleet } from '../../fleet/entities/fleet.entity';
+import { QueueEntry } from './queue-entry.entity';
 
-export enum QueueStatus {
-    WAITING = 'WAITING',     // In the yard, waiting for its turn
-    BOARDING = 'BOARDING',   // Currenly in the active passenger loading bay
-    DISPATCHED = 'DISPATCHED' // Full and gone! Left the stage
+export enum RouteQueueStatus {
+    OPEN = 'OPEN',       // Accepting vehicles / actively dispatching for the day
+    CLOSED = 'CLOSED',   // Day's queue is done, no more dispatches
 }
 
+// One queue per route, per day
 @Entity('route_queues')
+@Unique(['routeId', 'queueDate']) // prevents duplicate queues for the same route+day
 export class RouteQueue {
     @PrimaryColumn({ type: 'uuid' })
     declare id: string;
@@ -30,19 +34,16 @@ export class RouteQueue {
     @Column({ type: 'uuid' })
     declare routeId: string;
 
-    @ManyToOne(() => Fleet, { nullable: false, onDelete: 'CASCADE' })
-    @JoinColumn({ name: 'vehicleId' })
-    declare vehicle: Fleet;
+    // The calendar day this queue belongs to — use a date-only column,
+    // not a timestamp, since this is the key that makes the queue unique per day
+    @Column({ type: 'date' })
+    declare queueDate: string;
 
-    @Column({ type: 'uuid' })
-    declare vehicleId: string;
+    @Column({ type: 'enum', enum: RouteQueueStatus, default: RouteQueueStatus.OPEN })
+    declare status: RouteQueueStatus;
 
-    @Column({ type: 'enum', enum: QueueStatus, default: QueueStatus.WAITING })
-    declare status: QueueStatus;
-
-    // The moment the driver clocks into the stage line-up for the day
-    @Column({ type: 'timestamp' })
-    declare clockedInAt: Date;
+    @OneToMany(() => QueueEntry, (entry) => entry.routeQueue)
+    declare entries: QueueEntry[];
 
     @CreateDateColumn({ type: 'timestamp' })
     declare createdAt: Date;
@@ -53,8 +54,5 @@ export class RouteQueue {
     @BeforeInsert()
     generateId() {
         this.id = uuidv7();
-        if (!this.clockedInAt) {
-            this.clockedInAt = new Date();
-        }
     }
 }

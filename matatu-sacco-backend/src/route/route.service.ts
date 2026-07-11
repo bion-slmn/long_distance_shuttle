@@ -7,9 +7,10 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { Route } from './entities/route.entity';
-import { QueueStatus, RouteQueue } from './entities/route-queue.entity';
+import { RouteQueue, RouteQueueStatus } from './entities/route-queue.entity';
+import { QueueEntry, QueueEntryStatus } from './entities/queue-entry.entity';
 import { CreateQueueDto, CreateRouteDto } from './dto/create-route.dto';
 import { UpdateQueueDto, UpdateRouteDto } from './dto/update-route.dto';
 import { TripService } from 'src/trip/trip.service';
@@ -23,89 +24,151 @@ export class RouteService {
     private readonly routeRepository: Repository<Route>,
 
     @InjectRepository(RouteQueue)
-    private readonly queueRepository: Repository<RouteQueue>,
+    private readonly routeQueueRepository: Repository<RouteQueue>,
+
+    @InjectRepository(QueueEntry)
+    private readonly queueEntryRepository: Repository<QueueEntry>,
+
     private readonly tripService: TripService,
   ) { }
 
   // ─── ROUTE QUEUE CRUD OPERATIONS ───────────────────────────────────────────
 
+  // "date" column is a plain YYYY-MM-DD string — this is what makes
+  // "one queue per route per day" a meaningful, queryable business key.
+  private toDateString(date: Date): string {
+    return date.toISOString().slice(0, 10);
+  }
+
+  // Finds today's (or targetDate's) queue for a route, creating it if it
+  // doesn't exist yet. Locks the row so concurrent clock-ins can't both
+  // race to create duplicate queues for the same route+day.
+  private async findOrCreateRouteQueue(
+    manager: EntityManager,
+    routeId: string,
+    targetDate: Date,
+  ): Promise<RouteQueue> {
+    const queueDate = this.toDateString(targetDate);
+
+    const existing = await manager
+      .createQueryBuilder(RouteQueue, 'rq')
+      .where('rq.routeId = :routeId', { routeId })
+      .andWhere('rq.queueDate = :queueDate', { queueDate })
+      .setLock('pessimistic_write')
+      .getOne();
+
+    if (existing) return existing;
+
+    const created = manager.create(RouteQueue, {
+      routeId,
+      queueDate,
+      status: RouteQueueStatus.OPEN,
+    });
+
+    try {
+      return await manager.save(RouteQueue, created);
+    } catch (err: any) {
+      // Lost the race to another concurrent clock-in — fetch the row
+      // the other transaction just created instead of erroring out.
+      if (err?.code === '23505') {
+        const winner = await manager.findOne(RouteQueue, {
+          where: { routeId, queueDate },
+        });
+        if (winner) return winner;
+      }
+      throw err;
+    }
+  }
+
   async clockInVehicle(
     dto: CreateQueueDto,
     saccoId?: string,
     assignedStage?: string,
-  ): Promise<RouteQueue> {
+  ): Promise<QueueEntry> {
     const route = await this.findOneScoped(dto.routeId, saccoId);
     this.assertStageAccess(route, assignedStage);
 
-    const targetDate = dto.clockedInAt ?? new Date();
-    const startOfDay = new Date(targetDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(targetDate);
-    endOfDay.setHours(23, 59, 59, 999);
+    const clockedInAt = dto.clockedInAt ?? new Date();
 
-    const activeQueueEntry = await this.queueRepository.findOne({
-      where: [
-        {
-          vehicleId: dto.vehicleId,
-          status: QueueStatus.WAITING,
-          clockedInAt: Between(startOfDay, endOfDay),
-        },
-        {
-          vehicleId: dto.vehicleId,
-          status: QueueStatus.BOARDING,
-          clockedInAt: Between(startOfDay, endOfDay),
-        },
-      ],
-      relations: { route: true },
+    return await this.queueEntryRepository.manager.transaction(async (manager) => {
+      const routeQueue = await this.findOrCreateRouteQueue(manager, route.id, clockedInAt);
+
+      if (routeQueue.status === RouteQueueStatus.CLOSED) {
+        throw new ConflictException(
+          `Today's queue for ${route.origin} → ${route.destination} is closed.`,
+        );
+      }
+
+      // A vehicle can only hold one active slot (WAITING/BOARDING) across
+      // ANY route queue that day — a vehicle can't queue on two routes at once.
+      const activeEntry = await manager
+        .createQueryBuilder(QueueEntry, 'qe')
+        .innerJoinAndSelect('qe.routeQueue', 'rq')
+        .innerJoinAndSelect('rq.route', 'route')
+        .where('qe.vehicleId = :vehicleId', { vehicleId: dto.vehicleId })
+        .andWhere('qe.status IN (:...statuses)', {
+          statuses: [QueueEntryStatus.WAITING, QueueEntryStatus.BOARDING],
+        })
+        .andWhere('rq.queueDate = :queueDate', {
+          queueDate: this.toDateString(clockedInAt),
+        })
+        .getOne();
+
+      if (activeEntry) {
+        const statusLabel =
+          activeEntry.status === QueueEntryStatus.WAITING ? 'waiting' : 'boarding';
+        throw new ConflictException(
+          `This vehicle is already ${statusLabel} on ${activeEntry.routeQueue.route.origin} → ${activeEntry.routeQueue.route.destination}.`,
+        );
+      }
+
+      const nextPosition = await manager
+        .createQueryBuilder(QueueEntry, 'qe')
+        .where('qe.routeQueueId = :routeQueueId', { routeQueueId: routeQueue.id })
+        .getCount();
+
+      const entry = manager.create(QueueEntry, {
+        routeQueueId: routeQueue.id,
+        vehicleId: dto.vehicleId,
+        status: QueueEntryStatus.WAITING,
+        position: nextPosition + 1,
+        clockedInAt,
+      });
+
+      return manager.save(QueueEntry, entry);
     });
-
-    if (activeQueueEntry) {
-      const statusLabel = activeQueueEntry.status === QueueStatus.WAITING ? 'waiting' : 'boarding';
-      throw new ConflictException(
-        `This vehicle is already ${statusLabel} on ${activeQueueEntry.route.origin} → ${activeQueueEntry.route.destination}.`,
-      );
-    }
-
-    const queueEntry = this.queueRepository.create({
-      routeId: route.id,
-      vehicleId: dto.vehicleId,
-      status: QueueStatus.WAITING,
-      clockedInAt: dto.clockedInAt ?? new Date(),
-    });
-
-    return await this.queueRepository.save(queueEntry);
   }
 
   async findAllQueueEntries(filters?: {
     routeId?: string;
-    status?: QueueStatus;
+    status?: QueueEntryStatus;
     date?: Date;
-  }): Promise<RouteQueue[]> {
+  }): Promise<QueueEntry[]> {
     // Default to "today" unless a specific date is explicitly passed —
     // keeps the live queue board from showing stale entries from prior days.
-    const targetDate = filters?.date ?? new Date();
+    const queueDate = this.toDateString(filters?.date ?? new Date());
 
-    const startOfDay = new Date(targetDate);
-    startOfDay.setHours(0, 0, 0, 0);
+    const qb = this.queueEntryRepository
+      .createQueryBuilder('qe')
+      .innerJoinAndSelect('qe.routeQueue', 'rq')
+      .innerJoinAndSelect('rq.route', 'route')
+      .innerJoinAndSelect('qe.vehicle', 'vehicle')
+      .where('rq.queueDate = :queueDate', { queueDate });
 
-    const endOfDay = new Date(targetDate);
-    endOfDay.setHours(23, 59, 59, 999);
+    if (filters?.routeId) {
+      qb.andWhere('rq.routeId = :routeId', { routeId: filters.routeId });
+    }
+    if (filters?.status) {
+      qb.andWhere('qe.status = :status', { status: filters.status });
+    }
 
-    return await this.queueRepository.find({
-      where: {
-        ...(filters?.routeId && { routeId: filters.routeId }),
-        ...(filters?.status && { status: filters.status }),
-        clockedInAt: Between(startOfDay, endOfDay),
-      },
-      relations: { vehicle: true, route: true },
-      order: { clockedInAt: 'DESC' },
-    });
+    return qb.orderBy('qe.position', 'ASC').getMany();
   }
 
-  async findOneQueueEntry(id: string): Promise<RouteQueue> {
-    const entry = await this.queueRepository.findOne({
+  async findOneQueueEntry(id: string): Promise<QueueEntry> {
+    const entry = await this.queueEntryRepository.findOne({
       where: { id },
-      relations: { vehicle: true, route: true },
+      relations: { vehicle: true, routeQueue: { route: true } },
     });
     if (!entry) {
       throw new NotFoundException(`Queue record with ID "${id}" not found.`);
@@ -113,50 +176,40 @@ export class RouteService {
     return entry;
   }
 
-  private async saveAndPromoteNextWaiting(entry: RouteQueue): Promise<RouteQueue> {
-    return await this.queueRepository.manager.transaction(async (manager) => {
-      const updated = await manager.save(RouteQueue, entry);
-
-      const startOfDay = new Date(entry.clockedInAt);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(entry.clockedInAt);
-      endOfDay.setHours(23, 59, 59, 999);
+  private async saveAndPromoteNextWaiting(entry: QueueEntry): Promise<QueueEntry> {
+    return await this.queueEntryRepository.manager.transaction(async (manager) => {
+      const updated = await manager.save(QueueEntry, entry);
 
       const nextWaiting = await manager
-        .createQueryBuilder(RouteQueue, 'rq')
-        .where('rq.routeId = :routeId', { routeId: entry.routeId })
-        .andWhere('rq.status = :status', { status: QueueStatus.WAITING })
-        .andWhere('rq.clockedInAt BETWEEN :startOfDay AND :endOfDay', {
-          startOfDay,
-          endOfDay,
-        })
-        .orderBy('rq.clockedInAt', 'ASC')
+        .createQueryBuilder(QueueEntry, 'qe')
+        .where('qe.routeQueueId = :routeQueueId', { routeQueueId: entry.routeQueueId })
+        .andWhere('qe.status = :status', { status: QueueEntryStatus.WAITING })
+        .orderBy('qe.position', 'ASC')
         .setLock('pessimistic_write')
         .getOne();
 
       if (nextWaiting) {
-        nextWaiting.status = QueueStatus.BOARDING;
-        await manager.save(RouteQueue, nextWaiting);
+        nextWaiting.status = QueueEntryStatus.BOARDING;
+        await manager.save(QueueEntry, nextWaiting);
 
-        // entry.route is already loaded (relations: { route: true } on the
-        // original findOneQueueEntry call) — same route, so reuse it.
-        await this.tripService.createFromQueueEntry({
-          queueEntryId: nextWaiting.id,
-          routeId: nextWaiting.routeId,
-          vehicleId: nextWaiting.vehicleId,
-          saccoId: entry.route.saccoId,
-          fare: entry.route.fare,
-        });
+        await this.tripService.createFromQueueEntry(
+          {
+            queueEntryId: nextWaiting.id,
+            routeId: entry.routeQueue.routeId,
+            vehicleId: nextWaiting.vehicleId,
+            saccoId: entry.routeQueue.route.saccoId,
+            fare: entry.routeQueue.route.fare,
+          },
+          manager, // ← was missing
+        );
       }
 
-      // The entry that just left BOARDING — dispatch or cancel its trip.
-      const existingTrip = await this.tripService.findByQueueEntryId(entry.id);
+      const existingTrip = await this.tripService.findByQueueEntryId(entry.id, manager); // ← was missing
       if (existingTrip) {
-        if (entry.status === QueueStatus.DISPATCHED) {
-          await this.tripService.markDeparted(existingTrip.id);
+        if (entry.status === QueueEntryStatus.DISPATCHED) {
+          await this.tripService.markDeparted(existingTrip.id, manager); // ← was missing
         } else {
-          // pulled from boarding for any other reason (cancelled, etc.)
-          await this.tripService.cancel(existingTrip.id);
+          await this.tripService.cancel(existingTrip.id, undefined, manager); // ← was missing
         }
       }
 
@@ -169,44 +222,73 @@ export class RouteService {
     dto: UpdateQueueDto,
     saccoId?: string,
     assignedStage?: string,
-  ): Promise<RouteQueue> {
+  ): Promise<QueueEntry> {
     const entry = await this.findOneQueueEntry(id);
+    const currentRoute = entry.routeQueue.route;
 
-    if (saccoId && entry.route.saccoId !== saccoId) {
+    if (saccoId && currentRoute.saccoId !== saccoId) {
       throw new ForbiddenException('Access denied to this route queue data.');
     }
-    this.assertStageAccess(entry.route, assignedStage);
+    this.assertStageAccess(currentRoute, assignedStage);
 
     const previousStatus = entry.status;
 
+    // Moving a vehicle to a different route means moving it to that
+    // route's queue for the same day — not just flipping a foreign key.
+    if (dto.routeId !== undefined && dto.routeId !== entry.routeQueue.routeId) {
+      const targetRoute = await this.findOneScoped(dto.routeId, saccoId);
+      this.assertStageAccess(targetRoute, assignedStage);
+
+      await this.queueEntryRepository.manager.transaction(async (manager) => {
+        const targetQueue = await this.findOrCreateRouteQueue(
+          manager,
+          targetRoute.id,
+          entry.clockedInAt,
+        );
+
+        if (targetQueue.status === RouteQueueStatus.CLOSED) {
+          throw new ConflictException(
+            `Today's queue for ${targetRoute.origin} → ${targetRoute.destination} is closed.`,
+          );
+        }
+
+        const nextPosition = await manager
+          .createQueryBuilder(QueueEntry, 'qe')
+          .where('qe.routeQueueId = :routeQueueId', { routeQueueId: targetQueue.id })
+          .getCount();
+
+        entry.routeQueueId = targetQueue.id;
+        entry.position = nextPosition + 1;
+      });
+    }
+
     if (dto.status !== undefined) entry.status = dto.status;
-    if (dto.routeId !== undefined) entry.routeId = dto.routeId;
 
     // Manual/direct entry into BOARDING — e.g. an admin bypassing the
     // normal WAITING → auto-promote flow. Auto-promotion is handled
     // separately inside saveAndPromoteNextWaiting.
     const isEnteringBoardingDirectly =
-      dto.status === QueueStatus.BOARDING && previousStatus !== QueueStatus.BOARDING;
+      dto.status === QueueEntryStatus.BOARDING && previousStatus !== QueueEntryStatus.BOARDING;
 
     const isLeavingBoarding =
       dto.status !== undefined &&
-      previousStatus === QueueStatus.BOARDING &&
-      dto.status !== QueueStatus.BOARDING;
+      previousStatus === QueueEntryStatus.BOARDING &&
+      dto.status !== QueueEntryStatus.BOARDING;
 
     if (isEnteringBoardingDirectly) {
-      const saved = await this.queueRepository.save(entry);
+      const saved = await this.queueEntryRepository.save(entry);
       await this.tripService.createFromQueueEntry({
         queueEntryId: saved.id,
-        routeId: saved.routeId,
+        routeId: entry.routeQueue.routeId,
         vehicleId: saved.vehicleId,
-        saccoId: entry.route.saccoId,
-        fare: entry.route.fare,
+        saccoId: currentRoute.saccoId,
+        fare: currentRoute.fare,
       });
       return saved;
     }
 
     if (!isLeavingBoarding) {
-      return await this.queueRepository.save(entry);
+      return await this.queueEntryRepository.save(entry);
     }
 
     return this.saveAndPromoteNextWaiting(entry);
@@ -218,13 +300,14 @@ export class RouteService {
     assignedStage?: string,
   ): Promise<{ deleted: boolean }> {
     const entry = await this.findOneQueueEntry(id);
+    const route = entry.routeQueue.route;
 
-    if (saccoId && entry.route.saccoId !== saccoId) {
+    if (saccoId && route.saccoId !== saccoId) {
       throw new ForbiddenException('Access denied to modify this route queue data.');
     }
-    this.assertStageAccess(entry.route, assignedStage);
+    this.assertStageAccess(route, assignedStage);
 
-    await this.queueRepository.remove(entry);
+    await this.queueEntryRepository.remove(entry);
     return { deleted: true };
   }
 
@@ -244,26 +327,21 @@ export class RouteService {
     }
   }
 
-  async findAvailableVehiclesForRoute(routeId: string, targetDate: Date) {
-    const startOfDay = new Date(targetDate);
-    startOfDay.setHours(0, 0, 0, 0);
+  async findAvailableVehiclesForRoute(
+    routeId: string,
+    targetDate: Date,
+  ): Promise<QueueEntry[]> {
+    const queueDate = this.toDateString(targetDate);
 
-    const endOfDay = new Date(targetDate);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    return await this.queueRepository.find({
-      where: {
-        routeId: routeId,
-        status: QueueStatus.WAITING,
-        clockedInAt: Between(startOfDay, endOfDay),
-      },
-      relations: {
-        vehicle: true,
-      },
-      order: {
-        clockedInAt: 'ASC',
-      },
-    });
+    return this.queueEntryRepository
+      .createQueryBuilder('qe')
+      .innerJoin('qe.routeQueue', 'rq')
+      .innerJoinAndSelect('qe.vehicle', 'vehicle')
+      .where('rq.routeId = :routeId', { routeId })
+      .andWhere('rq.queueDate = :queueDate', { queueDate })
+      .andWhere('qe.status = :status', { status: QueueEntryStatus.WAITING })
+      .orderBy('qe.position', 'ASC')
+      .getMany();
   }
 
   // ── Create ────────────────────────────────────────────────────────────────

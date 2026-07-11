@@ -8,7 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, QueryFailedError, ILike, SelectQueryBuilder } from 'typeorm';
 import { Fleet, VehicleStatus } from './entities/fleet.entity';
-import { QueueStatus } from 'src/route/entities/route-queue.entity';
+import { QueueEntryStatus } from 'src/route/entities/queue-entry.entity';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ export interface FindAllFleetOptions {
 
 type FleetListItem = Omit<Fleet, 'generateId'> & {
   queue?: {
-    status: QueueStatus;
+    status: QueueEntryStatus;
     clockedInAt: Date;
     route: {
       id: string;
@@ -149,30 +149,36 @@ export class FleetService {
     };
   }
 
+  // Finds each vehicle's most recent queue_entries row for TODAY's
+  // route_queues (queueDate = today), joined through to the route it
+  // belongs to. Split across two tables now: queue_entries holds the
+  // per-vehicle status/clockedInAt, route_queues holds which route+day
+  // that entry belongs to.
   private addQueueStatusJoin(qb: SelectQueryBuilder<Fleet>): void {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    const today = new Date().toISOString().slice(0, 10);
 
     qb.leftJoin(
       (subQb) =>
         subQb
-          .select('rq.*')
+          .select('qe.*')
+          .addSelect('rq."routeId"', 'routeId')
           .addSelect(
-            'ROW_NUMBER() OVER (PARTITION BY rq."vehicleId" ORDER BY rq."clockedInAt" DESC)',
+            'ROW_NUMBER() OVER (PARTITION BY qe."vehicleId" ORDER BY qe."clockedInAt" DESC)',
             'rn',
           )
-          .from('route_queues', 'rq')
-          .where('rq."clockedInAt" >= :startOfDay'),
-      'latest_queue',
-      'latest_queue."vehicleId" = fleet.id AND latest_queue.rn = 1',
+          .from('queue_entries', 'qe')
+          .innerJoin('route_queues', 'rq', 'rq.id = qe."routeQueueId"')
+          .where('rq."queueDate" = :today'),
+      'latest_entry',
+      'latest_entry."vehicleId" = fleet.id AND latest_entry.rn = 1',
     )
-      .leftJoin('routes', 'queue_route', 'queue_route.id = latest_queue."routeId"')
-      .addSelect('latest_queue.status', 'queueStatus')
-      .addSelect('latest_queue."routeId"', 'queueRouteId')
+      .leftJoin('routes', 'queue_route', 'queue_route.id = latest_entry."routeId"')
+      .addSelect('latest_entry.status', 'queueStatus')
+      .addSelect('latest_entry."routeId"', 'queueRouteId')
       .addSelect('queue_route.origin', 'queueOrigin')
       .addSelect('queue_route.destination', 'queueDestination')
-      .addSelect('latest_queue."clockedInAt"', 'queueClockedInAt')
-      .setParameter('startOfDay', startOfDay);
+      .addSelect('latest_entry."clockedInAt"', 'queueClockedInAt')
+      .setParameter('today', today);
   }
 
   private async getManyWithQueueStatus(qb: SelectQueryBuilder<Fleet>): Promise<FleetListItem[]> {
@@ -182,7 +188,7 @@ export class FleetService {
 
       const queue = row?.queueStatus
         ? {
-          status: row.queueStatus as QueueStatus,
+          status: row.queueStatus as QueueEntryStatus,
           clockedInAt: row.queueClockedInAt,
           route: {
             id: row.queueRouteId,

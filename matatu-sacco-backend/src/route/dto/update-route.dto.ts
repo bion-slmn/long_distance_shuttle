@@ -1,6 +1,6 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { CreateRouteDto } from './create-route.dto';
-import { QueueStatus } from '../entities/route-queue.entity';
+import { QueueEntryStatus } from '../entities/queue-entry.entity';
 
 export class UpdateRouteDto {
   declare origin?: string;
@@ -12,7 +12,6 @@ export class UpdateRouteDto {
 }
 
 export class UpdateQueueDto {
-  declare status?: QueueStatus;
+  declare status?: QueueEntryStatus;
   declare routeId?: string;
 }
-

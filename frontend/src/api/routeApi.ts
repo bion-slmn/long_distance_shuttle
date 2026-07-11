@@ -4,13 +4,20 @@ import type { Vehicle } from "./fleetApi";
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
-export const QueueStatus = {
+export const QueueEntryStatus = {
     WAITING: "WAITING",       // In the yard, waiting for its turn
     BOARDING: "BOARDING",     // Currently in the active passenger loading bay
     DISPATCHED: "DISPATCHED", // Full and gone! Left the stage
 } as const;
 
-export type QueueStatus = (typeof QueueStatus)[keyof typeof QueueStatus];
+export type QueueEntryStatus = (typeof QueueEntryStatus)[keyof typeof QueueEntryStatus];
+
+export const RouteQueueStatus = {
+    OPEN: "OPEN",     // Accepting vehicles / actively dispatching for the day
+    CLOSED: "CLOSED", // Day's queue is done, no more dispatches
+} as const;
+
+export type RouteQueueStatus = (typeof RouteQueueStatus)[keyof typeof RouteQueueStatus];
 
 export interface Route {
     id: string;
@@ -25,13 +32,34 @@ export interface Route {
     fare: number
 }
 
-
-
-export interface RouteQueueEntry {
+// The day's queue for a route — one per route per day.
+export interface RouteQueue {
     id: string;
     routeId: string;
+    queueDate: string; // "2026-07-09"
+    status: RouteQueueStatus;
+    createdAt: string;
+    updatedAt: string;
+    route: {
+        id: string;
+        saccoId: string;
+        origin: string;
+        destination: string;
+        description: string;
+        stages: string[];
+        isActive: boolean;
+        createdAt: string;
+        updatedAt: string;
+    };
+}
+
+// A single vehicle's slot within a RouteQueue.
+export interface QueueEntry {
+    id: string;
+    routeQueueId: string;
     vehicleId: string;
-    status: QueueStatus;
+    status: QueueEntryStatus;
+    position: number;
     clockedInAt: string;
     dispatchedAt?: string | null;
     createdAt: string;
@@ -44,17 +72,7 @@ export interface RouteQueueEntry {
         status: string;
         notes: string;
     };
-    route: {
-        id: string;
-        saccoId: string;
-        origin: string;
-        destination: string;
-        description: string;
-        stages: string[];
-        isActive: boolean;
-        createdAt: string;
-        updatedAt: string;
-    };
+    routeQueue: RouteQueue;
 }
 
 export interface CreateRoutePayload {
@@ -83,13 +101,16 @@ export interface CreateQueuePayload {
 }
 
 export interface UpdateQueuePayload {
-    status?: QueueStatus;
+    status?: QueueEntryStatus;
+    // Moving a vehicle to a different route's queue for the same day —
+    // handled server-side by finding/creating the target day-queue.
+    routeId?: string;
     dispatchedAt?: Date;
 }
 
 export interface GetQueueEntriesOptions {
     routeId?: string;
-    status?: QueueStatus;
+    status?: QueueEntryStatus;
     date?: string; // ISO date string, e.g. "2026-07-09" — defaults to today on the backend if omitted
 }
 
@@ -140,7 +161,7 @@ export async function removeRouteStageRequest(
 
 export async function clockInVehicleRequest(
     payload: CreateQueuePayload,
-): Promise<RouteQueueEntry> {
+): Promise<QueueEntry> {
     const res = await api.post("/routes/queue/clock-in", payload);
     return res.data;
 }
@@ -148,7 +169,7 @@ export async function clockInVehicleRequest(
 export async function findAvailableVehiclesRequest(
     routeId: string,
     date?: string,
-): Promise<Vehicle[]> {
+): Promise<QueueEntry[]> {
     const params = new URLSearchParams({ routeId });
     if (date) params.set("date", date);
 
@@ -159,7 +180,7 @@ export async function findAvailableVehiclesRequest(
 
 export async function getQueueEntriesRequest(
     options: GetQueueEntriesOptions = {},
-): Promise<RouteQueueEntry[]> {
+): Promise<QueueEntry[]> {
     const params = new URLSearchParams();
     if (options.routeId) params.set("routeId", options.routeId);
     if (options.status) params.set("status", options.status);
@@ -170,7 +191,7 @@ export async function getQueueEntriesRequest(
     return res.data;
 }
 
-export async function getQueueEntryRequest(id: string): Promise<RouteQueueEntry> {
+export async function getQueueEntryRequest(id: string): Promise<QueueEntry> {
     const res = await api.get(`/routes/queue/${id}`);
     return res.data;
 }
@@ -178,7 +199,7 @@ export async function getQueueEntryRequest(id: string): Promise<RouteQueueEntry>
 export async function updateQueueEntryRequest(
     id: string,
     payload: UpdateQueuePayload,
-): Promise<RouteQueueEntry> {
+): Promise<QueueEntry> {
     const res = await api.patch(`/routes/queue/${id}`, payload);
     return res.data;
 }

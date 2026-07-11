@@ -21,7 +21,7 @@ import { Roles } from '../decorators/roles.decorator';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import { UserRole } from '../auth/entities/user.entity';
 import { UpdateQueueDto, UpdateRouteDto } from './dto/update-route.dto';
-import { QueueStatus } from './entities/route-queue.entity';
+import { QueueEntryStatus } from './entities/queue-entry.entity';
 import { CreateQueueDto, CreateRouteDto } from './dto/create-route.dto';
 
 @Controller('routes')
@@ -74,7 +74,8 @@ export class RouteController {
     @CurrentUser() user: any,
   ) {
     const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
-    return this.routeService.clockInVehicle(body, saccoId);
+    const assignedStage = user.role === UserRole.CLERK ? user.assignedStage : undefined;
+    return this.routeService.clockInVehicle(body, saccoId, assignedStage);
   }
 
   // ── GET /routes/queue/available ──────────────────────────────────────────
@@ -94,7 +95,7 @@ export class RouteController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
   findAllQueueEntries(
     @Query('routeId') routeId?: string,
-    @Query('status') status?: QueueStatus,
+    @Query('status') status?: QueueEntryStatus,
     @Query('date') dateString?: string,
   ) {
     return this.routeService.findAllQueueEntries({
@@ -121,7 +122,8 @@ export class RouteController {
     @CurrentUser() user: any,
   ) {
     const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
-    return this.routeService.updateQueueEntry(id, body, saccoId);
+    const assignedStage = user.role === UserRole.CLERK ? user.assignedStage : undefined;
+    return this.routeService.updateQueueEntry(id, body, saccoId, assignedStage);
   }
 
   // ── DELETE /routes/queue/:id ─────────────────────────────────────────────
