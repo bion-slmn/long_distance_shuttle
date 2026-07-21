@@ -6,7 +6,6 @@ import { AppService } from './app.service';
 import { SaccoModule } from './sacco/sacco.module';
 import { FleetModule } from './fleet/fleet.module';
 import { RouteModule } from './route/route.module';
-import { BookingModule } from './booking/booking.module';
 import { PaymentModule } from './payment/payment.module';
 import { AuthModule } from './auth/auth.module';
 import { RolesGuard } from './guards/roles.guard';
@@ -15,6 +14,7 @@ import { TripModule } from './trip/trip.module';
 import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './auth/strategies/jwt.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { BookingModule } from './booking/booking.module';
 
 @Module({
   imports: [

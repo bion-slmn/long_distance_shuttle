@@ -68,6 +68,8 @@ export class TripService {
       vehicleId: string;
       saccoId: string;
       fare: number;
+      vehicleCapacity: number;
+      travelDate: string;
     },
     manager?: EntityManager,
   ): Promise<Trip> {
@@ -78,6 +80,8 @@ export class TripService {
       vehicleId: params.vehicleId,
       saccoId: params.saccoId,
       fare: params.fare,
+      vehicleCapacity: params.vehicleCapacity,
+      travelDate: params.travelDate,
       status: TripStatus.BOARDING,
     });
 

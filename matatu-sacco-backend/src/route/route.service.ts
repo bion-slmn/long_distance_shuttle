@@ -5,6 +5,7 @@ import {
   BadRequestException,
   ForbiddenException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
@@ -14,11 +15,15 @@ import { QueueEntry, QueueEntryStatus } from './entities/queue-entry.entity';
 import { CreateQueueDto, CreateRouteDto } from './dto/create-route.dto';
 import { UpdateQueueDto, UpdateRouteDto } from './dto/update-route.dto';
 import { TripService } from 'src/trip/trip.service';
+import { BookingService } from 'src/booking/booking.service';
+import { BookingStatus } from 'src/booking/entities/booking.entity';
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 @Injectable()
 export class RouteService {
+  private readonly logger = new Logger(RouteService.name);
+
   constructor(
     @InjectRepository(Route)
     private readonly routeRepository: Repository<Route>,
@@ -30,6 +35,7 @@ export class RouteService {
     private readonly queueEntryRepository: Repository<QueueEntry>,
 
     private readonly tripService: TripService,
+    private readonly bookingService: BookingService,
   ) { }
 
   // ─── ROUTE QUEUE CRUD OPERATIONS ───────────────────────────────────────────
@@ -135,34 +141,12 @@ export class RouteService {
         clockedInAt,
       });
 
-      return manager.save(QueueEntry, entry);
+      const saved = await manager.save(QueueEntry, entry);
+
+      this.logger.log(`Vehicle ${saved.vehicleId} clocked in to queue ${saved.id} on route ${route.origin} → ${route.destination} at position ${saved.position}`);
+
+      return saved;
     });
-  }
-
-  async findAllQueueEntries(filters?: {
-    routeId?: string;
-    status?: QueueEntryStatus;
-    date?: Date;
-  }): Promise<QueueEntry[]> {
-    // Default to "today" unless a specific date is explicitly passed —
-    // keeps the live queue board from showing stale entries from prior days.
-    const queueDate = this.toDateString(filters?.date ?? new Date());
-
-    const qb = this.queueEntryRepository
-      .createQueryBuilder('qe')
-      .innerJoinAndSelect('qe.routeQueue', 'rq')
-      .innerJoinAndSelect('rq.route', 'route')
-      .innerJoinAndSelect('qe.vehicle', 'vehicle')
-      .where('rq.queueDate = :queueDate', { queueDate });
-
-    if (filters?.routeId) {
-      qb.andWhere('rq.routeId = :routeId', { routeId: filters.routeId });
-    }
-    if (filters?.status) {
-      qb.andWhere('qe.status = :status', { status: filters.status });
-    }
-
-    return qb.orderBy('qe.position', 'ASC').getMany();
   }
 
   async findOneQueueEntry(id: string): Promise<QueueEntry> {
@@ -192,24 +176,38 @@ export class RouteService {
         nextWaiting.status = QueueEntryStatus.BOARDING;
         await manager.save(QueueEntry, nextWaiting);
 
-        await this.tripService.createFromQueueEntry(
+        const trip = await this.tripService.createFromQueueEntry(
           {
             queueEntryId: nextWaiting.id,
             routeId: entry.routeQueue.routeId,
             vehicleId: nextWaiting.vehicleId,
             saccoId: entry.routeQueue.route.saccoId,
             fare: entry.routeQueue.route.fare,
+            vehicleCapacity: nextWaiting.vehicle.seatingCapacity,
+            travelDate: entry.routeQueue.queueDate,
           },
-          manager, // ← was missing
+          manager,
         );
+
+        this.logger.log(`Trip ${trip?.id} created for queue entry ${nextWaiting.id} on route ${entry.routeQueue.route.origin} → ${entry.routeQueue.route.destination}`);
+
+        // ← new: pull any pre-booked, PAID, AWAITING_TRIP bookings onto
+        // this vehicle now, capped at its seat capacity.
+        const newTrip = await this.tripService.findByQueueEntryId(nextWaiting.id, manager);
+        if (newTrip) {
+          await this.bookingService.assignPendingBookingsToTrip(newTrip, manager);
+          this.logger.log(`Bookings assigned to trip ${newTrip.id}`);
+        }
       }
 
-      const existingTrip = await this.tripService.findByQueueEntryId(entry.id, manager); // ← was missing
+      const existingTrip = await this.tripService.findByQueueEntryId(entry.id, manager);
       if (existingTrip) {
         if (entry.status === QueueEntryStatus.DISPATCHED) {
-          await this.tripService.markDeparted(existingTrip.id, manager); // ← was missing
+          await this.tripService.markDeparted(existingTrip.id, manager);
+          this.logger.log(`Trip ${existingTrip.id} marked as departed`);
         } else {
-          await this.tripService.cancel(existingTrip.id, undefined, manager); // ← was missing
+          await this.tripService.cancel(existingTrip.id, undefined, manager);
+          this.logger.log(`Trip ${existingTrip.id} cancelled`);
         }
       }
 
@@ -277,18 +275,27 @@ export class RouteService {
 
     if (isEnteringBoardingDirectly) {
       const saved = await this.queueEntryRepository.save(entry);
-      await this.tripService.createFromQueueEntry({
+      const trip = await this.tripService.createFromQueueEntry({
         queueEntryId: saved.id,
         routeId: entry.routeQueue.routeId,
         vehicleId: saved.vehicleId,
         saccoId: currentRoute.saccoId,
         fare: currentRoute.fare,
+        vehicleCapacity: entry.vehicle.seatingCapacity,
+        travelDate: entry.routeQueue.queueDate,
       });
+
+      this.logger.log(`Trip ${trip?.id} created for queue entry ${saved.id} via direct boarding on route ${currentRoute.origin} → ${currentRoute.destination}`);
+
       return saved;
     }
 
     if (!isLeavingBoarding) {
-      return await this.queueEntryRepository.save(entry);
+      const saved = await this.queueEntryRepository.save(entry);
+      if (dto.status) {
+        this.logger.log(`Queue entry ${saved.id} status updated to ${saved.status}`);
+      }
+      return saved;
     }
 
     return this.saveAndPromoteNextWaiting(entry);
@@ -308,6 +315,8 @@ export class RouteService {
     this.assertStageAccess(route, assignedStage);
 
     await this.queueEntryRepository.remove(entry);
+    this.logger.log(`Vehicle ${entry.vehicleId} removed from queue ${id} on route ${route.origin} → ${route.destination}`);
+
     return { deleted: true };
   }
 
@@ -325,6 +334,73 @@ export class RouteService {
         `This route departs from "${route.origin}" — you are assigned to "${assignedStage}".`,
       );
     }
+  }
+
+  async findAllQueueEntries(filters?: {
+    routeId?: string;
+    status?: QueueEntryStatus;
+    date?: Date;
+  }): Promise<(QueueEntry & { seatedCount?: number })[]> {
+    // Default to "today" unless a specific date is explicitly passed —
+    // keeps the live queue board from showing stale entries from prior days.
+    const queueDate = this.toDateString(filters?.date ?? new Date());
+
+    const qb = this.queueEntryRepository
+      .createQueryBuilder('qe')
+      .innerJoinAndSelect('qe.routeQueue', 'rq')
+      .innerJoinAndSelect('rq.route', 'route')
+      .innerJoinAndSelect('qe.vehicle', 'vehicle')
+      .where('rq.queueDate = :queueDate', { queueDate });
+
+    if (filters?.routeId) {
+      qb.andWhere('rq.routeId = :routeId', { routeId: filters.routeId });
+    }
+    if (filters?.status) {
+      qb.andWhere('qe.status = :status', { status: filters.status });
+    }
+
+    const entries = await qb.orderBy('qe.position', 'ASC').getMany();
+
+    // Only BOARDING entries have a live Trip worth counting seats for —
+    // WAITING has no trip yet, DISPATCHED's trip is already closed out.
+    const boardingIds = entries
+      .filter((e) => e.status === QueueEntryStatus.BOARDING)
+      .map((e) => e.id);
+
+    const seatedCounts = await this.getSeatedCountsByQueueEntry(boardingIds);
+
+    return entries.map((e) =>
+      Object.assign(e, {
+        seatedCount:
+          e.status === QueueEntryStatus.BOARDING
+            ? seatedCounts.get(e.id) ?? 0
+            : undefined,
+      }),
+    );
+  }
+
+  // Single joined query: queueEntry -> trip -> booking, grouped by
+  // queueEntryId. Replaces what would otherwise be a per-entry round trip
+  // through TripService then BookingService for each boarding vehicle.
+  private async getSeatedCountsByQueueEntry(
+    queueEntryIds: string[],
+  ): Promise<Map<string, number>> {
+    if (queueEntryIds.length === 0) return new Map();
+
+    const rows = await this.queueEntryRepository.manager
+      .createQueryBuilder()
+      .select('trip."queueEntryId"', 'queueEntryId')
+      .addSelect('COUNT(booking.id)', 'count')
+      .from('trips', 'trip')
+      .innerJoin('bookings', 'booking', 'booking."tripId" = trip.id')
+      .where('trip."queueEntryId" IN (:...ids)', { ids: queueEntryIds })
+      .andWhere('booking.status IN (:...statuses)', {
+        statuses: [BookingStatus.CONFIRMED, BookingStatus.BOARDED],
+      })
+      .groupBy('trip."queueEntryId"')
+      .getRawMany<{ queueEntryId: string; count: string }>();
+
+    return new Map(rows.map((r) => [r.queueEntryId, parseInt(r.count, 10)]));
   }
 
   async findAvailableVehiclesForRoute(
@@ -375,6 +451,12 @@ export class RouteService {
 
     const stages = this.normalizeStages(dto.stages ?? []);
 
+    const fare = Number(dto.fare);
+
+    if (dto.fare === undefined || dto.fare === null || isNaN(fare) || fare <= 0) {
+      throw new BadRequestException('A valid fare is required.');
+    }
+
     const route = this.routeRepository.create({
       saccoId: dto.saccoId,
       origin,
@@ -382,9 +464,13 @@ export class RouteService {
       description: dto.description.trim(),
       stages,
       isActive: true,
+      fare, // now a number, matches entity type
     });
 
-    return this.routeRepository.save(route);
+    const saved = await this.routeRepository.save(route);
+    this.logger.log(`Route created: ${saved.origin} → ${saved.destination} (${saved.id})`);
+
+    return saved;
   }
 
   // ── Find all ──────────────────────────────────────────────────────────────
@@ -436,7 +522,10 @@ export class RouteService {
     if (dto.stages !== undefined) route.stages = this.normalizeStages(dto.stages);
     if (dto.isActive !== undefined) route.isActive = dto.isActive;
 
-    return this.routeRepository.save(route);
+    const updated = await this.routeRepository.save(route);
+    this.logger.log(`Route updated: ${updated.origin} → ${updated.destination} (${updated.id})`);
+
+    return updated;
   }
 
   // ── Add / remove a stage ──────────────────────────────────────────────────
@@ -458,14 +547,20 @@ export class RouteService {
     }
 
     route.stages = [...route.stages, normalized];
-    return this.routeRepository.save(route);
+    const updated = await this.routeRepository.save(route);
+    this.logger.log(`Stage "${normalized}" added to route ${route.origin} → ${route.destination}`);
+
+    return updated;
   }
 
   async removeStage(id: string, stage: string, saccoId?: string): Promise<Route> {
     const route = await this.findOneScoped(id, saccoId);
     const normalized = stage.trim().toUpperCase();
     route.stages = route.stages.filter(s => s !== normalized);
-    return this.routeRepository.save(route);
+    const updated = await this.routeRepository.save(route);
+    this.logger.log(`Stage "${normalized}" removed from route ${route.origin} → ${route.destination}`);
+
+    return updated;
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

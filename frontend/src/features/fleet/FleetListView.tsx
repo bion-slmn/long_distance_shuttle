@@ -18,6 +18,7 @@ import {
     Users,
     Route,
     Clock,
+    Building2,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -56,6 +57,7 @@ import {
 } from "@/api/fleetApi"
 import { FleetForm } from "./FleetForm"
 import { useSaccoName } from "@/hooks/useSaccoName"
+import { SaccoCombobox } from "../sacco/SaccoCombobox"
 
 // Extended Vehicle type with queue data
 interface VehicleWithQueue extends Vehicle {
@@ -122,6 +124,7 @@ export function FleetListView({
     const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null)
     const [searchQuery, setSearchQuery] = useState("")
     const [statusFilter, setStatusFilter] = useState<VehicleStatus | "all">("all")
+    const [saccoFilter, setSaccoFilter] = useState<string>("")
     const [vehicleToDelete, setVehicleToDelete] = useState<Vehicle | null>(null)
     const [selectedVehicle, setSelectedVehicle] = useState<VehicleWithQueue | null>(null)
     const [page, setPage] = useState(1)
@@ -137,7 +140,7 @@ export function FleetListView({
         return () => window.removeEventListener("resize", checkMobile)
     }, [])
 
-    const queryKey = ["fleet", "list", { saccoId, status: statusFilter, page, search: searchQuery }]
+    const queryKey = ["fleet", "list", { saccoId, status: statusFilter, page, search: searchQuery, saccoFilter }]
 
     const { data: response, isLoading, error, isPlaceholderData } = useQuery({
         queryKey,
@@ -152,7 +155,12 @@ export function FleetListView({
         placeholderData: (prev) => prev,
     })
 
-    const vehicles = (response?.data as VehicleWithQueue[]) ?? []
+    // Filter vehicles by sacco client-side since the API doesn't support sacco filtering
+    const allVehicles = (response?.data as VehicleWithQueue[]) ?? []
+    const filteredVehicles = saccoFilter
+        ? allVehicles.filter(v => v.saccoId === saccoFilter)
+        : allVehicles
+
     const total = response?.total ?? 0
     const totalPages = response?.totalPages ?? 1
 
@@ -260,21 +268,26 @@ export function FleetListView({
                     onSearchChange={setSearchQuery}
                     statusFilter={statusFilter}
                     onStatusFilterChange={setStatusFilter}
+                    saccoFilter={saccoFilter}
+                    onSaccoFilterChange={setSaccoFilter}
                     onAddVehicle={handleAddVehicle}
-                    totalCount={total}
+                    totalCount={filteredVehicles.length}
                 />
 
-                {!vehicles || vehicles.length === 0 ? (
+                {!filteredVehicles || filteredVehicles.length === 0 ? (
                     <EmptyState
-                        title="No vehicles found"
-                        description="Get started by adding your first vehicle to the fleet."
+                        title={saccoFilter ? "No vehicles found for this sacco" : "No vehicles found"}
+                        description={saccoFilter
+                            ? "Try selecting a different sacco or clear the filter"
+                            : "Get started by adding your first vehicle to the fleet."
+                        }
                         actionLabel="Add Vehicle"
                         onAction={handleAddVehicle}
                     />
                 ) : (
                     <div className="flex-1 overflow-y-auto max-h-[600px] pr-1 space-y-3">
                         <AnimatePresence initial={false}>
-                            {vehicles.map((vehicle) =>
+                            {filteredVehicles.map((vehicle) =>
                                 isMobile ? (
                                     <MobileVehicleCard
                                         key={vehicle.id}
@@ -412,6 +425,8 @@ interface FleetToolbarProps {
     onSearchChange: (value: string) => void
     statusFilter: VehicleStatus | "all"
     onStatusFilterChange: (value: VehicleStatus | "all") => void
+    saccoFilter: string
+    onSaccoFilterChange: (value: string) => void
     onAddVehicle: () => void
     totalCount: number
 }
@@ -421,6 +436,8 @@ function FleetToolbar({
     onSearchChange,
     statusFilter,
     onStatusFilterChange,
+    saccoFilter,
+    onSaccoFilterChange,
     onAddVehicle,
     totalCount,
 }: FleetToolbarProps) {
@@ -430,7 +447,7 @@ function FleetToolbar({
                 <div className="flex items-center gap-2">
                     <Truck className="w-5 h-5 text-emerald-600" />
                     <h3 className="text-lg font-bold font-display text-slate-900">
-                        Sacco Shuttle Fleet ({totalCount})
+                        Fleet ({totalCount})
                     </h3>
                 </div>
                 <p className="text-xs text-slate-400 mt-0.5">Manage statuses, drivers, and maintenance schedules</p>
@@ -474,6 +491,15 @@ function FleetToolbar({
                         ))}
                     </SelectContent>
                 </Select>
+
+                <div className="w-[160px]">
+                    <SaccoCombobox
+                        value={saccoFilter}
+                        onChange={onSaccoFilterChange}
+                        placeholder="All Saccos..."
+                        className="h-auto py-1.5 px-2.5 text-xs"
+                    />
+                </div>
 
                 <button
                     onClick={onAddVehicle}

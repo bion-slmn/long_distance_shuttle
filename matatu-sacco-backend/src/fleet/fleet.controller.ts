@@ -59,13 +59,16 @@ export class FleetController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('withQueueStatus') withQueueStatus?: string,
+    @Query('saccoId') saccoId?: string,
   ) {
-    const saccoId = user.role === UserRole.SUPER_ADMIN
-      ? undefined
-      : user.saccoId;
+    const resolvedSaccoId = saccoId
+      ? saccoId
+      : user.role === UserRole.SUPER_ADMIN
+        ? undefined
+        : user.saccoId;
 
     return this.fleetService.findAll({
-      saccoId,
+      saccoId: resolvedSaccoId,
       status,
       search,
       page: page ? Number(page) : undefined,

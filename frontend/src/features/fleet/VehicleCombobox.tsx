@@ -1,3 +1,4 @@
+// src/features/fleet/VehicleCombobox.tsx
 import { EntityCombobox } from "@/components/EntityCombobox"
 import { getFleetRequest, type Vehicle } from "@/api/fleetApi"
 
@@ -6,6 +7,7 @@ interface VehicleComboboxProps {
     onChange: (id: string) => void
     disabled?: boolean
     placeholder?: string
+    saccoId?: string // Add saccoId prop
 }
 
 export function VehicleCombobox({
@@ -13,7 +15,9 @@ export function VehicleCombobox({
     onChange,
     disabled,
     placeholder = "Select a vehicle...",
+    saccoId, // Add saccoId prop
 }: VehicleComboboxProps) {
+    console.log(saccoId, 222222222222222222222)
     return (
         <EntityCombobox<Vehicle>
             value={value}
@@ -22,9 +26,16 @@ export function VehicleCombobox({
             placeholder={placeholder}
             searchPlaceholder="Search by number plate..."
             emptyText="No vehicle found."
-            queryKey={["fleet", "combobox"]}
+            queryKey={["fleet", "combobox", saccoId]} // Include saccoId in query key
             fetchFn={({ page, limit, search }) =>
-                getFleetRequest({ page, limit, search })
+                getFleetRequest({
+                    page,
+                    limit,
+                    search,
+                    saccoId, // Pass saccoId to the API
+                    status: "ACTIVE", // Only show active vehicles
+                    withQueueStatus: false,
+                })
             }
             getId={(vehicle) => vehicle.id}
             getLabel={(vehicle) => vehicle.numberPlate}

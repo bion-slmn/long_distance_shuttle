@@ -6,10 +6,7 @@ import LoginForm from './features/auth/LoginForm'
 import { Toaster } from 'sonner'
 import AdminCreateUser from './features/auth/AdmincreateUser'
 import ProtectedRoute from './features/auth/ProtectedRoute'
-import CreateSaccoForm from './features/sacco/CreateSaccoForm'
-import SaccoListView from './features/sacco/SaccoListView'
-import { FleetListView } from './features/fleet/FleetListView'
-import { RouteListView } from './features/routes/RouteListView'
+
 import { RouteQueueView } from './features/queue/RouteQueueView'
 import LoginPage from './pages/auth/login'
 import RegisterPage from './pages/auth/RegisterPage'
@@ -19,6 +16,8 @@ import RoutePage from './pages/dashboard/routePage'
 import FleetPage from './pages/dashboard/FleetPage'
 import { DashboardLayout } from './layouts/DashboardLayout'
 import Trippage from './pages/dashboard/tripPage'
+import BookTicket from './features/booking/BookTicket'
+import { ClerkDashboard } from './pages/dashboard/ClerkDashboard'
 
 function App() {
   return (
@@ -27,6 +26,7 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/" element={<HomePage />} />
+        <Route path="/book" element={<BookTicket />} />
         <Route
           element={
             <ProtectedRoute allowedRoles={["SUPER_ADMIN", "SACCO_ADMIN"]}>
@@ -38,6 +38,7 @@ function App() {
           <Route path="/routes" element={<RoutePage />} />
           <Route path="/vehicles" element={<FleetPage />} />
           <Route path="/routeQueue" element={<RouteQueueView />} />
+          <Route path="dashboard-clerk" element={<ClerkDashboard />} />
           <Route path="/trips" element={<Trippage />} />
         </Route>
       </Routes>

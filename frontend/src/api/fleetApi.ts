@@ -1,6 +1,6 @@
 // src/api/fleetApi.ts
 import api from "./axios";
-import type { QueueStatus } from "./routeApi";
+import type { QueueEntryStatus } from "./routeApi";
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ export interface Vehicle {
     createdAt: string;
     updatedAt: string;
     // Queue status fields (optional, only when withQueueStatus=true)
-    queueStatus?: QueueStatus | null;
+    queueStatus?: QueueEntryStatus | null;
     queueRouteId?: string | null;
     queueOrigin?: string | null;
     queueDestination?: string | null;
@@ -57,8 +57,8 @@ export interface GetFleetOptions {
     limit?: number;
     search?: string;
     withQueueStatus?: boolean;
+    saccoId?: string; // Add saccoId option
 }
-
 // ─── Requests ────────────────────────────────────────────────────────────
 
 export async function createFleetRequest(
@@ -67,6 +67,10 @@ export async function createFleetRequest(
     const res = await api.post("/fleet", payload);
     return res.data;
 }
+
+// src/api/fleetApi.ts
+
+
 
 export async function getFleetRequest(
     options: GetFleetOptions = {},
@@ -77,6 +81,7 @@ export async function getFleetRequest(
         limit = 20,
         search,
         withQueueStatus = false,
+        saccoId, // Add saccoId
     } = options;
 
     const params = new URLSearchParams({
@@ -87,6 +92,7 @@ export async function getFleetRequest(
     if (status) params.set("status", status);
     if (search?.trim()) params.set("search", search.trim());
     if (withQueueStatus) params.set("withQueueStatus", "true");
+    if (saccoId) params.set("saccoId", saccoId); // Add saccoId to params
 
     const res = await api.get(`/fleet?${params.toString()}`);
     return res.data;

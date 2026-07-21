@@ -121,6 +121,17 @@ export class Trip {
   @UpdateDateColumn({ type: 'timestamp' })
   declare updatedAt: Date;
 
+  // Snapshot from Fleet.seatingCapacity at trip creation — capacity must stay
+  // fixed even if the assigned vehicle is later swapped/edited, since seats
+  // already sold reference this number.
+  @Column({ type: 'int' })
+  declare vehicleCapacity: number;
+
+  // YYYY-MM-DD, same convention as Booking.travelDate / RouteQueue.queueDate.
+  // Copied from the QueueEntry's queueDate at trip creation.
+  @Column({ type: 'date' })
+  declare travelDate: string;
+
   @BeforeInsert()
   generateId() {
     this.id = uuidv7();

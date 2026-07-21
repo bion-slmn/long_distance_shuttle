@@ -7,11 +7,12 @@ import { Route } from './entities/route.entity';
 import { RouteQueue } from './entities/route-queue.entity';
 import { QueueEntry } from './entities/queue-entry.entity'; // ← add this import
 import { TripModule } from 'src/trip/trip.module'; // adjust path if different
+import { BookingModule } from 'src/booking/booking.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Route, RouteQueue, QueueEntry]), // ← add QueueEntry here
-    TripModule,
+    TripModule, BookingModule,
   ],
   controllers: [RouteController],
   providers: [RouteService],

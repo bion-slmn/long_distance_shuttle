@@ -1,6 +1,7 @@
 // src/features/queue/RouteQueueView.tsx
 import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useSearchParams } from "react-router-dom"
 import { format, parseISO } from "date-fns"
 import {
     Plus,
@@ -17,10 +18,12 @@ import {
     Truck,
     ArrowRightCircle,
     ArrowLeftCircle,
-    XCircle,
+    Trash2,
     AlertTriangle,
     Search,
     ChevronRight,
+    Building2,
+    ClipboardList,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -67,6 +70,10 @@ import {
 import { RouteCombobox } from "@/features/routes/RouteCombobox"
 import { QueueClockInDialog } from "./QueueClockInDialog"
 import { useElapsedTime } from "@/hooks/useElapsedTime"
+import { SaccoCombobox } from "../sacco/SaccoCombobox"
+import { useSaccoName } from "@/hooks/useSaccoName"
+import { RouteQueueCards, ManifestSheet } from "./RouteQueueCards"
+import { useVehicleManifest } from "@/hooks/useVehicleMainfest"
 
 interface RouteQueueViewProps {
     routeId?: string
@@ -106,10 +113,12 @@ const NEXT_STATUS: Partial<Record<QueueEntryStatus, QueueEntryStatus>> = {
     [QueueEntryStatus.BOARDING]: QueueEntryStatus.DISPATCHED,
 }
 
-const PREV_STATUS: Partial<Record<QueueEntryStatus, QueueEntryStatus>> = {
-    [QueueEntryStatus.BOARDING]: QueueEntryStatus.WAITING,
-    [QueueEntryStatus.DISPATCHED]: QueueEntryStatus.BOARDING,
-}
+// Backward transitions are disabled for now — once a vehicle advances
+// past WAITING, it can't be walked back a step from the UI. Removal is
+// still allowed, but only while a vehicle is WAITING (see QueueLane).
+
+// Manifest viewing is enabled for BOARDING and DISPATCHED lanes only —
+// a WAITING vehicle has no open trip yet, so there's nothing to show.
 
 function todayIso() {
     const d = new Date()
@@ -117,13 +126,24 @@ function todayIso() {
 }
 
 export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueueViewProps) {
-    const [selectedRouteId, setSelectedRouteId] = useState<string | undefined>(routeId)
+    // Selected route lives in the URL (?routeId=...) instead of local state.
+    // That means:
+    //  - a card click from ANY page (ClerkDashboard, this view's own
+    //    dashboard, a direct link, etc.) reliably lands on the lanes view,
+    //  - refresh / back-forward navigation keep working correctly,
+    //  - the `routeId` prop, if passed, only seeds the very first render
+    //    (via the `??` fallback) — after that the URL is the source of truth.
+    const [searchParams, setSearchParams] = useSearchParams()
+    const selectedRouteId = searchParams.get("routeId") ?? routeId
+
     const [showClockIn, setShowClockIn] = useState(false)
     const [selectedDate, setSelectedDate] = useState<string>(todayIso())
     const [dateOpen, setDateOpen] = useState(false)
     const [isMobile, setIsMobile] = useState(false)
     const [entryToRemove, setEntryToRemove] = useState<QueueEntry | null>(null)
+    const [manifestEntry, setManifestEntry] = useState<QueueEntry | null>(null)
     const [searchQuery, setSearchQuery] = useState("")
+    const [saccoFilter, setSaccoFilter] = useState<string>("")
 
     useEffect(() => {
         const checkMobile = () => setIsMobile(window.innerWidth < 768)
@@ -135,12 +155,20 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
     const isToday = selectedDate === todayIso()
 
     const handleRouteChange = (id: string) => {
-        setSelectedRouteId(id)
+        setSearchParams((prev) => {
+            const next = new URLSearchParams(prev)
+            next.set("routeId", id)
+            return next
+        })
         onRouteChange?.(id)
     }
 
     const handleBackToDashboard = () => {
-        setSelectedRouteId(undefined)
+        setSearchParams((prev) => {
+            const next = new URLSearchParams(prev)
+            next.delete("routeId")
+            return next
+        })
         onRouteChange?.("")
     }
 
@@ -171,12 +199,17 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
 
     // Fetch queue counts for all routes (dashboard view)
     const { data: allQueueData, isLoading: countsLoading } = useQuery({
-        queryKey: ["queue", "all", "counts", selectedDate],
+        queryKey: ["queue", "all", "counts", selectedDate, saccoFilter],
         queryFn: async () => {
             if (!allRoutes) return []
 
+            // Filter routes by sacco if filter is applied
+            const filteredRoutes = saccoFilter
+                ? allRoutes.filter(route => route.saccoId === saccoFilter)
+                : allRoutes
+
             const counts = await Promise.all(
-                allRoutes.map(async (route) => {
+                filteredRoutes.map(async (route) => {
                     try {
                         const entries = await getQueueEntriesRequest({
                             routeId: route.id,
@@ -240,6 +273,15 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
         },
     })
 
+    // Manifest for whichever entry is currently selected for viewing. Lazily
+    // fetched only while the sheet is open (enabled flips on manifestEntry).
+    const { bookings: manifestBookings, isLoading: manifestLoading } = useVehicleManifest(
+        selectedRouteId,
+        selectedDate,
+        manifestEntry?.vehicleId,
+        !!manifestEntry
+    )
+
     const lanes = useMemo(() => {
         const grouped: Record<QueueEntryStatus, QueueEntry[]> = {
             [QueueEntryStatus.WAITING]: [],
@@ -254,24 +296,30 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
 
     const filteredRoutes = useMemo(() => {
         if (!allRoutes) return []
-        if (!searchQuery.trim()) return allRoutes
 
-        const query = searchQuery.toLowerCase().trim()
-        return allRoutes.filter((r) =>
-            r.origin.toLowerCase().includes(query) ||
-            r.destination.toLowerCase().includes(query) ||
-            r.stages?.some(stage => stage.toLowerCase().includes(query))
-        )
-    }, [allRoutes, searchQuery])
+        let routes = allRoutes
+
+        // Apply search filter
+        if (searchQuery.trim()) {
+            const query = searchQuery.toLowerCase().trim()
+            routes = routes.filter((r) =>
+                r.origin.toLowerCase().includes(query) ||
+                r.destination.toLowerCase().includes(query) ||
+                r.stages?.some(stage => stage.toLowerCase().includes(query))
+            )
+        }
+
+        // Apply sacco filter
+        if (saccoFilter) {
+            routes = routes.filter(r => r.saccoId === saccoFilter)
+        }
+
+        return routes
+    }, [allRoutes, searchQuery, saccoFilter])
 
     const handleAdvance = (entry: QueueEntry) => {
         const next = NEXT_STATUS[entry.status]
         if (next) statusMutation.mutate({ id: entry.id, status: next })
-    }
-
-    const handleRetreat = (entry: QueueEntry) => {
-        const prev = PREV_STATUS[entry.status]
-        if (prev) statusMutation.mutate({ id: entry.id, status: prev })
     }
 
     const handleRequestRemove = (entry: QueueEntry) => {
@@ -332,15 +380,24 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                     </div>
                 </div>
 
-                {/* Search */}
-                <div className="relative">
-                    <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/50" />
-                    <Input
-                        placeholder="Search routes by origin, destination, or stages..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="pl-9 h-9 text-sm"
-                    />
+                {/* Search & Filter */}
+                <div className="flex flex-col sm:flex-row gap-2">
+                    <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/50" />
+                        <Input
+                            placeholder="Search routes by origin, destination, or stages..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="pl-9 h-9 text-sm"
+                        />
+                    </div>
+                    <div className="w-full sm:w-[220px]">
+                        <SaccoCombobox
+                            value={saccoFilter}
+                            onChange={setSaccoFilter}
+                            placeholder="Filter by sacco..."
+                        />
+                    </div>
                 </div>
 
                 {/* Route Dashboard */}
@@ -350,6 +407,8 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                     <EmptyDashboardState
                         searchQuery={searchQuery}
                         onClear={() => setSearchQuery("")}
+                        saccoFilter={saccoFilter}
+                        onClearSacco={() => setSaccoFilter("")}
                     />
                 ) : (
                     <RouteDashboard
@@ -360,6 +419,7 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                         selectedDate={selectedDate}
                     />
                 )}
+
             </div>
         )
     }
@@ -487,8 +547,8 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                                 lane={lane}
                                 entries={lanes[lane.status]}
                                 onAdvance={handleAdvance}
-                                onRetreat={handleRetreat}
                                 onRequestRemove={handleRequestRemove}
+                                onViewManifest={setManifestEntry}
                                 isUpdating={statusMutation.isPending}
                                 readOnly={!isToday}
                                 hideHeader
@@ -504,8 +564,8 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                             lane={lane}
                             entries={lanes[lane.status]}
                             onAdvance={handleAdvance}
-                            onRetreat={handleRetreat}
                             onRequestRemove={handleRequestRemove}
+                            onViewManifest={setManifestEntry}
                             isUpdating={statusMutation.isPending}
                             readOnly={!isToday}
                         />
@@ -518,6 +578,20 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                 open={showClockIn}
                 onOpenChange={setShowClockIn}
             />
+
+            {/* Manifest sheet — opened by clicking a BOARDING/DISPATCHED card */}
+            {manifestEntry && (
+                <ManifestSheet
+                    open={!!manifestEntry}
+                    onOpenChange={(open) => !open && setManifestEntry(null)}
+                    side={isMobile ? "bottom" : "right"}
+                    entry={manifestEntry}
+                    bookings={manifestBookings}
+                    isLoading={manifestLoading}
+                    travelDate={selectedDate}
+                    route={route}
+                />
+            )}
 
             {/* Remove confirmation */}
             <Dialog open={!!entryToRemove} onOpenChange={(open) => !open && setEntryToRemove(null)}>
@@ -580,50 +654,12 @@ function RouteDashboard({ routes, counts, onSelectRoute, isMobile, selectedDate 
                 {routes.map((route) => {
                     const count = counts.find(c => c.routeId === route.id) || { waiting: 0, boarding: 0, dispatched: 0, total: 0 }
                     return (
-                        <div
+                        <RouteDashboardMobileRow
                             key={route.id}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => onSelectRoute(route.id)}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault()
-                                    onSelectRoute(route.id)
-                                }
-                            }}
-                            className="rounded-lg border bg-card p-3 transition-all hover:bg-accent/30 hover:border-muted-foreground/20 cursor-pointer"
-                        >
-                            <div className="flex items-center justify-between">
-                                <div className="min-w-0 flex-1">
-                                    <p className="truncate font-medium text-sm">
-                                        {route.origin} → {route.destination}
-                                    </p>
-                                    {route.stages?.length > 0 && (
-                                        <p className="text-xs text-muted-foreground/70 truncate">
-                                            via {route.stages.join(", ")}
-                                        </p>
-                                    )}
-                                </div>
-                                <ChevronRight className="size-4 text-muted-foreground/30" />
-                            </div>
-                            <div className="flex items-center gap-3 mt-2 text-xs">
-                                <span className="flex items-center gap-1">
-                                    <ClockIcon className="size-3 text-amber-500" />
-                                    {count.waiting}
-                                </span>
-                                <span className="flex items-center gap-1">
-                                    <Users className="size-3 text-blue-500" />
-                                    {count.boarding}
-                                </span>
-                                <span className="flex items-center gap-1">
-                                    <Truck className="size-3 text-emerald-500" />
-                                    {count.dispatched}
-                                </span>
-                                <Badge variant="secondary" className="text-[10px] h-4 px-1.5 ml-auto">
-                                    {count.total} total
-                                </Badge>
-                            </div>
-                        </div>
+                            route={route}
+                            count={count}
+                            onSelectRoute={onSelectRoute}
+                        />
                     )
                 })}
             </div>
@@ -636,9 +672,10 @@ function RouteDashboard({ routes, counts, onSelectRoute, isMobile, selectedDate 
                 <TableHeader>
                     <TableRow className="bg-muted/50">
                         <TableHead className="w-[35%]">Route</TableHead>
-                        <TableHead className="w-[15%] text-center">Waiting</TableHead>
-                        <TableHead className="w-[15%] text-center">Boarding</TableHead>
-                        <TableHead className="w-[15%] text-center">Dispatched</TableHead>
+                        <TableHead className="w-[15%]">Sacco</TableHead>
+                        <TableHead className="w-[10%] text-center">Waiting</TableHead>
+                        <TableHead className="w-[10%] text-center">Boarding</TableHead>
+                        <TableHead className="w-[10%] text-center">Dispatched</TableHead>
                         <TableHead className="w-[10%] text-center">Total</TableHead>
                         <TableHead className="w-[10%] text-right">Action</TableHead>
                     </TableRow>
@@ -647,61 +684,148 @@ function RouteDashboard({ routes, counts, onSelectRoute, isMobile, selectedDate 
                     {routes.map((route) => {
                         const count = counts.find(c => c.routeId === route.id) || { waiting: 0, boarding: 0, dispatched: 0, total: 0 }
                         return (
-                            <TableRow
+                            <RouteDashboardTableRow
                                 key={route.id}
-                                className="group cursor-pointer hover:bg-muted/50 transition-colors"
-                                onClick={() => onSelectRoute(route.id)}
-                            >
-                                <TableCell>
-                                    <div className="min-w-0">
-                                        <p className="truncate font-medium">
-                                            {route.origin} → {route.destination}
-                                        </p>
-                                        {route.stages?.length > 0 && (
-                                            <p className="text-xs text-muted-foreground/70 truncate">
-                                                via {route.stages.join(", ")}
-                                            </p>
-                                        )}
-                                    </div>
-                                </TableCell>
-                                <TableCell className="text-center">
-                                    <Badge variant="secondary" className="text-xs font-medium bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400 border-amber-500/20">
-                                        {count.waiting}
-                                    </Badge>
-                                </TableCell>
-                                <TableCell className="text-center">
-                                    <Badge variant="secondary" className="text-xs font-medium bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400 border-blue-500/20">
-                                        {count.boarding}
-                                    </Badge>
-                                </TableCell>
-                                <TableCell className="text-center">
-                                    <Badge variant="secondary" className="text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border-emerald-500/20">
-                                        {count.dispatched}
-                                    </Badge>
-                                </TableCell>
-                                <TableCell className="text-center font-semibold">
-                                    {count.total}
-                                </TableCell>
-                                <TableCell className="text-right">
-                                    <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        className="h-7 text-xs gap-1"
-                                        onClick={(e) => {
-                                            e.stopPropagation()
-                                            onSelectRoute(route.id)
-                                        }}
-                                    >
-                                        Manage
-                                        <ChevronRight className="size-3.5" />
-                                    </Button>
-                                </TableCell>
-                            </TableRow>
+                                route={route}
+                                count={count}
+                                onSelectRoute={onSelectRoute}
+                            />
                         )
                     })}
                 </TableBody>
             </Table>
         </div>
+    )
+}
+
+// Each row/card gets its own component so useSaccoName (a hook) is called
+// at a stable component level — never inside the parent's .map() loop,
+// where a changing routes.length would violate the Rules of Hooks and
+// throw "Rendered more hooks than during the previous render."
+
+interface RouteDashboardRowProps {
+    route: any
+    count: { routeId: string; waiting: number; boarding: number; dispatched: number; total: number }
+    onSelectRoute: (id: string) => void
+}
+
+function RouteDashboardMobileRow({ route, count, onSelectRoute }: RouteDashboardRowProps) {
+    const saccoName = useSaccoName(route.saccoId)
+
+    return (
+        <div
+            role="button"
+            tabIndex={0}
+            onClick={() => onSelectRoute(route.id)}
+            onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    onSelectRoute(route.id)
+                }
+            }}
+            className="rounded-lg border bg-card p-3 transition-all hover:bg-accent/30 hover:border-muted-foreground/20 cursor-pointer"
+        >
+            <div className="flex items-center justify-between">
+                <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium text-sm">
+                        {route.origin} → {route.destination}
+                    </p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-xs text-muted-foreground/70 flex items-center gap-1">
+                            <Building2 className="size-3" />
+                            {saccoName || "N/A"}
+                        </span>
+                    </div>
+                    {route.stages?.length > 0 && (
+                        <p className="text-xs text-muted-foreground/70 truncate">
+                            via {route.stages.join(", ")}
+                        </p>
+                    )}
+                </div>
+                <ChevronRight className="size-4 text-muted-foreground/30" />
+            </div>
+            <div className="flex items-center gap-3 mt-2 text-xs">
+                <span className="flex items-center gap-1">
+                    <ClockIcon className="size-3 text-amber-500" />
+                    {count.waiting}
+                </span>
+                <span className="flex items-center gap-1">
+                    <Users className="size-3 text-blue-500" />
+                    {count.boarding}
+                </span>
+                <span className="flex items-center gap-1">
+                    <Truck className="size-3 text-emerald-500" />
+                    {count.dispatched}
+                </span>
+                <Badge variant="secondary" className="text-[10px] h-4 px-1.5 ml-auto">
+                    {count.total} total
+                </Badge>
+            </div>
+        </div>
+    )
+}
+
+function RouteDashboardTableRow({ route, count, onSelectRoute }: RouteDashboardRowProps) {
+    const saccoName = useSaccoName(route.saccoId)
+
+    return (
+        <TableRow
+            className="group cursor-pointer hover:bg-muted/50 transition-colors"
+            onClick={() => onSelectRoute(route.id)}
+        >
+            <TableCell>
+                <div className="min-w-0">
+                    <p className="truncate font-medium">
+                        {route.origin} → {route.destination}
+                    </p>
+                    {route.stages?.length > 0 && (
+                        <p className="text-xs text-muted-foreground/70 truncate">
+                            via {route.stages.join(", ")}
+                        </p>
+                    )}
+                </div>
+            </TableCell>
+            <TableCell>
+                <div className="flex items-center gap-1.5">
+                    <Building2 className="size-3.5 text-muted-foreground/50" />
+                    <span className="text-sm truncate">
+                        {saccoName || "N/A"}
+                    </span>
+                </div>
+            </TableCell>
+            <TableCell className="text-center">
+                <Badge variant="secondary" className="text-xs font-medium bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400 border-amber-500/20">
+                    {count.waiting}
+                </Badge>
+            </TableCell>
+            <TableCell className="text-center">
+                <Badge variant="secondary" className="text-xs font-medium bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400 border-blue-500/20">
+                    {count.boarding}
+                </Badge>
+            </TableCell>
+            <TableCell className="text-center">
+                <Badge variant="secondary" className="text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border-emerald-500/20">
+                    {count.dispatched}
+                </Badge>
+            </TableCell>
+            <TableCell className="text-center font-semibold">
+                {count.total}
+            </TableCell>
+            <TableCell className="text-right">
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs gap-1"
+                    onClick={(e) => {
+                        e.stopPropagation()
+                        onSelectRoute(route.id)
+                    }}
+                >
+                    Manage
+                    <ChevronRight className="size-3.5" />
+                </Button>
+            </TableCell>
+        </TableRow>
     )
 }
 
@@ -711,15 +835,22 @@ interface QueueLaneProps {
     lane: typeof LANES[0]
     entries: QueueEntry[]
     onAdvance: (entry: QueueEntry) => void
-    onRetreat: (entry: QueueEntry) => void
     onRequestRemove: (entry: QueueEntry) => void
+    onViewManifest?: (entry: QueueEntry) => void
     isUpdating?: boolean
     readOnly?: boolean
     hideHeader?: boolean
 }
 
-function QueueLane({ lane, entries, onAdvance, onRetreat, onRequestRemove, isUpdating, readOnly, hideHeader }: QueueLaneProps) {
+function QueueLane({ lane, entries, onAdvance, onRequestRemove, onViewManifest, isUpdating, readOnly, hideHeader }: QueueLaneProps) {
     const Icon = lane.icon
+    // Removal is only allowed from the WAITING lane — once a vehicle is
+    // BOARDING or DISPATCHED, deleting the queue entry directly could
+    // orphan a live trip/bookings, so that path is disabled here.
+    const canRemove = lane.status === QueueEntryStatus.WAITING
+    // Manifest only exists once a vehicle has an open trip — that starts
+    // at BOARDING, so WAITING entries have nothing to show yet.
+    const canViewManifest = lane.status !== QueueEntryStatus.WAITING
 
     return (
         <div className={cn(
@@ -756,14 +887,15 @@ function QueueLane({ lane, entries, onAdvance, onRetreat, onRequestRemove, isUpd
                             // number stays correct even if this lane's array is
                             // ever filtered/reordered client-side.
                             position={lane.status === QueueEntryStatus.WAITING ? entry.position : undefined}
+                            seatedCount={lane.status === QueueEntryStatus.BOARDING ? entry.seatedCount : undefined}
                             onAdvance={() => onAdvance(entry)}
-                            onRetreat={() => onRetreat(entry)}
                             onRequestRemove={() => onRequestRemove(entry)}
+                            onViewManifest={canViewManifest ? () => onViewManifest?.(entry) : undefined}
                             isUpdating={isUpdating}
                             readOnly={readOnly}
+                            canRemove={canRemove}
                             laneColor={lane.color}
                             nextAction={NEXT_STATUS[entry.status]}
-                            prevAction={PREV_STATUS[entry.status]}
                         />
                     ))}
                 </div>
@@ -777,32 +909,50 @@ function QueueLane({ lane, entries, onAdvance, onRetreat, onRequestRemove, isUpd
 interface QueueCardProps {
     entry: QueueEntry
     position?: number
+    seatedCount?: number
     onAdvance: () => void
-    onRetreat: () => void
     onRequestRemove: () => void
+    onViewManifest?: () => void
     isUpdating?: boolean
     readOnly?: boolean
+    canRemove?: boolean
     laneColor: string
     nextAction?: QueueEntryStatus
-    prevAction?: QueueEntryStatus
 }
 
 function QueueCard({
     entry,
     position,
+    seatedCount,
     onAdvance,
-    onRetreat,
     onRequestRemove,
+    onViewManifest,
     isUpdating,
     readOnly,
+    canRemove,
     laneColor,
     nextAction,
-    prevAction,
 }: QueueCardProps) {
     const elapsed = useElapsedTime(entry.clockedInAt)
+    const capacity = entry.vehicle.seatingCapacity
+    const isFull = seatedCount !== undefined && seatedCount >= capacity
 
     return (
-        <div className="group rounded-md border bg-card p-2.5 transition-all hover:shadow-sm hover:border-muted-foreground/20">
+        <div
+            role={onViewManifest ? "button" : undefined}
+            tabIndex={onViewManifest ? 0 : undefined}
+            onClick={onViewManifest}
+            onKeyDown={(e) => {
+                if (onViewManifest && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault()
+                    onViewManifest()
+                }
+            }}
+            className={cn(
+                "group rounded-md border bg-card p-2.5 transition-all hover:shadow-sm hover:border-muted-foreground/20",
+                onViewManifest && "cursor-pointer"
+            )}
+        >
             <div className="flex items-center gap-2">
                 {/* Position Badge (Waiting lane only) */}
                 {position !== undefined && (
@@ -825,23 +975,42 @@ function QueueCard({
                             {elapsed}
                         </span>
                         <span>•</span>
-                        <span>{entry.vehicle.seatingCapacity} seats</span>
+                        {seatedCount !== undefined ? (
+                            <span className={cn("flex items-center gap-1 font-medium", isFull ? "text-emerald-600 dark:text-emerald-400" : "text-foreground/70")}>
+                                <Users className="size-2.5" />
+                                {seatedCount}/{capacity} seated
+                            </span>
+                        ) : (
+                            <span>{capacity} seats</span>
+                        )}
                     </div>
+
+                    {/* Optional: fill progress bar */}
+                    {seatedCount !== undefined && (
+                        <div className="mt-1 h-1 w-full rounded-full bg-muted overflow-hidden">
+                            <div
+                                className={cn("h-full rounded-full transition-all", isFull ? "bg-emerald-500" : "bg-blue-500")}
+                                style={{ width: `${Math.min(100, (seatedCount / capacity) * 100)}%` }}
+                            />
+                        </div>
+                    )}
                 </div>
 
                 {/* Actions - Icon only */}
                 <div className="flex items-center gap-0.5 shrink-0">
-                    {!readOnly && prevAction && (
+                    {onViewManifest && (
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7 text-muted-foreground/40 hover:text-foreground hover:bg-transparent transition-all hover:scale-110"
-                            onClick={onRetreat}
-                            disabled={isUpdating}
-                            aria-label="Move back to previous status"
-                            title="Move back to previous status"
+                            className="h-7 w-7 text-muted-foreground/60 hover:text-foreground hover:bg-transparent transition-all hover:scale-110"
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                onViewManifest()
+                            }}
+                            aria-label="View manifest"
+                            title="View manifest"
                         >
-                            <ArrowLeftCircle className="size-4" />
+                            <ClipboardList className="size-4" />
                         </Button>
                     )}
 
@@ -854,7 +1023,10 @@ function QueueCard({
                                 laneColor,
                                 "hover:bg-transparent"
                             )}
-                            onClick={onAdvance}
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                onAdvance()
+                            }}
                             disabled={isUpdating}
                             aria-label="Advance to next status"
                             title="Advance to next status"
@@ -863,16 +1035,19 @@ function QueueCard({
                         </Button>
                     )}
 
-                    {!readOnly && (
+                    {!readOnly && canRemove && (
                         <Button
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7 text-destructive/70 hover:text-destructive hover:bg-transparent transition-all hover:scale-110"
-                            onClick={onRequestRemove}
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                onRequestRemove()
+                            }}
                             aria-label="Remove from queue"
                             title="Remove from queue"
                         >
-                            <XCircle className="size-4" />
+                            <Trash2 className="size-4" />
                         </Button>
                     )}
                 </div>
@@ -906,7 +1081,8 @@ function RouteDashboardSkeleton({ isMobile }: { isMobile?: boolean }) {
     return (
         <div className="rounded-lg border">
             <div className="p-4 border-b bg-muted/50">
-                <div className="grid grid-cols-6 gap-4">
+                <div className="grid grid-cols-7 gap-4">
+                    <Skeleton className="h-4 w-full" />
                     <Skeleton className="h-4 w-full" />
                     <Skeleton className="h-4 w-full" />
                     <Skeleton className="h-4 w-full" />
@@ -917,7 +1093,8 @@ function RouteDashboardSkeleton({ isMobile }: { isMobile?: boolean }) {
             </div>
             {Array.from({ length: 4 }).map((_, i) => (
                 <div key={i} className="p-4 border-b last:border-0">
-                    <div className="grid grid-cols-6 gap-4 items-center">
+                    <div className="grid grid-cols-7 gap-4 items-center">
+                        <Skeleton className="h-5 w-3/4" />
                         <Skeleton className="h-5 w-3/4" />
                         <Skeleton className="h-6 w-12 mx-auto" />
                         <Skeleton className="h-6 w-12 mx-auto" />
@@ -967,9 +1144,13 @@ function QueueBoardSkeleton({ isMobile }: { isMobile?: boolean }) {
 interface EmptyDashboardStateProps {
     searchQuery: string
     onClear: () => void
+    saccoFilter?: string
+    onClearSacco?: () => void
 }
 
-function EmptyDashboardState({ searchQuery, onClear }: EmptyDashboardStateProps) {
+function EmptyDashboardState({ searchQuery, onClear, saccoFilter, onClearSacco }: EmptyDashboardStateProps) {
+    const hasFilters = searchQuery || saccoFilter
+
     return (
         <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-12 px-4 text-center">
             <div className="rounded-full bg-muted/30 p-2.5">
@@ -978,13 +1159,22 @@ function EmptyDashboardState({ searchQuery, onClear }: EmptyDashboardStateProps)
             <div className="space-y-0.5">
                 <p className="text-sm font-medium">No routes found</p>
                 <p className="text-xs text-muted-foreground">
-                    {searchQuery ? `No routes match "${searchQuery}"` : "No routes available"}
+                    {hasFilters ? "Try adjusting your search or filter criteria" : "No routes available"}
                 </p>
             </div>
-            {searchQuery && (
-                <Button size="sm" variant="outline" onClick={onClear} className="gap-1.5 text-xs">
-                    Clear search
-                </Button>
+            {hasFilters && (
+                <div className="flex items-center gap-2">
+                    {searchQuery && (
+                        <Button size="sm" variant="outline" onClick={onClear} className="gap-1.5 text-xs">
+                            Clear search
+                        </Button>
+                    )}
+                    {saccoFilter && onClearSacco && (
+                        <Button size="sm" variant="outline" onClick={onClearSacco} className="gap-1.5 text-xs">
+                            Clear sacco filter
+                        </Button>
+                    )}
+                </div>
             )}
         </div>
     )

@@ -107,6 +107,8 @@ export class FleetService {
       withQueueStatus = false,
     } = options;
 
+    console.log({ options })
+
     const take = limit > 0 ? limit : 20;
     const currentPage = page > 0 ? page : 1;
     const skip = (currentPage - 1) * take;

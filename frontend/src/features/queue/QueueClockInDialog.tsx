@@ -1,7 +1,7 @@
 import { Controller, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -16,6 +16,8 @@ import {
 } from "@/components/ui/dialog"
 import { clockInVehicleRequest } from "@/api/routeApi"
 import { VehicleCombobox } from "@/features/fleet/VehicleCombobox"
+import { getRouteRequest } from "@/api/routeApi"
+import { SaccoCombobox } from "../sacco/SaccoCombobox"
 
 const clockInSchema = z.object({
     vehicleId: z.string().min(1, "Select a vehicle"),
@@ -31,6 +33,14 @@ interface QueueClockInDialogProps {
 
 export function QueueClockInDialog({ routeId, open, onOpenChange }: QueueClockInDialogProps) {
     const queryClient = useQueryClient()
+
+    // Fetch route details to get the saccoId
+    const { data: route } = useQuery({
+        queryKey: ["routes", "detail", routeId],
+        queryFn: () => getRouteRequest(routeId),
+        enabled: !!routeId && open, // Only fetch when dialog is open
+    })
+    console.log({ route }, 5555555555555, 'Saccoid', route?.saccoId)
 
     const form = useForm<ClockInValues>({
         resolver: zodResolver(clockInSchema),
@@ -83,6 +93,7 @@ export function QueueClockInDialog({ routeId, open, onOpenChange }: QueueClockIn
                                         value={field.value}
                                         onChange={field.onChange}
                                         placeholder="Select vehicle..."
+                                        saccoId={route?.saccoId} // Pass the saccoId to filter vehicles
                                     />
                                     {fieldState.invalid && (
                                         <FieldError errors={[fieldState.error]} />

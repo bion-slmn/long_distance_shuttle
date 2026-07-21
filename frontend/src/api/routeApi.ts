@@ -1,6 +1,5 @@
 // src/api/routeApi.ts
 import api from "./axios";
-import type { Vehicle } from "./fleetApi";
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -73,6 +72,7 @@ export interface QueueEntry {
         notes: string;
     };
     routeQueue: RouteQueue;
+    seatedCount?: number
 }
 
 export interface CreateRoutePayload {
