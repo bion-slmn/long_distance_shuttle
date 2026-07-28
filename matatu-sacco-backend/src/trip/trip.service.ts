@@ -18,6 +18,27 @@ export interface FindAllTripsOptions {
   plateNumber?: string;
 }
 
+export interface TripTrendPoint {
+  date: string;
+  trips: number;
+}
+
+export interface AverageTripsPerVehicleSummary {
+  saccoId: string | null;
+  todayAverage: number;
+  yesterdayAverage: number;
+  change: number;
+  changePercent: number | null;
+}
+
+export interface TripCountSummary {
+  saccoId: string | null; // null = fleet-wide (all saccos)
+  today: number;
+  yesterday: number;
+  changeCount: number;      // today - yesterday
+  changePercent: number | null; // null when yesterday === 0 (can't compute %)
+}
+
 export interface PaginatedTrips {
   data: Trip[];
   total: number;
@@ -235,6 +256,104 @@ export class TripService {
     return await this.tripRepository.save(trip);
   }
 
+  // ── Trip counts: today vs yesterday, optionally scoped to a sacco ───────
+  async getTripCountSummary(saccoId?: string): Promise<TripCountSummary> {
+    const todayStr = this.formatDate(new Date());
+    const yesterdayStr = this.formatDate(this.subtractDays(new Date(), 1));
+
+    const baseQb = () => {
+      const qb = this.tripRepository.createQueryBuilder('trip');
+      if (saccoId) qb.andWhere('trip.saccoId = :saccoId', { saccoId });
+      return qb;
+    };
+
+    const today = await baseQb()
+      .andWhere('trip.travelDate = :today', { today: todayStr })
+      .getCount();
+
+    const yesterday = await baseQb()
+      .andWhere('trip.travelDate = :yesterday', { yesterday: yesterdayStr })
+      .getCount();
+
+    const changeCount = today - yesterday;
+    const changePercent = yesterday > 0 ? (changeCount / yesterday) * 100 : null;
+
+    return {
+      saccoId: saccoId ?? null,
+      today,
+      yesterday,
+      changeCount,
+      changePercent,
+    };
+  }
+
+  // ── Date helpers ──────────────────────────────────────────────────────────
+  private formatDate(date: Date): string {
+    return date.toISOString().split('T')[0]; // YYYY-MM-DD
+  }
+
+  private subtractDays(date: Date, days: number): Date {
+    const result = new Date(date);
+    result.setDate(result.getDate() - days);
+    return result;
+  }
+
+
+
+  async getAverageTripsPerVehicleSummary(
+    saccoId?: string,
+  ): Promise<AverageTripsPerVehicleSummary> {
+    const today = this.formatDate(new Date());
+    const yesterday = this.formatDate(this.subtractDays(new Date(), 1));
+
+    const getAverage = async (travelDate: string): Promise<number> => {
+      const qb = this.tripRepository
+        .createQueryBuilder('trip')
+        .select('COUNT(*)', 'tripCount')
+        .addSelect('COUNT(DISTINCT trip.vehicleId)', 'vehicleCount')
+        .where('trip.travelDate = :travelDate', { travelDate });
+
+      if (saccoId) {
+        qb.andWhere('trip.saccoId = :saccoId', { saccoId });
+      }
+
+      const result = await qb.getRawOne<{
+        tripCount: string;
+        vehicleCount: string;
+      }>();
+
+      const trips = Number(result?.tripCount);
+      const vehicles = Number(result?.vehicleCount);
+
+      if (vehicles === 0) {
+        return 0;
+      }
+
+      return trips / vehicles;
+    };
+
+    const todayAverage = await getAverage(today);
+    const yesterdayAverage = await getAverage(yesterday);
+
+    const change = todayAverage - yesterdayAverage;
+
+    const changePercent =
+      yesterdayAverage > 0
+        ? (change / yesterdayAverage) * 100
+        : null;
+
+    return {
+      saccoId: saccoId ?? null,
+      todayAverage: Number(todayAverage.toFixed(1)),
+      yesterdayAverage: Number(yesterdayAverage.toFixed(1)),
+      change: Number(change.toFixed(1)),
+      changePercent:
+        changePercent !== null
+          ? Number(changePercent.toFixed(1))
+          : null,
+    };
+  }
+
   // ── Remove ────────────────────────────────────────────────────────────────
   async remove(id: string, saccoId?: string): Promise<{ deleted: boolean }> {
     const trip = await this.findOneScoped(id, saccoId);
@@ -243,5 +362,49 @@ export class TripService {
     }
     await this.tripRepository.remove(trip);
     return { deleted: true };
+  }
+
+  // trip.service.ts — add this method
+
+
+
+  // ── Trip Trend (for dashboard chart) ─────────────────────────────────────
+  // Mirrors BookingService.getRevenueTrend — one point per day, oldest →
+  // newest, gap days filled with 0 so it lines up on the same x-axis.
+  async getTripTrend(days = 7, saccoId?: string): Promise<TripTrendPoint[]> {
+    if (days < 1) {
+      throw new BadRequestException('days must be at least 1.');
+    }
+
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(endDate.getDate() - (days - 1));
+
+    const start = this.formatDate(startDate);
+    const end = this.formatDate(endDate);
+
+    const qb = this.tripRepository
+      .createQueryBuilder('trip')
+      .select('trip.travelDate', 'travelDate')
+      .addSelect('COUNT(*)', 'tripCount')
+      .where('trip.travelDate BETWEEN :start AND :end', { start, end })
+      .groupBy('trip.travelDate');
+
+    if (saccoId) {
+      qb.andWhere('trip.saccoId = :saccoId', { saccoId });
+    }
+
+    const rows = await qb.getRawMany<{ travelDate: string; tripCount: string }>();
+    const tripsByDate = new Map<string, number>(rows.map((r) => [r.travelDate, Number(r.tripCount)]));
+
+    const trend: TripTrendPoint[] = [];
+    const cursor = new Date(startDate);
+    while (this.formatDate(cursor) <= end) {
+      const date = this.formatDate(cursor);
+      trend.push({ date, trips: tripsByDate.get(date) ?? 0 });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return trend;
   }
 }

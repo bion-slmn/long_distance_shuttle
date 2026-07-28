@@ -59,6 +59,30 @@ export class RouteController {
     return this.routeService.findAll(saccoId);
   }
 
+  // ── GET /routes/stats/fill-time-comparison ───────────────────────────────
+  @Get('stats/fill-time-comparison')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+  getAverageFillTimeComparison(@CurrentUser() user: any) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.routeService.getAverageFillTimeComparison(saccoId);
+  }
+
+  // ── GET /routes/stats/fastest-today ───────────────────────────────────────
+  @Get('stats/fastest-today')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+  getFastestRoutesToday(@CurrentUser() user: any) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.routeService.getFastestRoutesToday(saccoId);
+  }
+
+  // ── GET /routes/stats/performance-vs-yesterday ────────────────────────────
+  @Get('stats/performance-vs-yesterday')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+  getRoutePerformanceVsYesterday(@CurrentUser() user: any) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.routeService.getRoutePerformanceVsYesterday(saccoId);
+  }
+
   // =========================================================================
   // ─── ROUTE QUEUE ENDPOINTS ───────────────────────────────────────────────
   // Registered BEFORE the dynamic ':id' routes below, since 'queue' would

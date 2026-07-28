@@ -63,6 +63,7 @@ import type { Sacco } from "@/api/saccoApi"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import SaccoForm from "./CreateSaccoForm"
+import { RoleGuard } from "../auth/RoleGuard"
 
 interface SaccoListViewProps {
     includeInactive?: boolean
@@ -372,32 +373,36 @@ function SaccoToolbar({
                     {total}
                 </Badge>
             </div>
-            <div className="flex items-center gap-2">
-                <div className="relative flex-1 sm:flex-none">
-                    <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
-                    <Input
-                        type="search"
-                        placeholder="Search saccos..."
-                        value={searchQuery}
-                        onChange={(e) => onSearchChange(e.target.value)}
-                        className="h-8 pl-7 pr-7 text-xs bg-muted/30 border-muted-foreground/10 focus-visible:ring-0 w-full sm:w-44"
-                        aria-label="Search saccos"
-                    />
-                    {searchQuery && (
-                        <button
-                            className="absolute right-0 top-0 h-full px-2 text-muted-foreground/50 hover:text-foreground"
-                            onClick={() => onSearchChange("")}
-                            aria-label="Clear search"
-                        >
-                            ✕
-                        </button>
-                    )}
+            <RoleGuard allowed={["SUPER_ADMIN"]}>
+                <div className="flex items-center gap-2">
+                    <div className="relative flex-1 sm:flex-none">
+                        <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
+                        <Input
+                            type="search"
+                            placeholder="Search saccos..."
+                            value={searchQuery}
+                            onChange={(e) => onSearchChange(e.target.value)}
+                            className="h-8 pl-7 pr-7 text-xs bg-muted/30 border-muted-foreground/10 focus-visible:ring-0 w-full sm:w-44"
+                            aria-label="Search saccos"
+                        />
+                        {searchQuery && (
+                            <button
+                                className="absolute right-0 top-0 h-full px-2 text-muted-foreground/50 hover:text-foreground"
+                                onClick={() => onSearchChange("")}
+                                aria-label="Clear search"
+                            >
+                                ✕
+                            </button>
+                        )}
+                    </div>
+
+                    <Button size="sm" onClick={onAddSacco} className="gap-1.5">
+                        <Plus className="size-3.5" />
+                        <span className="hidden sm:inline text-xs">Add</span>
+                    </Button>
+
                 </div>
-                <Button size="sm" onClick={onAddSacco} className="gap-1.5">
-                    <Plus className="size-3.5" />
-                    <span className="hidden sm:inline text-xs">Add</span>
-                </Button>
-            </div>
+            </RoleGuard>
         </div>
     )
 }
@@ -473,13 +478,15 @@ function DesktopSaccoRow({
                     onKeyDown={(e) => e.stopPropagation()}
                     className="flex items-center justify-end gap-1"
                 >
-                    <Switch
-                        checked={sacco.isActive}
-                        disabled={isToggling}
-                        onCheckedChange={onToggleActive}
-                        className="scale-75 data-[state=checked]:bg-emerald-500"
-                        aria-label={sacco.isActive ? "Deactivate" : "Activate"}
-                    />
+                    <RoleGuard allowed={["SUPER_ADMIN", "SACCO_ADMIN"]}>
+                        <Switch
+                            checked={sacco.isActive}
+                            disabled={isToggling}
+                            onCheckedChange={onToggleActive}
+                            className="scale-75 data-[state=checked]:bg-emerald-500"
+                            aria-label={sacco.isActive ? "Deactivate" : "Activate"}
+                        />
+                    </RoleGuard>
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                             <Button
@@ -496,27 +503,29 @@ function DesktopSaccoRow({
                                 <Eye className="size-3.5 mr-2" />
                                 View details
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={onEdit}>
-                                <Pencil className="size-3.5 mr-2" />
-                                Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                                onClick={onToggleActive}
-                                className={sacco.isActive ? "text-destructive" : "text-emerald-600"}
-                            >
-                                {sacco.isActive ? (
-                                    <>
-                                        <PowerOff className="size-3.5 mr-2" />
-                                        Deactivate
-                                    </>
-                                ) : (
-                                    <>
-                                        <Power className="size-3.5 mr-2" />
-                                        Activate
-                                    </>
-                                )}
-                            </DropdownMenuItem>
+                            <RoleGuard allowed={["SUPER_ADMIN", "SACCO_ADMIN"]}>
+                                <DropdownMenuItem onClick={onEdit}>
+                                    <Pencil className="size-3.5 mr-2" />
+                                    Edit
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                    onClick={onToggleActive}
+                                    className={sacco.isActive ? "text-destructive" : "text-emerald-600"}
+                                >
+                                    {sacco.isActive ? (
+                                        <>
+                                            <PowerOff className="size-3.5 mr-2" />
+                                            Deactivate
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Power className="size-3.5 mr-2" />
+                                            Activate
+                                        </>
+                                    )}
+                                </DropdownMenuItem>
+                            </RoleGuard>
                         </DropdownMenuContent>
                     </DropdownMenu>
                 </div>
@@ -602,33 +611,35 @@ function MobileSaccoCard({
                             <Eye className="size-3.5 mr-2" />
                             View details
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={(e) => {
-                            e.stopPropagation()
-                            onEdit()
-                        }}>
-                            <Pencil className="size-3.5 mr-2" />
-                            Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                            onClick={(e) => {
+                        <RoleGuard allowed={["SUPER_ADMIN", "SACCO_ADMIN"]}>
+                            <DropdownMenuItem onClick={(e) => {
                                 e.stopPropagation()
-                                onToggleActive()
-                            }}
-                            className={sacco.isActive ? "text-destructive" : "text-emerald-600"}
-                        >
-                            {sacco.isActive ? (
-                                <>
-                                    <PowerOff className="size-3.5 mr-2" />
-                                    Deactivate
-                                </>
-                            ) : (
-                                <>
-                                    <Power className="size-3.5 mr-2" />
-                                    Activate
-                                </>
-                            )}
-                        </DropdownMenuItem>
+                                onEdit()
+                            }}>
+                                <Pencil className="size-3.5 mr-2" />
+                                Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    onToggleActive()
+                                }}
+                                className={sacco.isActive ? "text-destructive" : "text-emerald-600"}
+                            >
+                                {sacco.isActive ? (
+                                    <>
+                                        <PowerOff className="size-3.5 mr-2" />
+                                        Deactivate
+                                    </>
+                                ) : (
+                                    <>
+                                        <Power className="size-3.5 mr-2" />
+                                        Activate
+                                    </>
+                                )}
+                            </DropdownMenuItem>
+                        </RoleGuard>
                     </DropdownMenuContent>
                 </DropdownMenu>
             </div>
@@ -659,17 +670,19 @@ function MobileSaccoCard({
             </div>
 
             {/* Status Toggle - Compact */}
-            <div className="flex items-center justify-end gap-2 mt-2 pt-2 border-t">
-                <span className="text-[10px] text-muted-foreground">Status</span>
-                <Switch
-                    checked={sacco.isActive}
-                    disabled={isToggling}
-                    onCheckedChange={onToggleActive}
-                    className="scale-75 data-[state=checked]:bg-emerald-500"
-                    aria-label={sacco.isActive ? "Deactivate" : "Activate"}
-                    onClick={(e) => e.stopPropagation()}
-                />
-            </div>
+            <RoleGuard allowed={["SUPER_ADMIN", "SACCO_ADMIN"]}>
+                <div className="flex items-center justify-end gap-2 mt-2 pt-2 border-t">
+                    <span className="text-[10px] text-muted-foreground">Status</span>
+                    <Switch
+                        checked={sacco.isActive}
+                        disabled={isToggling}
+                        onCheckedChange={onToggleActive}
+                        className="scale-75 data-[state=checked]:bg-emerald-500"
+                        aria-label={sacco.isActive ? "Deactivate" : "Activate"}
+                        onClick={(e) => e.stopPropagation()}
+                    />
+                </div>
+            </RoleGuard>
         </div>
     )
 }
@@ -911,40 +924,42 @@ function SaccoDetailsDialog({
                     </div>
                 </div>
 
-                <div className="flex flex-col sm:flex-row gap-2 pt-2">
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        className="w-full sm:flex-1 text-xs"
-                        onClick={() => {
-                            onOpenChange()
-                            onEdit?.(sacco)
-                        }}
-                    >
-                        Edit
-                    </Button>
-                    <Button
-                        size="sm"
-                        variant={sacco.isActive ? "destructive" : "default"}
-                        className="w-full sm:flex-1 gap-1.5 text-xs"
-                        onClick={() => {
-                            onToggleActive?.(sacco)
-                            onOpenChange()
-                        }}
-                    >
-                        {sacco.isActive ? (
-                            <>
-                                <XCircle className="size-3.5" />
-                                Deactivate
-                            </>
-                        ) : (
-                            <>
-                                <CheckCircle className="size-3.5" />
-                                Activate
-                            </>
-                        )}
-                    </Button>
-                </div>
+                <RoleGuard allowed={["SUPER_ADMIN", "SACCO_ADMIN"]}>
+                    <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full sm:flex-1 text-xs"
+                            onClick={() => {
+                                onOpenChange()
+                                onEdit?.(sacco)
+                            }}
+                        >
+                            Edit
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant={sacco.isActive ? "destructive" : "default"}
+                            className="w-full sm:flex-1 gap-1.5 text-xs"
+                            onClick={() => {
+                                onToggleActive?.(sacco)
+                                onOpenChange()
+                            }}
+                        >
+                            {sacco.isActive ? (
+                                <>
+                                    <XCircle className="size-3.5" />
+                                    Deactivate
+                                </>
+                            ) : (
+                                <>
+                                    <CheckCircle className="size-3.5" />
+                                    Activate
+                                </>
+                            )}
+                        </Button>
+                    </div>
+                </RoleGuard>
             </DialogContent>
         </Dialog>
     )

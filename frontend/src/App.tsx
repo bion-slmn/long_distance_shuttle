@@ -1,10 +1,7 @@
 import './App.css'
 
 import { Routes, Route, Navigate } from 'react-router-dom'
-import RegisterForm from './features/auth/RegisterForm'
-import LoginForm from './features/auth/LoginForm'
 import { Toaster } from 'sonner'
-import AdminCreateUser from './features/auth/AdmincreateUser'
 import ProtectedRoute from './features/auth/ProtectedRoute'
 
 import { RouteQueueView } from './features/queue/RouteQueueView'
@@ -17,7 +14,11 @@ import FleetPage from './pages/dashboard/FleetPage'
 import { DashboardLayout } from './layouts/DashboardLayout'
 import Trippage from './pages/dashboard/tripPage'
 import BookTicket from './features/booking/BookTicket'
-import { ClerkDashboard } from './pages/dashboard/ClerkDashboard'
+import SaccoAdminDashboard from './features/dashboard/saccoAdmin'
+import SuperAdminDashboard from './features/dashboard/superAdmin'
+import { Dashboard } from './features/dashboard/dashboard'
+import { SaccoUsersTable } from './features/sacco/SaccoUsersView'
+import { Profile } from './features/auth/Profile'
 
 function App() {
   return (
@@ -38,13 +39,17 @@ function App() {
           <Route path="/routes" element={<RoutePage />} />
           <Route path="/vehicles" element={<FleetPage />} />
           <Route path="/routeQueue" element={<RouteQueueView />} />
-          <Route path="dashboard-clerk" element={<ClerkDashboard />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/users-saccos" element={<SaccoUsersTable />} />
           <Route path="/trips" element={<Trippage />} />
+          <Route path="/profile" element={<Profile />} />
+
+
         </Route>
       </Routes>
       <Toaster />
     </div>
-  )
+  );
 }
 
 export default App

@@ -44,21 +44,52 @@ export class SaccoController {
     @Get()
     @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
     findAll(
+        @CurrentUser() user: any,
         @Query('includeInactive') includeInactive?: string,
         @Query('page') page?: string,
         @Query('limit') limit?: string,
         @Query('minimalFields') minimalFields?: string,
         @Query('search') search?: string,
         @Query('withCounts') withCounts?: string,
+
     ) {
+        const saccoId = user.saccoId
         return this.saccoService.findAll({
             includeInactive: includeInactive === 'true',
             page: page ? Number(page) : undefined,
             limit: limit ? Number(limit) : undefined,
             minimalFields: minimalFields === 'true',
-            search,
+            search, saccoId,
             withCounts: withCounts === 'true',
         });
+    }
+
+    @Get('stats/count')
+    @Roles(UserRole.SUPER_ADMIN)
+    @HttpCode(HttpStatus.OK)
+    getSaccoCountStats(
+        @Query('includeInactive') includeInactive?: string,
+    ) {
+        return this.saccoService.getSaccoCountStats(includeInactive === 'true');
+    }
+
+    @Get('stats/performance')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+    @HttpCode(HttpStatus.OK)
+    getSaccoPerformanceSummaries(
+        @CurrentUser() user: any,
+        @Query('includeInactive') includeInactive?: string,
+    ) {
+        const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
+
+        if (!isSuperAdmin && !user.saccoId) {
+            throw new ForbiddenException('You are not assigned to a sacco.');
+        }
+
+        return this.saccoService.getSaccoPerformanceSummaries(
+            includeInactive === 'true',
+            isSuperAdmin ? undefined : user.saccoId,
+        );
     }
     // ── GET /saccos/:id ───────────────────────────────────────────────────────
 

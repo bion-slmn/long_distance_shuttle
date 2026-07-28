@@ -207,3 +207,40 @@ export async function updateQueueEntryRequest(
 export async function removeVehicleFromQueueRequest(id: string): Promise<void> {
     await api.delete(`/routes/queue/${id}`);
 }
+
+export interface FillTimeComparison {
+    today: number;
+    yesterday: number;
+    changeMinutes: number;
+    changePercent: number | null;
+}
+
+export async function getFillTimeComparisonRequest(): Promise<FillTimeComparison> {
+    const { data } = await api.get<FillTimeComparison>("/routes/stats/fill-time-comparison");
+    return data;
+}
+
+export interface FastestRouteToday {
+    routeId: string;
+    route: string;
+    today: number;
+    vehicles: number;
+}
+
+export async function getFastestRoutesTodayRequest(): Promise<FastestRouteToday[]> {
+    const { data } = await api.get<FastestRouteToday[]>("/routes/stats/fastest-today");
+    return data;
+}
+
+export interface RoutePerformanceVsYesterday {
+    routeId: string;
+    route: string;
+    today: number;
+    dayAvg: number;
+    vehicles: number;
+}
+
+export async function getRoutePerformanceVsYesterdayRequest(): Promise<RoutePerformanceVsYesterday[]> {
+    const { data } = await api.get<RoutePerformanceVsYesterday[]>("/routes/stats/performance-vs-yesterday");
+    return data;
+}

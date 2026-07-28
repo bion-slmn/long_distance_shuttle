@@ -15,6 +15,9 @@ import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './auth/strategies/jwt.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { BookingModule } from './booking/booking.module';
+import { RedisModule } from './redis/redis.module';
+import { MetricsModule } from './metrics/metrics.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -42,6 +45,8 @@ import { BookingModule } from './booking/booking.module';
     AuthModule,
     RouteModule,
     TripModule,
+    RedisModule,     // ← added
+    MetricsModule, HealthModule,
   ],
   controllers: [AppController],
   providers: [

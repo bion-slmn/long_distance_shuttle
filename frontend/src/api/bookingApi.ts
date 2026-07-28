@@ -175,3 +175,41 @@ export async function cancelBookingRequest(
     const res = await api.delete(`/bookings/${id}${query ? `?${query}` : ""}`);
     return res.data;
 }
+
+export async function getTodayEarningsRequest(
+    saccoId?: string,
+): Promise<{ date: string; grossRevenue: number; commission: number }> {
+    const params = new URLSearchParams();
+    if (saccoId) params.set("saccoId", saccoId);
+    const query = params.toString();
+
+    const res = await api.get(`/bookings/earnings/today${query ? `?${query}` : ""}`);
+    return res.data;
+}
+
+export async function getRevenueTrendRequest(
+    days = 7,
+    saccoId?: string,
+): Promise<{ date: string; revenue: number; commission: number }[]> {
+    const params = new URLSearchParams();
+    params.set("days", String(days));
+    if (saccoId) params.set("saccoId", saccoId);
+    const query = params.toString();
+
+    const res = await api.get(`/bookings/earnings/trend${query ? `?${query}` : ""}`);
+    return res.data;
+}
+
+export interface UniquePassengerStats {
+    saccoId: string | null;
+    thisWeekUnique: number;
+    lastWeekUnique: number;
+    newThisWeek: number;
+    returningThisWeek: number;
+    changePercent: number | null;
+}
+
+export async function getUniquePassengerStatsRequest(): Promise<UniquePassengerStats> {
+    const { data } = await api.get<UniquePassengerStats>("/bookings/stats/unique-passengers");
+    return data;
+}

@@ -58,6 +58,9 @@ import {
 import { FleetForm } from "./FleetForm"
 import { useSaccoName } from "@/hooks/useSaccoName"
 import { SaccoCombobox } from "../sacco/SaccoCombobox"
+import { useAuth } from "@/features/auth/AuthContext"
+import { ALL_ADMINS, RoleGuard } from "../auth/RoleGuard"
+
 
 // Extended Vehicle type with queue data
 interface VehicleWithQueue extends Vehicle {
@@ -119,6 +122,9 @@ export function FleetListView({
     className,
     onVehicleSelect,
 }: FleetListViewProps) {
+    const { user } = useAuth()
+    const canManageFleet = user?.role === "SUPER_ADMIN" || user?.role === "SACCO_ADMIN"
+
     const [showForm, setShowForm] = useState(false)
     const [formMode, setFormMode] = useState<"create" | "edit">("create")
     const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null)
@@ -281,8 +287,8 @@ export function FleetListView({
                             ? "Try selecting a different sacco or clear the filter"
                             : "Get started by adding your first vehicle to the fleet."
                         }
-                        actionLabel="Add Vehicle"
-                        onAction={handleAddVehicle}
+                        actionLabel={canManageFleet ? "Add Vehicle" : undefined}
+                        onAction={canManageFleet ? handleAddVehicle : undefined}
                     />
                 ) : (
                     <div className="flex-1 overflow-y-auto max-h-[600px] pr-1 space-y-3">
@@ -340,41 +346,45 @@ export function FleetListView({
                 }}
             />
 
-            <FleetForm
-                open={showForm}
-                onOpenChange={setShowForm}
-                mode={formMode}
-                vehicle={editingVehicle}
-                saccoId={saccoId}
-                onSuccess={handleFormSuccess}
-            />
+            <RoleGuard allowed={ALL_ADMINS}>
+                <FleetForm
+                    open={showForm}
+                    onOpenChange={setShowForm}
+                    mode={formMode}
+                    vehicle={editingVehicle}
+                    saccoId={saccoId}
+                    onSuccess={handleFormSuccess}
+                />
+            </RoleGuard>
 
-            <Dialog open={!!vehicleToDelete} onOpenChange={() => setVehicleToDelete(null)}>
-                <DialogContent className="sm:max-w-md rounded-2xl">
-                    <DialogHeader>
-                        <DialogTitle className="font-display text-slate-900">Retire Vehicle</DialogTitle>
-                        <DialogDescription className="text-slate-500">
-                            Are you sure you want to retire {vehicleToDelete?.numberPlate}? This action can be reversed.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter className="flex flex-col-reverse sm:flex-row gap-2">
-                        <Button
-                            variant="outline"
-                            className="w-full sm:w-auto rounded-lg border-slate-200 text-slate-600 font-bold text-xs"
-                            onClick={() => setVehicleToDelete(null)}
-                        >
-                            Cancel
-                        </Button>
-                        <Button
-                            className="w-full sm:w-auto rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs"
-                            onClick={confirmDelete}
-                            disabled={deleteMutation.isPending}
-                        >
-                            {deleteMutation.isPending ? "Retiring..." : "Retire Vehicle"}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
+            <RoleGuard allowed={ALL_ADMINS}>
+                <Dialog open={!!vehicleToDelete} onOpenChange={() => setVehicleToDelete(null)}>
+                    <DialogContent className="sm:max-w-md rounded-2xl">
+                        <DialogHeader>
+                            <DialogTitle className="font-display text-slate-900">Retire Vehicle</DialogTitle>
+                            <DialogDescription className="text-slate-500">
+                                Are you sure you want to retire {vehicleToDelete?.numberPlate}? This action can be reversed.
+                            </DialogDescription>
+                        </DialogHeader>
+                        <DialogFooter className="flex flex-col-reverse sm:flex-row gap-2">
+                            <Button
+                                variant="outline"
+                                className="w-full sm:w-auto rounded-lg border-slate-200 text-slate-600 font-bold text-xs"
+                                onClick={() => setVehicleToDelete(null)}
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                className="w-full sm:w-auto rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs"
+                                onClick={confirmDelete}
+                                disabled={deleteMutation.isPending}
+                            >
+                                {deleteMutation.isPending ? "Retiring..." : "Retire Vehicle"}
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
+            </RoleGuard>
         </>
     )
 }
@@ -501,13 +511,15 @@ function FleetToolbar({
                     />
                 </div>
 
-                <button
-                    onClick={onAddVehicle}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 shadow transition-all duration-200 active:scale-[0.98]"
-                >
-                    <Plus className="w-3.5 h-3.5" />
-                    Add
-                </button>
+                <RoleGuard allowed={ALL_ADMINS}>
+                    <button
+                        onClick={onAddVehicle}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 shadow transition-all duration-200 active:scale-[0.98]"
+                    >
+                        <Plus className="w-3.5 h-3.5" />
+                        Add
+                    </button>
+                </RoleGuard>
             </div>
         </div>
     )
@@ -577,44 +589,47 @@ function RowActionsMenu({ vehicle, onSelect, onEdit, onStatusChange, onDelete, i
                     <Eye className="size-3.5 mr-2" />
                     View details
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit() }} className="text-xs font-medium">
-                    <Pencil className="size-3.5 mr-2" />
-                    Edit
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                    onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.ACTIVE) }}
-                    disabled={vehicle.status === VehicleStatus.ACTIVE}
-                    className="text-xs font-bold text-emerald-600"
-                >
-                    <CheckCircle2 className="size-3.5 mr-2" />
-                    Set Active
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                    onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.MAINTENANCE) }}
-                    disabled={vehicle.status === VehicleStatus.MAINTENANCE}
-                    className="text-xs font-bold text-rose-600"
-                >
-                    <Wrench className="size-3.5 mr-2" />
-                    Send to Shop
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                    onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.RETIRED) }}
-                    disabled={vehicle.status === VehicleStatus.RETIRED}
-                    className="text-xs font-bold text-slate-500"
-                >
-                    <XCircle className="size-3.5 mr-2" />
-                    Set Retired
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                    onClick={(e) => { e.stopPropagation(); onDelete() }}
-                    className="text-xs font-bold text-rose-600"
-                    disabled={vehicle.status === VehicleStatus.RETIRED}
-                >
-                    <Trash2 className="size-3.5 mr-2" />
-                    Retire Vehicle
-                </DropdownMenuItem>
+
+                <RoleGuard allowed={ALL_ADMINS}>
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit() }} className="text-xs font-medium">
+                        <Pencil className="size-3.5 mr-2" />
+                        Edit
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                        onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.ACTIVE) }}
+                        disabled={vehicle.status === VehicleStatus.ACTIVE}
+                        className="text-xs font-bold text-emerald-600"
+                    >
+                        <CheckCircle2 className="size-3.5 mr-2" />
+                        Set Active
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                        onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.MAINTENANCE) }}
+                        disabled={vehicle.status === VehicleStatus.MAINTENANCE}
+                        className="text-xs font-bold text-rose-600"
+                    >
+                        <Wrench className="size-3.5 mr-2" />
+                        Send to Shop
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                        onClick={(e) => { e.stopPropagation(); onStatusChange(VehicleStatus.RETIRED) }}
+                        disabled={vehicle.status === VehicleStatus.RETIRED}
+                        className="text-xs font-bold text-slate-500"
+                    >
+                        <XCircle className="size-3.5 mr-2" />
+                        Set Retired
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                        onClick={(e) => { e.stopPropagation(); onDelete() }}
+                        className="text-xs font-bold text-rose-600"
+                        disabled={vehicle.status === VehicleStatus.RETIRED}
+                    >
+                        <Trash2 className="size-3.5 mr-2" />
+                        Retire Vehicle
+                    </DropdownMenuItem>
+                </RoleGuard>
             </DropdownMenuContent>
         </DropdownMenu>
     )
@@ -884,13 +899,15 @@ function VehicleDetailsDialog({
                 </div>
 
                 <div className="flex gap-2 pt-2">
-                    <button
-                        onClick={onEdit}
-                        className="flex-1 py-2 px-3 text-xs font-bold border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg flex items-center justify-center gap-1.5 transition-all"
-                    >
-                        <Pencil className="size-3.5" />
-                        Edit
-                    </button>
+                    <RoleGuard allowed={ALL_ADMINS}>
+                        <button
+                            onClick={onEdit}
+                            className="flex-1 py-2 px-3 text-xs font-bold border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg flex items-center justify-center gap-1.5 transition-all"
+                        >
+                            <Pencil className="size-3.5" />
+                            Edit
+                        </button>
+                    </RoleGuard>
                     <button
                         onClick={onOpenChange}
                         className="flex-1 py-2 px-3 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-all"

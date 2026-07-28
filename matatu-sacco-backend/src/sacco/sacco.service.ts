@@ -6,8 +6,12 @@ import {
     ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, QueryFailedError, Repository, SelectQueryBuilder } from 'typeorm';
+import { ILike, ObjectLiteral, QueryFailedError, Repository, SelectQueryBuilder } from 'typeorm';
 import { Sacco, SaccoContact, SaccoEmail } from './entities/sacco.entity';
+import { BookingService } from 'src/booking/booking.service';
+import { TripService } from 'src/trip/trip.service';
+import { Trip } from 'src/trip/entities/trip.entity';
+import { Booking } from 'src/booking/entities/booking.entity';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -43,6 +47,13 @@ export interface PaginatedSaccos {
     totalPages: number;
 }
 
+export interface SaccoCountStats {
+    currentCount: number;
+    lastWeekCount: number;
+    percentageChange: number; // positive = growth, negative = decline
+    changeDirection: 'up' | 'down' | 'no-change';
+}
+
 export interface UpdateSaccoDto {
     name?: string;
     registrationNumber?: string;
@@ -52,14 +63,165 @@ export interface UpdateSaccoDto {
     isActive?: boolean;
 }
 
-// ─── Service ──────────────────────────────────────────────────────────────────
+export interface SaccoPerformanceSummary {
+    saccoId: string;
+    saccoName: string;
+    isActive: boolean;
+    tripsThisWeek: number;
+    tripsLastWeek: number;
+    tripsChangePercent: number | null;
+    bookingsThisWeek: number;
+    uniquePassengersThisWeek: number;
+    grossFaresThisWeek: number;   // deliberately not "revenue" — no commission model yet
+    lastActiveDate: string | null; // most recent trip.travelDate for this sacco
+    status: 'Healthy' | 'Low Activity' | 'Inactive';
+}
 
+// ─── Service ──────────────────────────────────────────────────────────────────
 @Injectable()
 export class SaccoService {
     constructor(
         @InjectRepository(Sacco)
         private readonly saccoRepository: Repository<Sacco>,
+        private readonly tripService: TripService,
+        private readonly bookingService: BookingService,
     ) { }
+
+    private toDateString(date: Date): string {
+        return date.toISOString().slice(0, 10);
+    }
+
+    private subtractDays(date: Date, days: number): Date {
+        const result = new Date(date);
+        result.setDate(result.getDate() - days);
+        return result;
+    }
+
+    // ── Per-SACCO performance (super admin comparison table) ─────────────────
+    async getSaccoPerformanceSummaries(
+        includeInactive = false,
+        saccoId?: string,
+    ): Promise<SaccoPerformanceSummary[]> {
+        const saccos = await this.fetchSaccos(includeInactive, saccoId);
+        if (saccos.length === 0) return [];
+
+        const stats = await this.fetchSaccoWeeklyStats(saccoId);
+        return saccos.map((sacco) => this.buildSaccoSummary(sacco, stats));
+    }
+
+    private async fetchSaccos(includeInactive: boolean, saccoId?: string) {
+        const qb = this.saccoRepository.createQueryBuilder('sacco');
+        if (!includeInactive) qb.andWhere('sacco.isActive = :isActive', { isActive: true });
+        if (saccoId) qb.andWhere('sacco.id = :saccoId', { saccoId });
+        return qb.select(['sacco.id', 'sacco.name', 'sacco.isActive']).getMany();
+    }
+
+    private scopeBySacco<T extends ObjectLiteral>(
+        qb: SelectQueryBuilder<T>,
+        saccoId?: string,
+    ): SelectQueryBuilder<T> {
+        return saccoId ? qb.andWhere('saccoId = :saccoId', { saccoId }) : qb;
+    }
+
+    private async fetchSaccoWeeklyStats(saccoId?: string) {
+        const now = new Date();
+        const thisWeek = { start: this.toDateString(this.subtractDays(now, 6)), end: this.toDateString(now) };
+        const lastWeek = { start: this.toDateString(this.subtractDays(now, 13)), end: this.toDateString(this.subtractDays(now, 7)) };
+        const manager = this.saccoRepository.manager;
+
+        const [trips, tripsLastWeek, lastActive, bookings, uniquePassengers, grossFares] = await Promise.all([
+            this.scopeBySacco(
+                manager.createQueryBuilder(Trip, 'trip')
+                    .select('trip.saccoId', 'saccoId').addSelect('COUNT(*)', 'count')
+                    .where('trip.travelDate BETWEEN :start AND :end', thisWeek).groupBy('trip.saccoId'),
+                saccoId,
+            ).getRawMany<{ saccoId: string; count: string }>(),
+
+            this.scopeBySacco(
+                manager.createQueryBuilder(Trip, 'trip')
+                    .select('trip.saccoId', 'saccoId').addSelect('COUNT(*)', 'count')
+                    .where('trip.travelDate BETWEEN :start AND :end', lastWeek).groupBy('trip.saccoId'),
+                saccoId,
+            ).getRawMany<{ saccoId: string; count: string }>(),
+
+            this.scopeBySacco(
+                manager.createQueryBuilder(Trip, 'trip')
+                    .select('trip.saccoId', 'saccoId').addSelect('MAX(trip.travelDate)', 'lastActiveDate')
+                    .groupBy('trip.saccoId'),
+                saccoId,
+            ).getRawMany<{ saccoId: string; lastActiveDate: string | null }>(),
+
+            this.scopeBySacco(
+                manager.createQueryBuilder(Booking, 'b')
+                    .select('b.saccoId', 'saccoId').addSelect('COUNT(*)', 'count')
+                    .where('b.travelDate BETWEEN :start AND :end', thisWeek)
+                    .andWhere('b.status != :cancelled', { cancelled: 'CANCELLED' }).groupBy('b.saccoId'),
+                saccoId,
+            ).getRawMany<{ saccoId: string; count: string }>(),
+
+            this.scopeBySacco(
+                manager.createQueryBuilder(Booking, 'b')
+                    .select('b.saccoId', 'saccoId').addSelect('COUNT(DISTINCT b.passengerPhone)', 'count')
+                    .where('b.travelDate BETWEEN :start AND :end', thisWeek)
+                    .andWhere('b.status != :cancelled', { cancelled: 'CANCELLED' }).groupBy('b.saccoId'),
+                saccoId,
+            ).getRawMany<{ saccoId: string; count: string }>(),
+
+            this.scopeBySacco(
+                manager.createQueryBuilder(Booking, 'b')
+                    .select('b.saccoId', 'saccoId').addSelect('SUM(b.fare)', 'total')
+                    .where('b.travelDate BETWEEN :start AND :end', thisWeek)
+                    .andWhere('b.paymentStatus = :paid', { paid: 'PAID' })
+                    .andWhere('b.status != :cancelled', { cancelled: 'CANCELLED' }),
+                saccoId,
+            ).groupBy('b.saccoId').getRawMany<{ saccoId: string; total: string }>(),
+        ]);
+
+        return {
+            tripsThisWeek: new Map(trips.map((r) => [r.saccoId, Number(r.count)])),
+            tripsLastWeek: new Map(tripsLastWeek.map((r) => [r.saccoId, Number(r.count)])),
+            lastActive: new Map(lastActive.map((r) => [r.saccoId, r.lastActiveDate])),
+            bookings: new Map(bookings.map((r) => [r.saccoId, Number(r.count)])),
+            uniquePassengers: new Map(uniquePassengers.map((r) => [r.saccoId, Number(r.count)])),
+            grossFares: new Map(grossFares.map((r) => [r.saccoId, Number(r.total)])),
+        };
+    }
+
+    private buildSaccoSummary(sacco: Sacco, stats: Awaited<ReturnType<typeof this.fetchSaccoWeeklyStats>>): SaccoPerformanceSummary {
+        const tripsThisWeek = stats.tripsThisWeek.get(sacco.id) ?? 0;
+        const tripsLastWeek = stats.tripsLastWeek.get(sacco.id) ?? 0;
+        const tripsChangePercent = tripsLastWeek > 0
+            ? Number((((tripsThisWeek - tripsLastWeek) / tripsLastWeek) * 100).toFixed(1))
+            : null;
+        const lastActiveDate = stats.lastActive.get(sacco.id) ?? null;
+
+        let status: SaccoPerformanceSummary['status'] = 'Healthy';
+        if (!lastActiveDate) status = 'Inactive';
+        else if (tripsThisWeek < 3) status = 'Low Activity';
+
+        return {
+            saccoId: sacco.id,
+            saccoName: sacco.name,
+            isActive: sacco.isActive,
+            tripsThisWeek,
+            tripsLastWeek,
+            tripsChangePercent,
+            bookingsThisWeek: stats.bookings.get(sacco.id) ?? 0,
+            uniquePassengersThisWeek: stats.uniquePassengers.get(sacco.id) ?? 0,
+            grossFaresThisWeek: stats.grossFares.get(sacco.id) ?? 0,
+            lastActiveDate,
+            status,
+        };
+    }
+
+    private saccoScopedQuery<T extends ObjectLiteral>(
+        qb: SelectQueryBuilder<T>,
+        saccoId?: string,
+        alias = 'saccoId',
+    ) {
+        if (saccoId) qb.andWhere(`${qb.alias}.saccoId = :saccoId`, { saccoId });
+        return qb.groupBy(`${qb.alias}.saccoId`).getRawMany();
+    }
 
     // ── Create ────────────────────────────────────────────────────────────────────
 
@@ -294,5 +456,51 @@ export class SaccoService {
         return this.saccoRepository.save(sacco);
     }
 
+    // ─── Stats ──────────────────────────────────────────────────────────────────
+
+
+
+    async getSaccoCountStats(includeInactive = false): Promise<SaccoCountStats> {
+        const qb = this.saccoRepository.createQueryBuilder('sacco');
+
+        if (!includeInactive) {
+            qb.andWhere('sacco.isActive = :isActive', { isActive: true });
+        }
+
+        // Total count right now
+        const currentCount = await qb.getCount();
+
+        // Count of saccos that already existed 7 days ago
+        const oneWeekAgo = new Date();
+        oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+
+        const lastWeekQb = this.saccoRepository.createQueryBuilder('sacco');
+
+        if (!includeInactive) {
+            lastWeekQb.andWhere('sacco.isActive = :isActive', { isActive: true });
+        }
+
+        lastWeekQb.andWhere('sacco.createdAt <= :oneWeekAgo', { oneWeekAgo });
+
+        const lastWeekCount = await lastWeekQb.getCount();
+
+        const percentageChange = this.calculatePercentageChange(currentCount, lastWeekCount);
+
+        return {
+            currentCount,
+            lastWeekCount,
+            percentageChange,
+            changeDirection:
+                percentageChange > 0 ? 'up' : percentageChange < 0 ? 'down' : 'no-change',
+        };
+    }
+
+    private calculatePercentageChange(current: number, previous: number): number {
+        if (previous === 0) {
+            // Avoid divide-by-zero: if there were 0 before and some now, that's a full 100% increase (or 0 if both are 0)
+            return current === 0 ? 0 : 100;
+        }
+        return Number((((current - previous) / previous) * 100).toFixed(2));
+    }
 
 }

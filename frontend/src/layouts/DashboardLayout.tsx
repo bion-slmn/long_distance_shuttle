@@ -10,6 +10,7 @@ import {
     Road,
     Book,
     LayoutDashboard,
+    Gauge,
 } from "lucide-react"
 
 import {
@@ -29,6 +30,7 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Separator } from "@/components/ui/separator"
 import { useAuth } from "@/features/auth/AuthContext"
+import { useSaccoName } from "@/hooks/useSaccoName"
 
 interface NavItem {
     label: string
@@ -69,17 +71,25 @@ const NAV_ITEMS: NavItem[] = [
         roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
     {
-        label: "Clerk Dashboard",
-        href: "/dashboard-clerk",
+        label: "Users",
+        href: "/users-saccos",
         icon: LayoutDashboard,
         roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
     {
         label: "Route Queue",
         href: "/routeQueue",
-        icon: ListOrdered,
+        icon: Gauge,
         roles: ["SUPER_ADMIN", "SACCO_ADMIN"],
     },
+
+    {
+        label: "Overview",
+        href: "/dashboard",
+        icon: ListOrdered,
+        roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
+    },
+
 ];
 
 function getInitials(name?: string, email?: string) {
@@ -95,6 +105,9 @@ function getInitials(name?: string, email?: string) {
 export function DashboardLayout() {
     const location = useLocation()
     const { user, logout } = useAuth()
+    const saccoName = useSaccoName(user?.saccoId) // adjust field name if it differs on your user object
+    const brandLabel = saccoName ?? "Fleet Admin"
+
 
     const visibleItems = NAV_ITEMS
         .filter((item) => !user?.role || item.roles.includes(user.role))
@@ -108,9 +121,16 @@ export function DashboardLayout() {
                         <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
                             <Building2 className="size-4 text-primary" />
                         </div>
-                        <span className="font-semibold text-sm group-data-[collapsible=icon]:hidden">
-                            Fleet Admin
-                        </span>
+                        <div className="min-w-0 group-data-[collapsible=icon]:hidden">
+                            <span className="font-semibold text-sm block truncate">
+                                {brandLabel}
+                            </span>
+                            {user?.role && (
+                                <span className="text-[10px] text-muted-foreground block truncate">
+                                    {user.role}
+                                </span>
+                            )}
+                        </div>
                     </div>
                 </SidebarHeader>
 
@@ -138,21 +158,35 @@ export function DashboardLayout() {
 
                 <SidebarFooter>
                     {user && (
-                        <div className="flex items-center gap-2 px-2 py-1.5">
-                            <Avatar className="size-8 shrink-0">
-                                <AvatarFallback className="bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400 text-xs font-medium">
-                                    {getInitials(user.fullName, user.email)}
-                                </AvatarFallback>
-                            </Avatar>
-                            <div className="min-w-0 group-data-[collapsible=icon]:hidden">
-                                <p className="truncate text-xs font-medium">
-                                    {user.fullName ?? user.email}
-                                </p>
-                                <p className="truncate text-[10px] text-muted-foreground">
-                                    {user.role}
-                                </p>
-                            </div>
-                        </div>
+                        <SidebarMenu>
+                            <SidebarMenuItem>
+                                {/*
+                                    Profile lives at its own route rather than in NAV_ITEMS —
+                                    it's account-level, not role-gated content, so this footer
+                                    block doubles as the entry point instead of a nav row.
+                                */}
+                                <SidebarMenuButton asChild tooltip="Profile">
+                                    <Link
+                                        to="/profile"
+                                        className="flex w-full items-center gap-2"
+                                    >
+                                        <Avatar className="size-8 shrink-0">
+                                            <AvatarFallback className="bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400 text-xs font-medium">
+                                                {getInitials(user.fullName, user.email)}
+                                            </AvatarFallback>
+                                        </Avatar>
+                                        <div className="min-w-0 group-data-[collapsible=icon]:hidden">
+                                            <p className="truncate text-xs font-medium">
+                                                {user.fullName ?? user.email}
+                                            </p>
+                                            <p className="truncate text-[10px] text-muted-foreground">
+                                                {user.role}
+                                            </p>
+                                        </div>
+                                    </Link>
+                                </SidebarMenuButton>
+                            </SidebarMenuItem>
+                        </SidebarMenu>
                     )}
                     <SidebarMenu>
                         <SidebarMenuItem>
@@ -173,7 +207,14 @@ export function DashboardLayout() {
                 <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
                     <SidebarTrigger />
                     <Separator orientation="vertical" className="h-4" />
-                    <span className="font-medium text-sm">Fleet Admin</span>
+                    <div className="flex items-baseline gap-2 min-w-0">
+                        <span className="font-medium text-sm truncate">{brandLabel}</span>
+                        {user?.role && (
+                            <span className="text-xs text-muted-foreground shrink-0">
+                                · {user.role}
+                            </span>
+                        )}
+                    </div>
                 </header>
 
                 <main className="flex-1 p-4 md:p-6 overflow-x-hidden">

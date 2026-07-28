@@ -15,6 +15,23 @@ import { Route } from '../route/entities/route.entity';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { UpdateBookingDto } from './dto/update-booking.dto';
 
+export interface UniquePassengerStats {
+  saccoId: string | null;
+  thisWeekUnique: number;      // distinct phone numbers with a booking in the last 7 days
+  lastWeekUnique: number;      // distinct phone numbers in the 7 days before that
+  newThisWeek: number;         // of thisWeekUnique, how many never booked before this week
+  returningThisWeek: number;   // thisWeekUnique - newThisWeek
+  changePercent: number | null; // % change in unique passengers, week over week
+}
+
+export interface TodayPassengerStats {
+  saccoId: string | null;
+  today: number;
+  yesterday: number;
+  changeCount: number;
+  changePercent: number | null;
+}
+
 @Injectable()
 export class BookingService {
   private readonly logger = new Logger(BookingService.name);
@@ -38,6 +55,7 @@ export class BookingService {
   // Tries to slot straight into an already-boarding trip with space.
   // Falls back to AWAITING_TRIP against the route/date if no trip exists
   // yet, or the existing one(s) are full.
+  // booking.service.ts
   async create(dto: CreateBookingDto): Promise<Booking> {
     const route = await this.routeRepository.findOne({ where: { id: dto.routeId } });
     if (!route) {
@@ -45,6 +63,13 @@ export class BookingService {
     }
 
     const travelDate = dto.travelDate ?? this.toDateString(new Date());
+
+    // MVP: no live M-Pesa gateway yet, so both payment methods are treated
+    // as settled at the moment of creation — the clerk is physically present
+    // for cash, and reads back the M-Pesa confirmation SMS before submitting.
+    // Once Daraja is wired up, only MPESA should flip back to PENDING here,
+    // with confirmPayment() taking over via the real callback.
+    const paymentStatus = PaymentStatus.PAID;
 
     return this.bookingRepository.manager.transaction(async (manager) => {
       const openTrip = await manager
@@ -76,7 +101,7 @@ export class BookingService {
             fare: route.fare,
             status: BookingStatus.CONFIRMED,
             paymentMethod: dto.paymentMethod,
-            paymentStatus: PaymentStatus.PENDING,
+            paymentStatus,
             createdByUserId: dto.createdByUserId ?? null,
           });
           const saved = await manager.save(Booking, booking);
@@ -87,8 +112,6 @@ export class BookingService {
         }
       }
 
-      // No open trip, or it's already full — bank the booking against
-      // the route/date; assignPendingBookingsToTrip picks it up later.
       const booking = manager.create(Booking, {
         routeId: dto.routeId,
         travelDate,
@@ -100,7 +123,7 @@ export class BookingService {
         fare: route.fare,
         status: BookingStatus.AWAITING_TRIP,
         paymentMethod: dto.paymentMethod,
-        paymentStatus: PaymentStatus.PENDING,
+        paymentStatus,
         createdByUserId: dto.createdByUserId ?? null,
       });
       const saved = await manager.save(Booking, booking);
@@ -305,6 +328,232 @@ export class BookingService {
       seatsBooked: seatedCount,
       seatsAvailable: openTrip ? openTrip.vehicleCapacity - seatedCount : null,
       awaitingTripCount: awaitingCount, // pre-bookings queued for the next vehicle
+    };
+  }
+
+  // ─── Revenue Trend (for dashboard chart) ────────────────────────────────
+  // Returns one point per day in the range, oldest → newest, so it can be
+  // dropped straight into the LineChart's `data` prop. Gap days (no paid
+  // bookings) are filled with 0 rather than omitted, so the x-axis stays
+  // continuous.
+  //
+  // saccoId omitted → aggregates across ALL saccos (super admin platform view).
+  // saccoId provided → scoped to that sacco only (sacco admin view).
+  async getRevenueTrend(
+    days = 7,
+    saccoId?: string,
+  ): Promise<{ date: string; revenue: number; commission: number }[]> {
+    if (days < 1) {
+      throw new BadRequestException('days must be at least 1.');
+    }
+
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(endDate.getDate() - (days - 1));
+
+    const start = this.toDateString(startDate);
+    const end = this.toDateString(endDate);
+
+    const qb = this.bookingRepository
+      .createQueryBuilder('b')
+      .select('b.travelDate', 'travelDate')
+      .addSelect('SUM(b.fare)', 'grossRevenue')
+      .where('b.travelDate BETWEEN :start AND :end', { start, end })
+      .andWhere('b.paymentStatus = :paid', { paid: PaymentStatus.PAID })
+      .andWhere('b.status != :cancelled', { cancelled: BookingStatus.CANCELLED })
+      .groupBy('b.travelDate');
+
+    if (saccoId) {
+      qb.andWhere('b.saccoId = :saccoId', { saccoId });
+    }
+
+    const rows = await qb.getRawMany<{ travelDate: string | Date; grossRevenue: string }>();
+
+    const revenueByDate = new Map<string, number>(
+      rows.map((r) => [
+        this.normalizeTravelDate(r.travelDate), // ← force back to 'YYYY-MM-DD' string
+        Number(r.grossRevenue),
+      ]),
+    );
+
+    const trend: { date: string; revenue: number; commission: number }[] = [];
+    const cursor = new Date(startDate);
+    while (this.toDateString(cursor) <= end) {
+      const date = this.toDateString(cursor);
+      const revenue = revenueByDate.get(date) ?? 0;
+      trend.push({
+        date,
+        revenue,
+        commission: this.commissionOf(revenue),
+      });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return trend;
+  }
+
+  // pg's raw query results can return date/timestamp columns as JS Date
+  // objects rather than the 'YYYY-MM-DD' string TypeORM's typed entities give
+  // you — happens with getRawMany() specifically. Force it back to a plain
+  // string so it matches the string keys used everywhere else (toDateString,
+  // the day-by-day trend loop, etc).
+  private normalizeTravelDate(value: string | Date): string {
+    if (value instanceof Date) {
+      return this.toDateString(value);
+    }
+    return value; // already a string — some drivers/configs return it that way
+  }
+
+  // Mirrors the frontend's commissionOf — keep the rate in sync, or better,
+  // pull both from one shared constant/config if you have one.
+  private commissionOf(grossRevenue: number): number {
+    const COMMISSION_RATE = 0.1;
+    return grossRevenue * COMMISSION_RATE;
+  }
+
+  // ─── Today's Earnings (for dashboard KPI cards) ─────────────────────────
+  // Single-day totals only — cheaper than getRevenueTrend when you just
+  // need "today", not the whole range (e.g. KPI cards that poll more
+  // often than the chart does).
+  //
+  // saccoId omitted → platform-wide totals (super admin view).
+  async getTodayEarnings(
+    saccoId?: string,
+  ): Promise<{ date: string; grossRevenue: number; commission: number }> {
+    const date = this.toDateString(new Date());
+
+    const qb = this.bookingRepository
+      .createQueryBuilder('b')
+      .select('SUM(b.fare)', 'grossRevenue')
+      .where('b.travelDate = :date', { date })
+      .andWhere('b.paymentStatus = :paid', { paid: PaymentStatus.PAID })
+      .andWhere('b.status != :cancelled', { cancelled: BookingStatus.CANCELLED });
+
+    if (saccoId) {
+      qb.andWhere('b.saccoId = :saccoId', { saccoId });
+    }
+
+    const result = await qb.getRawOne<{ grossRevenue: string | null }>();
+    const revenue = Number(result?.grossRevenue) || 0;
+
+    return {
+      date,
+      grossRevenue: revenue,
+      commission: this.commissionOf(revenue),
+    };
+  }
+
+
+
+  // ─── Unique Passenger Stats (adoption signal, not staff accounts) ───────
+  // Since passengers book as guests (passengerPhone, no userId), "new users"
+  // doesn't mean anything here — this counts distinct phone numbers instead,
+  // which is the real proxy for "are new people trying the service."
+  //
+  // saccoId omitted → platform-wide (super admin view).
+  async getUniquePassengerStats(saccoId?: string): Promise<UniquePassengerStats> {
+    const now = new Date();
+
+    const thisWeekEnd = this.toDateString(now);
+    const thisWeekStart = this.toDateString(this.subtractDays(now, 6)); // 7-day window inclusive
+
+    const lastWeekEnd = this.toDateString(this.subtractDays(now, 7));
+    const lastWeekStart = this.toDateString(this.subtractDays(now, 13));
+
+    const distinctPhonesInRange = async (start: string, end: string): Promise<Set<string>> => {
+      const qb = this.bookingRepository
+        .createQueryBuilder('b')
+        .select('DISTINCT b.passengerPhone', 'passengerPhone')
+        .where('b.travelDate BETWEEN :start AND :end', { start, end })
+        .andWhere('b.status != :cancelled', { cancelled: BookingStatus.CANCELLED });
+
+      if (saccoId) qb.andWhere('b.saccoId = :saccoId', { saccoId });
+
+      const rows = await qb.getRawMany<{ passengerPhone: string }>();
+      return new Set(rows.map((r) => r.passengerPhone));
+    };
+
+    const thisWeekPhones = await distinctPhonesInRange(thisWeekStart, thisWeekEnd);
+    const lastWeekPhones = await distinctPhonesInRange(lastWeekStart, lastWeekEnd);
+
+    // "New" = booked this week but never had a booking before this week started.
+    const priorPhonesQb = this.bookingRepository
+      .createQueryBuilder('b')
+      .select('DISTINCT b.passengerPhone', 'passengerPhone')
+      .where('b.travelDate < :thisWeekStart', { thisWeekStart })
+      .andWhere('b.status != :cancelled', { cancelled: BookingStatus.CANCELLED });
+
+    if (saccoId) priorPhonesQb.andWhere('b.saccoId = :saccoId', { saccoId });
+
+    const priorRows = await priorPhonesQb.getRawMany<{ passengerPhone: string }>();
+    const everBookedBefore = new Set(priorRows.map((r) => r.passengerPhone));
+
+    let newThisWeek = 0;
+    for (const phone of thisWeekPhones) {
+      if (!everBookedBefore.has(phone)) newThisWeek++;
+    }
+
+    const thisWeekUnique = thisWeekPhones.size;
+    const lastWeekUnique = lastWeekPhones.size;
+    const returningThisWeek = thisWeekUnique - newThisWeek;
+
+    const changePercent =
+      lastWeekUnique > 0 ? ((thisWeekUnique - lastWeekUnique) / lastWeekUnique) * 100 : null;
+
+    return {
+      saccoId: saccoId ?? null,
+      thisWeekUnique,
+      lastWeekUnique,
+      newThisWeek,
+      returningThisWeek,
+      changePercent: changePercent !== null ? Number(changePercent.toFixed(1)) : null,
+    };
+  }
+
+
+  private subtractDays(date: Date, days: number): Date {
+    const result = new Date(date);
+    result.setDate(result.getDate() - days);
+    return result;
+  }
+
+  // ─── Today's Passenger Count (for dashboard KPI card) ───────────────────
+  // Total bookings today vs yesterday — NOT deduplicated by phone. This is
+  // headcount of rides taken, distinct from getUniquePassengerStats which
+  // tracks distinct people over a 7-day window. A passenger who books twice
+  // today counts twice here; that's intentional, it's "today, all saccos"
+  // style volume, same spirit as getTodayEarnings.
+  //
+  // saccoId omitted → platform-wide (super admin view).
+  async getTodayPassengerStats(saccoId?: string): Promise<TodayPassengerStats> {
+    const now = new Date();
+    const today = this.toDateString(now);
+    const yesterday = this.toDateString(this.subtractDays(now, 1));
+
+    const countForDate = async (date: string): Promise<number> => {
+      const qb = this.bookingRepository
+        .createQueryBuilder('b')
+        .where('b.travelDate = :date', { date })
+        .andWhere('b.status != :cancelled', { cancelled: BookingStatus.CANCELLED });
+
+      if (saccoId) qb.andWhere('b.saccoId = :saccoId', { saccoId });
+
+      return qb.getCount();
+    };
+
+    const todayCount = await countForDate(today);
+    const yesterdayCount = await countForDate(yesterday);
+
+    const changeCount = todayCount - yesterdayCount;
+    const changePercent =
+      yesterdayCount > 0 ? ((todayCount - yesterdayCount) / yesterdayCount) * 100 : null;
+
+    return {
+      saccoId: saccoId ?? null,
+      today: todayCount,
+      yesterday: yesterdayCount,
+      changeCount,
+      changePercent: changePercent !== null ? Number(changePercent.toFixed(1)) : null,
     };
   }
 }

@@ -43,6 +43,49 @@ export interface Sacco {
     routeCount?: number
 }
 
+// ─── Stats ───────────────────────────────────────────────────────────────────
+
+export interface SaccoCountStats {
+    currentCount: number;
+    lastWeekCount: number;
+    percentageChange: number;
+    changeDirection: 'up' | 'down' | 'no-change';
+}
+
+// GET /saccos/stats/count — SUPER_ADMIN only
+export const getSaccoCountStatsRequest = async (
+    includeInactive = false,
+): Promise<SaccoCountStats> => {
+    const params = new URLSearchParams({ includeInactive: String(includeInactive) });
+    const { data } = await api.get<SaccoCountStats>(`/saccos/stats/count?${params.toString()}`);
+    return data;
+};
+
+export interface SaccoPerformanceSummary {
+    saccoId: string;
+    saccoName: string;
+    isActive: boolean;
+    tripsThisWeek: number;
+    tripsLastWeek: number;
+    tripsChangePercent: number | null;
+    bookingsThisWeek: number;
+    uniquePassengersThisWeek: number;
+    grossFaresThisWeek: number;
+    lastActiveDate: string | null;
+    status: 'Healthy' | 'Low Activity' | 'Inactive';
+}
+
+// GET /saccos/stats/performance — SUPER_ADMIN (all saccos) or SACCO_ADMIN (own sacco only)
+export const getSaccoPerformanceStatsRequest = async (
+    includeInactive = false,
+): Promise<SaccoPerformanceSummary[]> => {
+    const params = new URLSearchParams({ includeInactive: String(includeInactive) });
+    const { data } = await api.get<SaccoPerformanceSummary[]>(
+        `/saccos/stats/performance?${params.toString()}`,
+    );
+    return data;
+};
+
 // ─── Requests ────────────────────────────────────────────────────────────────
 
 // POST /saccos — SUPER_ADMIN only

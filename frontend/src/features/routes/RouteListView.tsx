@@ -50,6 +50,7 @@ import { cn } from "@/lib/utils"
 import { getRoutesRequest, updateRouteRequest, type Route } from "@/api/routeApi"
 import { RouteForm } from "./RouteForm"
 import { useSaccoName } from "@/hooks/useSaccoName"
+import { ALL_ADMINS, RoleGuard } from "../auth/RoleGuard"
 
 interface RouteListViewProps {
     saccoId?: string
@@ -196,13 +197,15 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
                     actionLabel="Add Route"
                     onAction={handleAddRoute}
                 />
-                <RouteForm
-                    open={showForm}
-                    onOpenChange={setShowForm}
-                    mode={formMode}
-                    route={editingRoute}
-                    onSuccess={handleFormSuccess}
-                />
+                <RoleGuard allowed={ALL_ADMINS}>
+                    <RouteForm
+                        open={showForm}
+                        onOpenChange={setShowForm}
+                        mode={formMode}
+                        route={editingRoute}
+                        onSuccess={handleFormSuccess}
+                    />
+                </RoleGuard>
             </>
         )
     }
@@ -225,13 +228,15 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
                         onAction={() => setSearchQuery("")}
                     />
                 </div>
-                <RouteForm
-                    open={showForm}
-                    onOpenChange={setShowForm}
-                    mode={formMode}
-                    route={editingRoute}
-                    onSuccess={handleFormSuccess}
-                />
+                <RoleGuard allowed={ALL_ADMINS}>
+                    <RouteForm
+                        open={showForm}
+                        onOpenChange={setShowForm}
+                        mode={formMode}
+                        route={editingRoute}
+                        onSuccess={handleFormSuccess}
+                    />
+                </RoleGuard>
             </>
         )
     }
@@ -311,50 +316,54 @@ export function RouteListView({ saccoId, className }: RouteListViewProps) {
                 formatCurrency={formatCurrency}
             />
 
-            <RouteForm
-                open={showForm}
-                onOpenChange={setShowForm}
-                mode={formMode}
-                route={editingRoute}
-                onSuccess={handleFormSuccess}
-            />
+            <RoleGuard allowed={ALL_ADMINS}>
+                <RouteForm
+                    open={showForm}
+                    onOpenChange={setShowForm}
+                    mode={formMode}
+                    route={editingRoute}
+                    onSuccess={handleFormSuccess}
+                />
+            </RoleGuard>
 
-            <Dialog open={!!routeToToggle} onOpenChange={() => setRouteToToggle(null)}>
-                <DialogContent className="sm:max-w-md">
-                    <DialogHeader>
-                        <DialogTitle>
-                            {routeToToggle?.isActive ? "Deactivate" : "Activate"} Route
-                        </DialogTitle>
-                        <DialogDescription>
-                            Are you sure you want to {routeToToggle?.isActive ? "deactivate" : "activate"}
-                            the route from {routeToToggle?.origin} to {routeToToggle?.destination}?
-                            {routeToToggle?.isActive
-                                ? " Deactivated routes won't appear in the queue."
-                                : " Activated routes will be available in the queue."}
-                        </DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter className="flex flex-col-reverse sm:flex-row gap-2">
-                        <Button
-                            variant="outline"
-                            className="w-full sm:w-auto"
-                            onClick={() => setRouteToToggle(null)}
-                        >
-                            Cancel
-                        </Button>
-                        <Button
-                            variant={routeToToggle?.isActive ? "destructive" : "default"}
-                            className="w-full sm:w-auto"
-                            onClick={confirmToggle}
-                            disabled={toggleMutation.isPending}
-                        >
-                            {toggleMutation.isPending
-                                ? "Updating..."
-                                : routeToToggle?.isActive ? "Deactivate" : "Activate"
-                            }
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
+            <RoleGuard allowed={ALL_ADMINS}>
+                <Dialog open={!!routeToToggle} onOpenChange={() => setRouteToToggle(null)}>
+                    <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                            <DialogTitle>
+                                {routeToToggle?.isActive ? "Deactivate" : "Activate"} Route
+                            </DialogTitle>
+                            <DialogDescription>
+                                Are you sure you want to {routeToToggle?.isActive ? "deactivate" : "activate"}
+                                the route from {routeToToggle?.origin} to {routeToToggle?.destination}?
+                                {routeToToggle?.isActive
+                                    ? " Deactivated routes won't appear in the queue."
+                                    : " Activated routes will be available in the queue."}
+                            </DialogDescription>
+                        </DialogHeader>
+                        <DialogFooter className="flex flex-col-reverse sm:flex-row gap-2">
+                            <Button
+                                variant="outline"
+                                className="w-full sm:w-auto"
+                                onClick={() => setRouteToToggle(null)}
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                variant={routeToToggle?.isActive ? "destructive" : "default"}
+                                className="w-full sm:w-auto"
+                                onClick={confirmToggle}
+                                disabled={toggleMutation.isPending}
+                            >
+                                {toggleMutation.isPending
+                                    ? "Updating..."
+                                    : routeToToggle?.isActive ? "Deactivate" : "Activate"
+                                }
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
+            </RoleGuard>
         </>
     )
 }
@@ -405,10 +414,12 @@ function RouteToolbar({
                         </button>
                     )}
                 </div>
-                <Button size="sm" onClick={onAddRoute} className="gap-1.5">
-                    <Plus className="size-3.5" />
-                    <span className="hidden sm:inline text-xs">Add</span>
-                </Button>
+                <RoleGuard allowed={ALL_ADMINS}>
+                    <Button size="sm" onClick={onAddRoute} className="gap-1.5">
+                        <Plus className="size-3.5" />
+                        <span className="hidden sm:inline text-xs">Add</span>
+                    </Button>
+                </RoleGuard>
             </div>
         </div>
     )
@@ -475,15 +486,17 @@ function DesktopRouteRow({
                     onKeyDown={(e) => e.stopPropagation()}
                     className="flex items-center justify-end gap-1"
                 >
-                    <Switch
-                        checked={route.isActive}
-                        disabled={isToggling}
-                        onCheckedChange={onToggle}
-                        className="scale-75 data-[state=checked]:bg-emerald-500"
-                        aria-label={route.isActive ? "Deactivate" : "Activate"}
-                    />
+                    <RoleGuard allowed={ALL_ADMINS}>
+                        <Switch
+                            checked={route.isActive}
+                            disabled={isToggling}
+                            onCheckedChange={onToggle}
+                            className="scale-75 data-[state=checked]:bg-emerald-500"
+                            aria-label={route.isActive ? "Deactivate" : "Activate"}
+                        />
+                    </RoleGuard>
                     <DropdownMenu>
-                        <DropdownMenuTrigger >
+                        <DropdownMenuTrigger>
                             <Button
                                 variant="ghost"
                                 size="icon"
@@ -498,27 +511,29 @@ function DesktopRouteRow({
                                 <Eye className="size-3.5 mr-2" />
                                 View details
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={onEdit}>
-                                <Pencil className="size-3.5 mr-2" />
-                                Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                                onClick={onToggle}
-                                className={route.isActive ? "text-destructive" : "text-emerald-600"}
-                            >
-                                {route.isActive ? (
-                                    <>
-                                        <PowerOff className="size-3.5 mr-2" />
-                                        Deactivate
-                                    </>
-                                ) : (
-                                    <>
-                                        <Power className="size-3.5 mr-2" />
-                                        Activate
-                                    </>
-                                )}
-                            </DropdownMenuItem>
+                            <RoleGuard allowed={ALL_ADMINS}>
+                                <DropdownMenuItem onClick={onEdit}>
+                                    <Pencil className="size-3.5 mr-2" />
+                                    Edit
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                    onClick={onToggle}
+                                    className={route.isActive ? "text-destructive" : "text-emerald-600"}
+                                >
+                                    {route.isActive ? (
+                                        <>
+                                            <PowerOff className="size-3.5 mr-2" />
+                                            Deactivate
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Power className="size-3.5 mr-2" />
+                                            Activate
+                                        </>
+                                    )}
+                                </DropdownMenuItem>
+                            </RoleGuard>
                         </DropdownMenuContent>
                     </DropdownMenu>
                 </div>
@@ -593,7 +608,7 @@ function MobileRouteCard({
                 </Badge>
 
                 <DropdownMenu>
-                    <DropdownMenuTrigger >
+                    <DropdownMenuTrigger>
                         <Button
                             variant="ghost"
                             size="icon"
@@ -612,33 +627,35 @@ function MobileRouteCard({
                             <Eye className="size-3.5 mr-2" />
                             View details
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={(e) => {
-                            e.stopPropagation()
-                            onEdit()
-                        }}>
-                            <Pencil className="size-3.5 mr-2" />
-                            Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                            onClick={(e) => {
+                        <RoleGuard allowed={ALL_ADMINS}>
+                            <DropdownMenuItem onClick={(e) => {
                                 e.stopPropagation()
-                                onToggle()
-                            }}
-                            className={route.isActive ? "text-destructive" : "text-emerald-600"}
-                        >
-                            {route.isActive ? (
-                                <>
-                                    <PowerOff className="size-3.5 mr-2" />
-                                    Deactivate
-                                </>
-                            ) : (
-                                <>
-                                    <Power className="size-3.5 mr-2" />
-                                    Activate
-                                </>
-                            )}
-                        </DropdownMenuItem>
+                                onEdit()
+                            }}>
+                                <Pencil className="size-3.5 mr-2" />
+                                Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    onToggle()
+                                }}
+                                className={route.isActive ? "text-destructive" : "text-emerald-600"}
+                            >
+                                {route.isActive ? (
+                                    <>
+                                        <PowerOff className="size-3.5 mr-2" />
+                                        Deactivate
+                                    </>
+                                ) : (
+                                    <>
+                                        <Power className="size-3.5 mr-2" />
+                                        Activate
+                                    </>
+                                )}
+                            </DropdownMenuItem>
+                        </RoleGuard>
                     </DropdownMenuContent>
                 </DropdownMenu>
             </div>
@@ -666,14 +683,16 @@ function MobileRouteCard({
             {/* Status Toggle */}
             <div className="flex items-center justify-end gap-2 mt-2 pt-2 border-t">
                 <span className="text-[10px] text-muted-foreground">Status</span>
-                <Switch
-                    checked={route.isActive}
-                    disabled={isToggling}
-                    onCheckedChange={onToggle}
-                    className="scale-75 data-[state=checked]:bg-emerald-500"
-                    aria-label={route.isActive ? "Deactivate" : "Activate"}
-                    onClick={(e) => e.stopPropagation()}
-                />
+                <RoleGuard allowed={ALL_ADMINS}>
+                    <Switch
+                        checked={route.isActive}
+                        disabled={isToggling}
+                        onCheckedChange={onToggle}
+                        className="scale-75 data-[state=checked]:bg-emerald-500"
+                        aria-label={route.isActive ? "Deactivate" : "Activate"}
+                        onClick={(e) => e.stopPropagation()}
+                    />
+                </RoleGuard>
             </div>
         </div>
     )
@@ -796,13 +815,22 @@ function RouteDetailsDialog({
                 </div>
 
                 <div className="flex gap-2 pt-2">
-                    <Button variant="outline" size="sm" className="flex-1" onClick={onEdit}>
-                        <Pencil className="size-3.5 mr-1.5" />
-                        Edit
-                    </Button>
-                    <Button size="sm" className="flex-1" onClick={onOpenChange}>
-                        Close
-                    </Button>
+                    <RoleGuard
+                        allowed={ALL_ADMINS}
+                        fallback={
+                            <Button size="sm" className="flex-1" onClick={onOpenChange}>
+                                Close
+                            </Button>
+                        }
+                    >
+                        <Button variant="outline" size="sm" className="flex-1" onClick={onEdit}>
+                            <Pencil className="size-3.5 mr-1.5" />
+                            Edit
+                        </Button>
+                        <Button size="sm" className="flex-1" onClick={onOpenChange}>
+                            Close
+                        </Button>
+                    </RoleGuard>
                 </div>
             </DialogContent>
         </Dialog>

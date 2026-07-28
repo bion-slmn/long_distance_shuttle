@@ -67,6 +67,30 @@ export interface FindTripsParams {
     plateNumber?: string; // add this
 }
 
+export interface TripCountSummary {
+    saccoId: string | null;
+    today: number;
+    yesterday: number;
+    changeCount: number;
+    changePercent: number | null;
+}
+
+export interface AverageTripsPerVehicleSummary {
+    saccoId: string | null;
+    todayAverage: number;
+    yesterdayAverage: number;
+    change: number;
+    changePercent: number | null;
+}
+
+export interface TodayPassengerStats {
+    saccoId: string | null;
+    today: number;
+    yesterday: number;
+    changeCount: number;
+    changePercent: number | null;
+}
+
 // ─── Endpoints ──────────────────────────────────────────────────────────────
 
 export async function getTrips(params?: FindTripsParams): Promise<PaginatedTrips> {
@@ -106,5 +130,51 @@ export async function cancelTrip(id: string): Promise<Trip> {
 
 export async function deleteTrip(id: string): Promise<{ deleted: boolean }> {
     const { data } = await api.delete<{ deleted: boolean }>(`/trips/${id}`);
+    return data;
+}
+
+export async function getTripCountSummary(
+    saccoId?: string,
+): Promise<TripCountSummary> {
+    const { data } = await api.get<TripCountSummary>(
+        "/trips/stats/trip-count-summary",
+        {
+            params: { saccoId },
+        },
+    );
+
+    return data;
+}
+
+export async function getAverageTripsPerVehicleSummary(
+    saccoId?: string,
+): Promise<AverageTripsPerVehicleSummary> {
+    const { data } = await api.get<AverageTripsPerVehicleSummary>(
+        "/trips/stats/average-trips-per-vehicle",
+        {
+            params: { saccoId },
+        },
+    );
+
+    return data;
+}
+
+// tripApi.ts
+export interface TripTrendPoint {
+    date: string;
+    trips: number;
+}
+
+export async function getTripTrendRequest(days = 7): Promise<TripTrendPoint[]> {
+    const { data } = await api.get<TripTrendPoint[]>("/trips/stats/trip-trend", {
+        params: { days },
+    });
+    return data;
+}
+
+export async function getTodayPassengerStatsRequest(saccoId?: string): Promise<TodayPassengerStats> {
+    const { data } = await api.get<TodayPassengerStats>("/bookings/stats/today-passengers", {
+        params: saccoId ? { saccoId } : undefined,
+    });
     return data;
 }
