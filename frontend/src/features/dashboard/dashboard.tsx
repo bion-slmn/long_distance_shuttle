@@ -3,7 +3,7 @@ import { Navigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import SuperAdminDashboard from "./superAdmin";
 import SaccoAdminDashboard from "./saccoAdmin";
-import { ClerkDashboard } from "./ActiveVehicleCard";
+import { ClerkDashboard } from "./ClerkDashboard";
 
 
 export type UserRole = 'SUPER_ADMIN' | 'SACCO_ADMIN' | 'DRIVER' | 'CLERK' | string;
@@ -23,6 +23,8 @@ const roleDashboards: Partial<Record<UserRole, React.ComponentType>> = {
 
 export const Dashboard = () => {
     const { user } = useAuth();
+    console.log(user);
+    console.log("Role:", user?.role);
 
     if (!user) {
         return <Navigate to="/login" replace />;

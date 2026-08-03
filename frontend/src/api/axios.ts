@@ -9,6 +9,12 @@ const api = axios.create({
   withCredentials: true,
 });
 
+// src/api/axios.ts
+declare module "axios" {
+  export interface AxiosRequestConfig {
+    skipAuthRefresh?: boolean;
+  }
+}
 // Separate, interceptor-free instance used ONLY for the refresh call.
 // This guarantees a failed refresh can never re-trigger the interceptor.
 export const refreshApi = axios.create({
@@ -45,6 +51,10 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
+
+    if (error.response?.status === 401 && originalRequest?.skipAuthRefresh) {
+      return Promise.reject(error);
+    }
 
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;

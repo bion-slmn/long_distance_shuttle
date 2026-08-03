@@ -44,25 +44,25 @@ const NAV_ITEMS: NavItem[] = [
         label: "Saccos",
         href: "/sacco",
         icon: Building2,
-        roles: ["SUPER_ADMIN", "SACCO_ADMIN"],
+        roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
     {
         label: "Routes",
         href: "/routes",
         icon: RouteIcon,
-        roles: ["SUPER_ADMIN", "SACCO_ADMIN"],
+        roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
     {
         label: "Fleet",
         href: "/vehicles",
         icon: Car,
-        roles: ["SUPER_ADMIN", "SACCO_ADMIN"],
+        roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
     {
         label: "Trips",
         href: "/trips",
         icon: Road,
-        roles: ["SUPER_ADMIN", "SACCO_ADMIN"],
+        roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
     {
         label: "Book",
@@ -74,7 +74,7 @@ const NAV_ITEMS: NavItem[] = [
         label: "Users",
         href: "/users-saccos",
         icon: LayoutDashboard,
-        roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
+        roles: ["SUPER_ADMIN", "SACCO_ADMIN",],
     },
     {
         label: "Route Queue",
@@ -84,7 +84,7 @@ const NAV_ITEMS: NavItem[] = [
     },
 
     {
-        label: "Overview",
+        label: "Dashboard",
         href: "/dashboard",
         icon: ListOrdered,
         roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
@@ -105,13 +105,17 @@ function getInitials(name?: string, email?: string) {
 export function DashboardLayout() {
     const location = useLocation()
     const { user, logout } = useAuth()
-    const saccoName = useSaccoName(user?.saccoId) // adjust field name if it differs on your user object
+    const saccoName = useSaccoName(user?.saccoId!) // adjust field name if it differs on your user object
     const brandLabel = saccoName ?? "Fleet Admin"
 
 
     const visibleItems = NAV_ITEMS
         .filter((item) => !user?.role || item.roles.includes(user.role))
-        .sort((a, b) => a.label.localeCompare(b.label))
+        .sort((a, b) => {
+            if (a.href === "/dashboard") return -1
+            if (b.href === "/dashboard") return 1
+            return a.label.localeCompare(b.label)
+        })
 
     return (
         <SidebarProvider>

@@ -1,7 +1,11 @@
 // src/components/BookTicket.tsx
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getRoutesRequest } from "../../api/routeApi";
+import {
+    getAvailableLocationsRequest,
+    searchRoutesRequest,
+    type RouteSearchResult,
+} from "../../api/routeApi";
 import {
     createBookingRequest,
     getBookingAvailabilityRequest,
@@ -23,10 +27,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, CheckCircle2, Smartphone, Banknote } from "lucide-react";
-
-// TODO: replace with real sacco selection once multi-sacco / auth exists.
-const SACCO_ID = "019f4191-05c5-74b1-b0d7-e83c8b65642b";
+import { ArrowLeft, CheckCircle2, Smartphone, Banknote, Bus } from "lucide-react";
 
 function todayString(): string {
     return new Date().toISOString().slice(0, 10);
@@ -45,30 +46,50 @@ function passengerMessage(booking: Booking): string {
     return "Payment received. You're on the list — we'll seat you as soon as the next shuttle starts boarding.";
 }
 
-type Step = "select" | "details" | "confirmed";
+type Step = "search" | "details" | "confirmed";
 
 export default function BookTicket() {
-    const [routeId, setRouteId] = useState("");
+    const [origin, setOrigin] = useState("");
+    const [destination, setDestination] = useState("");
     const [travelDate, setTravelDate] = useState(todayString());
+    const [selectedRoute, setSelectedRoute] = useState<RouteSearchResult | null>(null);
     const [passengerName, setPassengerName] = useState("");
     const [passengerPhone, setPassengerPhone] = useState("");
     const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(PaymentMethod.MPESA);
-    const [step, setStep] = useState<Step>("select");
+    const [step, setStep] = useState<Step>("search");
     const [confirmedBooking, setConfirmedBooking] = useState<Booking | null>(null);
 
     const queryClient = useQueryClient();
 
-    const routesQuery = useQuery({
-        queryKey: ["routes", SACCO_ID],
-        queryFn: getRoutesRequest,
-        select: (routes) => routes.filter((r) => r.saccoId === SACCO_ID && r.isActive),
+    const locationsQuery = useQuery({
+        queryKey: ["route-locations"],
+        queryFn: getAvailableLocationsRequest,
         staleTime: 5 * 60 * 1000,
     });
 
+    const searchQuery = useQuery({
+        queryKey: ["route-search", origin, destination],
+        queryFn: () => searchRoutesRequest(origin, destination),
+        enabled: !!origin && !!destination,
+        staleTime: 60 * 1000,
+    });
+
+    const searchResults = searchQuery.data ?? [];
+
+    // If exactly one sacco services this origin/destination, skip the
+    // picker and go straight to it — friction only shows up when there's
+    // an actual choice to make.
+    useEffect(() => {
+        if (searchQuery.isSuccess && searchResults.length === 1 && !selectedRoute) {
+            setSelectedRoute(searchResults[0]);
+            setStep("details");
+        }
+    }, [searchQuery.isSuccess, searchResults, selectedRoute]);
+
     const availabilityQuery = useQuery({
-        queryKey: ["booking-availability", routeId, travelDate],
-        queryFn: () => getBookingAvailabilityRequest(routeId, travelDate),
-        enabled: !!routeId,
+        queryKey: ["booking-availability", selectedRoute?.routeId, travelDate],
+        queryFn: () => getBookingAvailabilityRequest(selectedRoute!.routeId, travelDate),
+        enabled: !!selectedRoute,
         // Availability can change fast when a shuttle is close to full —
         // keep it fresh rather than relying on cache.
         staleTime: 15 * 1000,
@@ -80,21 +101,26 @@ export default function BookTicket() {
         onSuccess: (booking) => {
             setConfirmedBooking(booking);
             setStep("confirmed");
-            queryClient.invalidateQueries({ queryKey: ["booking-availability", routeId, travelDate] });
+            queryClient.invalidateQueries({
+                queryKey: ["booking-availability", selectedRoute?.routeId, travelDate],
+            });
         },
     });
 
-    const routes = routesQuery.data ?? [];
-    const selectedRoute = routes.find((r) => r.id === routeId) ?? null;
     const availability = availabilityQuery.data;
     const shuttleFull = availability?.hasOpenTrip && availability.seatsAvailable === 0;
 
+    function chooseRoute(route: RouteSearchResult) {
+        setSelectedRoute(route);
+        setStep("details");
+    }
+
     function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
-        if (!routeId || !passengerName.trim() || !passengerPhone.trim()) return;
+        if (!selectedRoute || !passengerName.trim() || !passengerPhone.trim()) return;
 
         bookingMutation.mutate({
-            routeId,
+            routeId: selectedRoute.routeId,
             travelDate,
             passengerName: passengerName.trim(),
             passengerPhone: passengerPhone.trim(),
@@ -103,15 +129,23 @@ export default function BookTicket() {
     }
 
     function startOver() {
-        setStep("select");
+        setStep("search");
         setConfirmedBooking(null);
+        setSelectedRoute(null);
+        setOrigin("");
+        setDestination("");
         setPassengerName("");
         setPassengerPhone("");
         bookingMutation.reset();
     }
 
+    function backToSearch() {
+        setStep("search");
+        setSelectedRoute(null);
+    }
+
     // ─── Confirmed screen ───────────────────────────────────────────────
-    if (step === "confirmed" && confirmedBooking) {
+    if (step === "confirmed" && confirmedBooking && selectedRoute) {
         return (
             <Card className="mx-auto w-full max-w-md">
                 <CardHeader>
@@ -120,9 +154,11 @@ export default function BookTicket() {
                         Booking received
                     </Badge>
                     <CardTitle>
-                        {selectedRoute?.origin} → {selectedRoute?.destination}
+                        {selectedRoute.origin} → {selectedRoute.destination}
                     </CardTitle>
-                    <CardDescription>{travelDate}</CardDescription>
+                    <CardDescription>
+                        {selectedRoute.saccoName} · {travelDate}
+                    </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="rounded-lg border bg-muted/40 p-4">
@@ -164,7 +200,7 @@ export default function BookTicket() {
             <Card className="mx-auto w-full max-w-md">
                 <CardHeader>
                     <button
-                        onClick={() => setStep("select")}
+                        onClick={backToSearch}
                         className="mb-1 flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
                     >
                         <ArrowLeft className="h-3.5 w-3.5" />
@@ -174,7 +210,7 @@ export default function BookTicket() {
                         {selectedRoute.origin} → {selectedRoute.destination}
                     </CardTitle>
                     <CardDescription>
-                        {travelDate} · KES {selectedRoute.fare}
+                        {selectedRoute.saccoName} · {travelDate} · KES {selectedRoute.fare}
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -249,7 +285,11 @@ export default function BookTicket() {
         );
     }
 
-    // ─── Route + date selection step ────────────────────────────────────
+    // ─── Search step: origin/destination, then sacco choice if needed ──────
+    const origins = locationsQuery.data?.origins ?? [];
+    const destinations = locationsQuery.data?.destinations ?? [];
+    const hasSearched = !!origin && !!destination;
+
     return (
         <Card className="mx-auto w-full max-w-md">
             <CardHeader>
@@ -257,44 +297,67 @@ export default function BookTicket() {
                 <CardDescription>No account needed — just your name and phone.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-                {routesQuery.isLoading && (
+                {locationsQuery.isLoading && (
                     <div className="space-y-2">
                         <Skeleton className="h-9 w-full" />
                         <Skeleton className="h-9 w-full" />
                     </div>
                 )}
 
-                {routesQuery.isError && (
+                {locationsQuery.isError && (
                     <p className="text-sm text-destructive">
                         Couldn't load routes. Check your connection and try again.
                     </p>
                 )}
 
-                {routesQuery.isSuccess && routes.length === 0 && (
-                    <p className="text-sm text-muted-foreground">
-                        No routes are open for booking right now.
-                    </p>
-                )}
-
-                {routes.length > 0 && (
+                {locationsQuery.isSuccess && (
                     <>
-                        <div className="space-y-1.5">
-                            <Label>Route</Label>
-                            <Select
-                                value={routeId}
-                                onValueChange={(value) => setRouteId(value ?? "")}
-                            >
-                                <SelectTrigger>
-                                    <SelectValue placeholder="Select a route" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {routes.map((r) => (
-                                        <SelectItem key={r.id} value={r.id}>
-                                            {r.origin} → {r.destination} (KES {r.fare})
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
+                        <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1.5">
+                                <Label>From</Label>
+                                <Select
+                                    value={origin}
+                                    onValueChange={(value) => {
+                                        setOrigin(value ?? "");
+                                        setSelectedRoute(null);
+                                    }}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Origin" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {origins.map((o) => (
+                                            <SelectItem key={o} value={o}>
+                                                {o}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label>To</Label>
+                                <Select
+                                    value={destination}
+                                    onValueChange={(value) => {
+                                        setDestination(value ?? "");
+                                        setSelectedRoute(null);
+                                    }}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Destination" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {destinations
+                                            .filter((d) => d !== origin)
+                                            .map((d) => (
+                                                <SelectItem key={d} value={d}>
+                                                    {d}
+                                                </SelectItem>
+                                            ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
                         </div>
 
                         <div className="space-y-1.5">
@@ -308,20 +371,45 @@ export default function BookTicket() {
                             />
                         </div>
 
-                        {routeId && (
-                            <AvailabilityNote
-                                loading={availabilityQuery.isLoading}
-                                availability={availability}
-                            />
+                        {hasSearched && searchQuery.isLoading && (
+                            <div className="space-y-2">
+                                <Skeleton className="h-14 w-full" />
+                                <Skeleton className="h-14 w-full" />
+                            </div>
                         )}
 
-                        <Button
-                            className="w-full"
-                            disabled={!routeId}
-                            onClick={() => setStep("details")}
-                        >
-                            Continue
-                        </Button>
+                        {hasSearched && searchQuery.isError && (
+                            <p className="text-sm text-destructive">
+                                Couldn't search routes. Check your connection and try again.
+                            </p>
+                        )}
+
+                        {hasSearched && searchQuery.isSuccess && searchResults.length === 0 && (
+                            <p className="text-sm text-muted-foreground">
+                                No SACCOs currently run {origin} → {destination}.
+                            </p>
+                        )}
+
+                        {/* Only rendered when there's a genuine choice — a single
+                            result auto-advances to details via the effect above. */}
+                        {hasSearched && searchResults.length > 1 && (
+                            <div className="space-y-2">
+                                <Label>Choose a SACCO</Label>
+                                {searchResults.map((route) => (
+                                    <button
+                                        key={route.routeId}
+                                        onClick={() => chooseRoute(route)}
+                                        className="flex w-full items-center justify-between rounded-md border border-input px-3 py-2.5 text-left text-sm transition-colors hover:bg-accent"
+                                    >
+                                        <span className="flex items-center gap-2 font-medium">
+                                            <Bus className="h-4 w-4 text-muted-foreground" />
+                                            {route.saccoName}
+                                        </span>
+                                        <span className="text-muted-foreground">KES {route.fare}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                     </>
                 )}
             </CardContent>

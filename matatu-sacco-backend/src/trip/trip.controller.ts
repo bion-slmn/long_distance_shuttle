@@ -69,7 +69,8 @@ export class TripController {
     @Body() updateTripDto: UpdateTripDto,
     @CurrentUser() user: any,
   ) {
-    return this.tripService.update(id, updateTripDto, user.saccoId);
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.tripService.update(id, updateTripDto, saccoId);
   }
 
   @Patch(':id/passenger-count')
@@ -79,25 +80,29 @@ export class TripController {
     @Body('passengerCount', ParseIntPipe) passengerCount: number,
     @CurrentUser() user: any,
   ) {
-    return this.tripService.updatePassengerCount(id, passengerCount, user.saccoId);
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.tripService.updatePassengerCount(id, passengerCount, saccoId);
   }
 
   @Patch(':id/depart')
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
-  markDeparted(@Param('id', ParseUUIDPipe) id: string) {
-    return this.tripService.markDeparted(id);
+  markDeparted(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.tripService.markDeparted(id, saccoId);
   }
 
   @Patch(':id/cancel')
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
   cancel(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
-    return this.tripService.cancel(id, user.saccoId);
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.tripService.cancel(id, saccoId);
   }
 
   @Delete(':id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
   remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
-    return this.tripService.remove(id, user.saccoId);
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.tripService.remove(id, saccoId);
   }
 
   // ── Stats ──────────────────────────────────────────────────────────────
@@ -132,6 +137,7 @@ export class TripController {
   @Get(':id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
   findOne(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
-    return this.tripService.findOneScoped(id, user.saccoId);
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    return this.tripService.findOneScoped(id, saccoId);
   }
 }

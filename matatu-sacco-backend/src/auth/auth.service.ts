@@ -37,7 +37,8 @@ export interface CreateStaffDto {
     phoneNumber?: string;
     password: string;
     role: UserRole.DRIVER | UserRole.CLERK;
-    saccoId: string; // required here, not optional
+    saccoId: string;
+    assignedStage?: string; // ← missing, add this
 }
 
 export interface TokenPair {
@@ -262,6 +263,9 @@ export class AuthService {
                 'Provide at least an email or phone number.',
             );
         }
+        if (dto.role === UserRole.CLERK && !dto.assignedStage) {
+            throw new BadRequestException('Assigned stage is required for clerks.');
+        }
 
         await this.assertNoDuplicateEmail(dto.email);
         await this.assertNoDuplicatePhone(dto.phoneNumber);
@@ -275,6 +279,7 @@ export class AuthService {
             passwordHash,
             role: dto.role,
             saccoId: dto.saccoId,
+            assignedStage: dto.role === UserRole.CLERK ? dto.assignedStage ?? null : null, // ← add
             tokenVersion: 0,
         });
 
@@ -303,6 +308,8 @@ export class AuthService {
             skip: (page - 1) * limit,
             take: limit,
         });
+
+
 
         return {
             data: users.map((u) => this.sanitizeUser(u)),
@@ -334,6 +341,7 @@ export class AuthService {
             phone: user.phoneNumber,
             role: user.role,
             saccoId: user.saccoId,
+            assignedStage: user.assignedStage, // ← add
             tokenVersion: user.tokenVersion,
         };
 
@@ -359,6 +367,7 @@ export class AuthService {
             phoneNumber: user.phoneNumber,
             role: user.role,
             saccoId: user.saccoId,
+            assignedStage: user.assignedStage, // ← add
             createdAt: user.createdAt,
         };
     }

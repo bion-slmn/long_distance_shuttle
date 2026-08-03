@@ -43,6 +43,7 @@ export interface User {
     role: UserRole;
     saccoId?: string | null;
     createdAt?: string;
+    assignedStage?: string | null
 }
 
 export interface AuthResponse {

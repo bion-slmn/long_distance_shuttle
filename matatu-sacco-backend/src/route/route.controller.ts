@@ -14,7 +14,7 @@ import {
   ForbiddenException,
   Query,
 } from '@nestjs/common';
-import { RouteService, } from './route.service';
+import { RouteService } from './route.service';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { RolesGuard } from '../guards/roles.guard';
 import { Roles } from '../decorators/roles.decorator';
@@ -23,11 +23,18 @@ import { UserRole } from '../auth/entities/user.entity';
 import { UpdateQueueDto, UpdateRouteDto } from './dto/update-route.dto';
 import { QueueEntryStatus } from './entities/queue-entry.entity';
 import { CreateQueueDto, CreateRouteDto } from './dto/create-route.dto';
+import { Public } from 'src/decorators/public.decorator';
+import { RouteQueueService } from './route-queue.service';
+import { RouteAnalyticsService } from './route-analytics.service';
 
 @Controller('routes')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class RouteController {
-  constructor(private readonly routeService: RouteService) { }
+  constructor(
+    private readonly routeService: RouteService,
+    private readonly routeQueueService: RouteQueueService,
+    private readonly routeAnalyticsService: RouteAnalyticsService,
+  ) { }
 
   // ── POST /routes ──────────────────────────────────────────────────────────
 
@@ -56,7 +63,8 @@ export class RouteController {
       ? undefined
       : user.saccoId;
 
-    return this.routeService.findAll(saccoId);
+
+    return this.routeService.findAll(saccoId, user.assignedStage);
   }
 
   // ── GET /routes/stats/fill-time-comparison ───────────────────────────────
@@ -64,7 +72,7 @@ export class RouteController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
   getAverageFillTimeComparison(@CurrentUser() user: any) {
     const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
-    return this.routeService.getAverageFillTimeComparison(saccoId);
+    return this.routeAnalyticsService.getAverageFillTimeComparison(saccoId);
   }
 
   // ── GET /routes/stats/fastest-today ───────────────────────────────────────
@@ -72,7 +80,7 @@ export class RouteController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
   getFastestRoutesToday(@CurrentUser() user: any) {
     const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
-    return this.routeService.getFastestRoutesToday(saccoId);
+    return this.routeAnalyticsService.getFastestRoutesToday(saccoId);
   }
 
   // ── GET /routes/stats/performance-vs-yesterday ────────────────────────────
@@ -80,7 +88,22 @@ export class RouteController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
   getRoutePerformanceVsYesterday(@CurrentUser() user: any) {
     const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
-    return this.routeService.getRoutePerformanceVsYesterday(saccoId);
+    return this.routeAnalyticsService.getRoutePerformanceVsYesterday(saccoId);
+  }
+
+  @Public()
+  @Get('locations')
+  getAvailableLocations() {
+    return this.routeService.getAvailableLocations();
+  }
+
+  @Public()
+  @Get('search')
+  searchRoutes(
+    @Query('origin') origin: string,
+    @Query('destination') destination: string,
+  ) {
+    return this.routeService.searchRoutes(origin, destination);
   }
 
   // =========================================================================
@@ -99,7 +122,7 @@ export class RouteController {
   ) {
     const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
     const assignedStage = user.role === UserRole.CLERK ? user.assignedStage : undefined;
-    return this.routeService.clockInVehicle(body, saccoId, assignedStage);
+    return this.routeQueueService.clockInVehicle(body, saccoId, assignedStage);
   }
 
   // ── GET /routes/queue/available ──────────────────────────────────────────
@@ -108,9 +131,12 @@ export class RouteController {
   findAvailableVehicles(
     @Query('routeId', ParseUUIDPipe) routeId: string,
     @Query('date') dateString?: string,
+    @CurrentUser() user?: any,
   ) {
     const targetDate = dateString ? new Date(dateString) : new Date();
-    return this.routeService.findAvailableVehiclesForRoute(routeId, targetDate);
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    const assignedStage = user.role === UserRole.CLERK ? user.assignedStage : undefined;
+    return this.routeQueueService.findAvailableVehiclesForRoute(routeId, targetDate, saccoId, assignedStage);
   }
 
   // ── GET /routes/queue ────────────────────────────────────────────────────
@@ -122,7 +148,7 @@ export class RouteController {
     @Query('status') status?: QueueEntryStatus,
     @Query('date') dateString?: string,
   ) {
-    return this.routeService.findAllQueueEntries({
+    return this.routeQueueService.findAllQueueEntries({
       routeId,
       status,
       date: dateString ? new Date(dateString) : undefined,
@@ -133,7 +159,7 @@ export class RouteController {
   @Get('queue/:id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
   findOneQueueEntry(@Param('id', ParseUUIDPipe) id: string) {
-    return this.routeService.findOneQueueEntry(id);
+    return this.routeQueueService.findOneQueueEntry(id);
   }
 
   // ── PATCH /routes/queue/:id ──────────────────────────────────────────────
@@ -147,7 +173,7 @@ export class RouteController {
   ) {
     const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
     const assignedStage = user.role === UserRole.CLERK ? user.assignedStage : undefined;
-    return this.routeService.updateQueueEntry(id, body, saccoId, assignedStage);
+    return this.routeQueueService.updateQueueEntry(id, body, saccoId, assignedStage);
   }
 
   // ── DELETE /routes/queue/:id ─────────────────────────────────────────────
@@ -159,7 +185,8 @@ export class RouteController {
     @CurrentUser() user: any,
   ) {
     const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
-    return this.routeService.removeVehicleFromQueue(id, saccoId);
+    const assignedStage = user.role === UserRole.CLERK ? user.assignedStage : undefined;
+    return this.routeQueueService.removeVehicleFromQueue(id, saccoId, assignedStage);
   }
 
   // =========================================================================

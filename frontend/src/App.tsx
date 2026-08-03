@@ -30,7 +30,7 @@ function App() {
         <Route path="/book" element={<BookTicket />} />
         <Route
           element={
-            <ProtectedRoute allowedRoles={["SUPER_ADMIN", "SACCO_ADMIN"]}>
+            <ProtectedRoute allowedRoles={["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"]}>
               <DashboardLayout />
             </ProtectedRoute>
           }

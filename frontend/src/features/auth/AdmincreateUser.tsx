@@ -17,6 +17,7 @@ import {
     type CreateManagerPayload,
 } from "@/api/authApi"
 import { SaccoCombobox } from "../sacco/SaccoCombobox"
+import { StageCombobox } from "../routes/StageCombobox"
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -32,12 +33,22 @@ const createUserSchema = z
         email: z.string().email("Invalid email").optional().or(z.literal("")),
         phoneNumber: z.string().min(10, "Enter a valid phone number").optional().or(z.literal("")),
         password: z.string().min(8, "Password must be at least 8 characters"),
-        role: z.enum(["SACCO_ADMIN", "CLERK", "DRIVER"], { required_error: "Select a role" }),
-        saccoId: z.string().min(1, "Sacco ID is required"),
+        role: z.enum(["SACCO_ADMIN", "CLERK", "DRIVER"]),
+        saccoId: z.string().min(1, "Sacco is required"),
+        assignedStage: z.string().optional(),
     })
     .refine((d) => !!d.email || !!d.phoneNumber, {
         message: "Provide either an email or phone number",
         path: ["email"],
+    })
+    .superRefine((data, ctx) => {
+        if (data.role === "CLERK" && !data.assignedStage) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ["assignedStage"],
+                message: "Select a stage.",
+            })
+        }
     })
 
 type CreateUserFormValues = z.infer<typeof createUserSchema>
@@ -50,7 +61,15 @@ interface AdminCreateUserProps {
 export default function AdminCreateUser({ onCreated }: AdminCreateUserProps) {
     const form = useForm<CreateUserFormValues>({
         resolver: zodResolver(createUserSchema),
-        defaultValues: { fullName: "", email: "", phoneNumber: "", password: "", saccoId: "" },
+        defaultValues: {
+            fullName: "",
+            email: "",
+            phoneNumber: "",
+            password: "",
+            saccoId: "",
+            role: undefined,
+            assignedStage: "",
+        },
     })
 
     const staffMutation = useMutation({
@@ -75,6 +94,7 @@ export default function AdminCreateUser({ onCreated }: AdminCreateUserProps) {
             staffMutation.mutate(values as CreateStaffPayload)
         }
     }
+    const role = form.watch("role")
 
     return (
         <Card className="w-full max-w-md mx-auto">
@@ -130,6 +150,27 @@ export default function AdminCreateUser({ onCreated }: AdminCreateUserProps) {
                                 </Field>
                             )}
                         />
+
+                        {role === "CLERK" && (
+                            <Controller
+                                name="assignedStage"
+                                control={form.control}
+                                render={({ field, fieldState }) => (
+                                    <Field data-invalid={fieldState.invalid}>
+                                        <FieldLabel>Assigned Stage</FieldLabel>
+
+                                        <StageCombobox
+                                            value={field.value}
+                                            onChange={field.onChange}
+                                        />
+
+                                        {fieldState.invalid && (
+                                            <FieldError errors={[fieldState.error]} />
+                                        )}
+                                    </Field>
+                                )}
+                            />
+                        )}
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <Controller

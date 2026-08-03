@@ -18,7 +18,7 @@ import { AuthService, type UpdateUserDto, type CreateManagerDto, type CreateStaf
 import { UserRole } from './entities/user.entity';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { Roles } from '../decorators/roles.decorator';
-import { Public } from 'src/decorators/public.decorator';
+import { Public } from '../decorators/public.decorator';
 import type { Request, Response } from 'express';
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────

@@ -17,6 +17,8 @@ interface AuthContextValue {
     isLoading: boolean
     setSession: (data: AuthResponse) => void
     logout: () => void
+    assignedStage: string | null
+
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
@@ -41,7 +43,7 @@ function useMeQuery() {
 export function AuthProvider({ children }: { children: ReactNode }) {
     const queryClient = useQueryClient()
     const { data: user, isLoading } = useMeQuery()
-
+    const assignedStage = user?.assignedStage ?? null
     // Called by LoginForm/RegisterForm directly on success — no need to
     // refetch, we already have the data from the login/register response.
     function setSession(data: AuthResponse) {
@@ -59,6 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user: user ?? null,
         isAuthenticated: !!user,
         isLoading,
+        assignedStage,
         setSession,
         logout,
     }

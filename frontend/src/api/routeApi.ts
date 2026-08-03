@@ -244,3 +244,35 @@ export async function getRoutePerformanceVsYesterdayRequest(): Promise<RoutePerf
     const { data } = await api.get<RoutePerformanceVsYesterday[]>("/routes/stats/performance-vs-yesterday");
     return data;
 }
+
+export interface AvailableLocations {
+    origins: string[];
+    destinations: string[];
+}
+
+export async function getAvailableLocationsRequest(): Promise<AvailableLocations> {
+    const res = await api.get("/routes/locations", { skipAuthRefresh: true });
+    return res.data;
+}
+
+export interface RouteSearchResult {
+    routeId: string;
+    saccoId: string;
+    saccoName: string;
+    origin: string;
+    destination: string;
+    description: string;
+    stages: string[];
+    fare: number;
+}
+
+export async function searchRoutesRequest(
+    origin: string,
+    destination: string,
+): Promise<RouteSearchResult[]> {
+    const params = new URLSearchParams({ origin, destination });
+    const res = await api.get(`/routes/search?${params.toString()}`, {
+        skipAuthRefresh: true,
+    });
+    return res.data;
+}

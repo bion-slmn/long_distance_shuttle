@@ -110,8 +110,8 @@ export class TripService {
   }
 
   // ── Domain trigger: queue entry moves BOARDING -> DISPATCHED ────────────
-  async markDeparted(tripId: string, manager?: EntityManager): Promise<Trip> {
-    const trip = await this.findOne(tripId, manager);
+  async markDeparted(tripId: string, saccoId?: string, manager?: EntityManager): Promise<Trip> {
+    const trip = await this.findOneScoped(tripId, saccoId, manager);
 
     if (trip.status !== TripStatus.BOARDING) {
       throw new BadRequestException(

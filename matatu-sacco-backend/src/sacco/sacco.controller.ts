@@ -53,7 +53,8 @@ export class SaccoController {
         @Query('withCounts') withCounts?: string,
 
     ) {
-        const saccoId = user.saccoId
+        const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+
         return this.saccoService.findAll({
             includeInactive: includeInactive === 'true',
             page: page ? Number(page) : undefined,
@@ -99,7 +100,11 @@ export class SaccoController {
         @Param('id', ParseUUIDPipe) id: string,
         @CurrentUser() user: any,
     ) {
-        const scopedId = user.role === UserRole.CLERK ? user.saccoId : undefined;
+        // SUPER_ADMIN can look up any sacco. SACCO_ADMIN and CLERK are both
+        // scoped to their own sacco — mirrors the check used on every write
+        // endpoint below (update/addContact/etc), just enforced via
+        // findOneScoped's ForbiddenException instead of a manual throw.
+        const scopedId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
         return this.saccoService.findOneScoped(id, scopedId);
     }
 

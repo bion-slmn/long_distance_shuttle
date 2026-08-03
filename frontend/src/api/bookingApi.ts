@@ -103,7 +103,20 @@ export interface GetBookingsOptions {
 export async function createBookingRequest(
     payload: CreateBookingPayload,
 ): Promise<Booking> {
-    const res = await api.post("/bookings", payload);
+    const res = await api.post("/bookings", payload, { skipAuthRefresh: true });
+    return res.data;
+}
+
+export async function getBookingAvailabilityRequest(
+    routeId: string,
+    travelDate?: string,
+): Promise<BookingAvailability> {
+    const params = new URLSearchParams({ routeId });
+    if (travelDate) params.set("travelDate", travelDate);
+
+    const res = await api.get(`/bookings/availability?${params.toString()}`, {
+        skipAuthRefresh: true,
+    });
     return res.data;
 }
 
@@ -122,16 +135,7 @@ export async function getBookingsRequest(
     return res.data;
 }
 
-export async function getBookingAvailabilityRequest(
-    routeId: string,
-    travelDate?: string,
-): Promise<BookingAvailability> {
-    const params = new URLSearchParams({ routeId });
-    if (travelDate) params.set("travelDate", travelDate);
 
-    const res = await api.get(`/bookings/availability?${params.toString()}`);
-    return res.data;
-}
 
 export async function getBookingRequest(id: string): Promise<Booking> {
     const res = await api.get(`/bookings/${id}`);

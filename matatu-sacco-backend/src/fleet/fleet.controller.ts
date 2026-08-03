@@ -61,10 +61,9 @@ export class FleetController {
     @Query('withQueueStatus') withQueueStatus?: string,
     @Query('saccoId') saccoId?: string,
   ) {
-    const resolvedSaccoId = saccoId
-      ? saccoId
-      : user.role === UserRole.SUPER_ADMIN
-        ? undefined
+    const resolvedSaccoId =
+      user.role === UserRole.SUPER_ADMIN
+        ? (saccoId ?? undefined)
         : user.saccoId;
 
     return this.fleetService.findAll({

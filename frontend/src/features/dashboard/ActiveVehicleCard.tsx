@@ -746,6 +746,7 @@ export function ActiveBoardingList() {
 // PAGE TRANSITION WRAPPER
 // ============================================
 export function ClerkDashboard() {
+    console.log(2222222222222222222222222)
     const location = useLocation();
 
     return (

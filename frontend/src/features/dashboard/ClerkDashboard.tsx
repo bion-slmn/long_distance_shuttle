@@ -27,6 +27,7 @@ function todayIso() {
 }
 
 export function ClerkDashboard({ onSelectRoute, className }: ClerkDashboardProps) {
+    console.log(33333333333333333333333)
     const [selectedDate, setSelectedDate] = useState<string>(todayIso())
     const [dateOpen, setDateOpen] = useState(false)
     const [searchQuery, setSearchQuery] = useState("")

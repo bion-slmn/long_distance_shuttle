@@ -8,6 +8,8 @@ import { RouteQueue } from './entities/route-queue.entity';
 import { QueueEntry } from './entities/queue-entry.entity'; // ← add this import
 import { TripModule } from 'src/trip/trip.module'; // adjust path if different
 import { BookingModule } from 'src/booking/booking.module';
+import { RouteQueueService } from './route-queue.service';
+import { RouteAnalyticsService } from './route-analytics.service';
 
 @Module({
   imports: [
@@ -15,7 +17,7 @@ import { BookingModule } from 'src/booking/booking.module';
     TripModule, BookingModule,
   ],
   controllers: [RouteController],
-  providers: [RouteService],
-  exports: [RouteService],
+  providers: [RouteService, RouteQueueService, RouteAnalyticsService],
+  exports: [RouteService, RouteQueueService, RouteAnalyticsService]
 })
 export class RouteModule { }

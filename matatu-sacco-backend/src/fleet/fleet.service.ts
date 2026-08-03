@@ -107,7 +107,6 @@ export class FleetService {
       withQueueStatus = false,
     } = options;
 
-    console.log({ options })
 
     const take = limit > 0 ? limit : 20;
     const currentPage = page > 0 ? page : 1;
@@ -249,7 +248,9 @@ export class FleetService {
       vehicle.seatingCapacity = dto.seatingCapacity;
     }
     if (dto.status !== undefined) vehicle.status = dto.status;
-    if (dto.notes !== undefined) vehicle.notes = dto.notes?.trim() ?? null;
+    if (dto.notes !== undefined) {
+      vehicle.notes = dto.notes.trim() || null;
+    }
 
     try {
       return await this.fleetRepository.save(vehicle);
