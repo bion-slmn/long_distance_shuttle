@@ -17,7 +17,10 @@ async function bootstrap() {
   app.use(cookieParser());
 
   app.enableCors({
-    origin: 'http://localhost:5173',
+    origin: [
+      'https://long-distance-shuttle-eek9.vercel.app',
+      'http://localhost:3000', // your local frontend dev
+    ],
     credentials: true,
   });
 
