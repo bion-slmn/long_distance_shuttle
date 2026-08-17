@@ -13,13 +13,20 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
             provide: REDIS_CLIENT,
             inject: [ConfigService],
             useFactory: (config: ConfigService) => {
+                const redisUrl = config.get<string>('REDIS_URL');
+
+                if (redisUrl) {
+                    // Upstash / any managed Redis with a full connection URL (rediss://...)
+                    return new Redis(redisUrl, {
+                        maxRetriesPerRequest: null, // required if BullMQ shares this connection
+                    });
+                }
+
+                // Local/dev fallback
                 return new Redis({
                     host: config.get<string>('REDIS_HOST', 'localhost'),
                     port: config.get<number>('REDIS_PORT', 6379),
                     password: config.get<string>('REDIS_PASSWORD') || undefined,
-                    // If BullMQ is already pointed at a different Redis (e.g. a managed
-                    // instance), swap these three lines for the same env vars it uses,
-                    // once you confirm what those are. 
                 });
             },
         },
