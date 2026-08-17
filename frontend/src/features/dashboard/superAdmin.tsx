@@ -8,8 +8,6 @@ import {
     CartesianGrid,
     Tooltip,
     ResponsiveContainer,
-    BarChart,
-    Bar,
 } from "recharts";
 import {
     Building2,
@@ -32,52 +30,19 @@ import {
     Minus,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { getSaccoCountStatsRequest, getSaccoPerformanceStatsRequest } from "@/api/saccoApi";
 import { useNavigate } from "react-router-dom";
+
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+
+import { getSaccoCountStatsRequest, getSaccoPerformanceStatsRequest } from "@/api/saccoApi";
 import { getTodayPassengerStatsRequest, getTripCountSummary, getTripTrendRequest } from "@/api/tripApi";
 import { getRevenueTrendRequest, getTodayEarningsRequest, getUniquePassengerStatsRequest } from "@/api/bookingApi";
 import { getSystemHealthRequest } from "@/api/healthApi";
 
-// ── Dummy Data ──────────────────────────────────────────────────────────────
+// ── Dummy Data (unchanged) ─────────────────────────────────────────────────
 
-// Top cards
-const metrics = {
-    totalSaccos: 18,
-    activeSaccosToday: 16,
-    tripsToday: 245,
-    bookingsToday: 3421,
-    revenueToday: 412000,
-    activeUsers: 912,
-};
-
-// System health
-const systemHealth = {
-    api: { status: "healthy", responseTime: 180 },
-    database: { status: "healthy" },
-    failedRequests: 4,
-    queueJobs: "Running",
-    lastBackup: "2025-07-27 02:00 AM",
-};
-
-// Bookings trend (hourly)
-const bookingsTrend = [
-    { hour: "06:00", bookings: 120, trips: 18 },
-    { hour: "07:00", bookings: 340, trips: 45 },
-    { hour: "08:00", bookings: 580, trips: 72 },
-    { hour: "09:00", bookings: 490, trips: 68 },
-    { hour: "10:00", bookings: 320, trips: 42 },
-    { hour: "11:00", bookings: 210, trips: 30 },
-    { hour: "12:00", bookings: 390, trips: 52 },
-    { hour: "13:00", bookings: 280, trips: 38 },
-    { hour: "14:00", bookings: 190, trips: 25 },
-    { hour: "15:00", bookings: 220, trips: 28 },
-    { hour: "16:00", bookings: 410, trips: 55 },
-    { hour: "17:00", bookings: 470, trips: 62 },
-];
-
-
-
-// Recent activity
 const recentActivity = [
     { time: "09:15", action: "New Sacco registered" },
     { time: "09:21", action: "Vehicle KDL 245A dispatched" },
@@ -86,7 +51,6 @@ const recentActivity = [
     { time: "10:15", action: "Payment of KSh 12,000 processed" },
 ];
 
-// Top routes
 const topRoutes = [
     { route: "Nairobi → Kisumu", bookings: 1250 },
     { route: "Nairobi → Eldoret", bookings: 980 },
@@ -95,44 +59,42 @@ const topRoutes = [
     { route: "Nairobi → Thika", bookings: 480 },
 ];
 
-// User statistics
-const userStats = {
-    totalUsers: 2340,
-    activeToday: 912,
-    newThisWeek: 48,
-    suspended: 12,
+const metrics = {
+    bookingsToday: 3421,
 };
 
-// ── Utility ──────────────────────────────────────────────────────────────────
+// ── Utility ──────────────────────────────────────────────────────────────
 
 function formatCurrency(amount: number) {
     return `KSh ${amount.toLocaleString()}`;
 }
 
 function getStatusBadge(status: string) {
-    const map: Record<string, { label: string; cls: string }> = {
-        Healthy: { label: "Healthy", cls: "bg-emerald-400/10 text-emerald-400" },
-        "Low Activity": { label: "Low Activity", cls: "bg-amber-400/10 text-amber-400" },
-        critical: { label: "Critical", cls: "bg-red-400/10 text-red-400" },
-        warning: { label: "Warning", cls: "bg-amber-400/10 text-amber-400" },
-        info: { label: "Info", cls: "bg-blue-400/10 text-blue-400" },
+    const map: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
+        Healthy: { label: "Healthy", variant: "secondary" },
+        "Low Activity": { label: "Low Activity", variant: "outline" },
+        critical: { label: "Critical", variant: "destructive" },
+        warning: { label: "Warning", variant: "outline" },
+        info: { label: "Info", variant: "secondary" },
     };
-    const s = map[status] || { label: status, cls: "bg-gray-400/10 text-gray-400" };
-    return <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${s.cls}`}>{s.label}</span>;
+    const s = map[status] || { label: status, variant: "outline" as const };
+    return (
+        <Badge variant={s.variant} className="text-[10px] font-medium">
+            {s.label}
+        </Badge>
+    );
 }
 
 // ── Components ──────────────────────────────────────────────────────────────
 
 function CardHeader({ title, icon }: { title: string; icon?: React.ReactNode }) {
     return (
-        <div className="px-4 py-3 border-b border-white/5 flex items-center gap-2">
-            {icon && <span className="text-gray-400">{icon}</span>}
-            <h2 className="text-sm font-semibold text-white">{title}</h2>
+        <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+            {icon && <span className="text-muted-foreground">{icon}</span>}
+            <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         </div>
     );
 }
-
-// ── Main Component ─────────────────────────────────────────────────────────
 
 interface SuperAdminDashboardProps {
     onRefresh?: () => void;
@@ -140,21 +102,19 @@ interface SuperAdminDashboardProps {
 
 function TrendBadge({ percent, direction }: { percent: number | null; direction: 'up' | 'down' | 'no-change' }) {
     if (percent === null) {
-        return <p className="text-[10px] text-gray-400 mt-0.5">vs yesterday: n/a</p>;
+        return <p className="text-[10px] text-muted-foreground mt-0.5">vs yesterday: n/a</p>;
     }
     const Icon = direction === 'up' ? TrendingUp : direction === 'down' ? TrendingDown : Minus;
-    const color = direction === 'up' ? 'text-emerald-400' : direction === 'down' ? 'text-red-400' : 'text-gray-400';
+    const color = direction === 'up' ? 'text-emerald-500' : direction === 'down' ? 'text-red-500' : 'text-muted-foreground';
     return (
         <div className="flex items-center gap-1 mt-0.5">
             <Icon size={10} className={color} />
-            <p className={`text-[10px] ${color}`}>
+            <p className={cn("text-[10px]", color)}>
                 {percent > 0 ? "+" : ""}{percent.toFixed(1)}%
             </p>
         </div>
     );
 }
-
-
 
 export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardProps) {
     const [loading, setLoading] = useState(false);
@@ -163,7 +123,7 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
     const { data: saccoStats, isLoading: saccoStatsLoading } = useQuery({
         queryKey: ["saccoCountStats"],
         queryFn: () => getSaccoCountStatsRequest(false),
-        staleTime: 60_000, // 1 min — this doesn't need to be hyper-fresh
+        staleTime: 60_000,
     });
 
     const { data: tripStats, isLoading: tripStatsLoading } = useQuery({
@@ -171,6 +131,7 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
         queryFn: () => getTripCountSummary(),
         staleTime: 60_000,
     });
+
     const { data: todayEarnings, isLoading: earningsLoading } = useQuery({
         queryKey: ["todayEarnings"],
         queryFn: () => getTodayEarningsRequest(),
@@ -180,7 +141,7 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
     const { data: revenueTrend, isLoading: revenueTrendLoading } = useQuery({
         queryKey: ["revenueTrend", 7],
         queryFn: () => getRevenueTrendRequest(7),
-        staleTime: 5 * 60_000, // trend chart doesn't need to be as fresh as KPI cards
+        staleTime: 5 * 60_000,
     });
 
     const { data: tripTrend, isLoading: tripTrendLoading } = useQuery({
@@ -189,7 +150,6 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
         staleTime: 5 * 60_000,
     });
 
-    // inside the component
     const { data: passengerStats, isLoading: passengerStatsLoading } = useQuery({
         queryKey: ["uniquePassengerStats"],
         queryFn: () => getUniquePassengerStatsRequest(),
@@ -208,7 +168,6 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
         staleTime: 60_000,
     });
 
-    // Merge revenue + trip trend by date into one array recharts can plot
     const combinedTrend = (revenueTrend ?? []).map((r) => {
         const match = tripTrend?.find((t) => t.date === r.date);
         return { date: r.date, revenue: r.revenue, trips: match?.trips ?? 0 };
@@ -217,10 +176,9 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
     const { data: saccoPerformance, isLoading: saccoPerformanceLoading } = useQuery({
         queryKey: ["saccoPerformance"],
         queryFn: () => getSaccoPerformanceStatsRequest(false),
-        staleTime: 5 * 60_000, // this is a weekly-cadence stat, doesn't need to be hyper-fresh
+        staleTime: 5 * 60_000,
     });
 
-    // derive alerts from sacco performance data already in memory
     const alerts = useMemo(() => {
         if (!saccoPerformance) return [];
 
@@ -247,13 +205,11 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
             }
         }
 
-        // worst-first
         const order = { critical: 0, warning: 1, info: 2 };
         return derived.sort((a, b) => order[a.type] - order[b.type]);
     }, [saccoPerformance]);
 
     const trendLoading = revenueTrendLoading || tripTrendLoading;
-
 
     const handleRefresh = () => {
         if (onRefresh) {
@@ -264,13 +220,13 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
     };
 
     return (
-        <div className="flex-1 flex flex-col min-w-0 bg-[#0a0e17] text-white">
+        <div className="flex-1 flex flex-col min-w-0 bg-background text-foreground">
 
             {/* Top Bar */}
-            <header className="sticky top-0 z-10 bg-[#0a0e17]/90 backdrop-blur border-b border-white/5 px-4 py-3 flex items-center justify-between">
+            <header className="sticky top-0 z-10 bg-background/90 backdrop-blur border-b border-border px-4 py-3 flex items-center justify-between">
                 <div>
                     <h1 className="text-sm font-bold">Super Admin</h1>
-                    <p className="text-[10px] text-gray-400 flex items-center gap-2">
+                    <p className="text-[10px] text-muted-foreground flex items-center gap-2">
                         <Calendar size={10} />
                         Wed, 23 Jul 2025
                         <span className="opacity-30">·</span>
@@ -279,16 +235,18 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
-                    <button className="relative w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center text-gray-400 hover:text-white transition-colors">
+                    <Button variant="outline" size="icon" className="relative size-8">
                         <Bell size={14} />
-                        <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-red-400 rounded-full" />
-                    </button>
-                    <button
+                        <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-red-500 rounded-full" />
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        className={cn("size-8", loading && "animate-spin")}
                         onClick={handleRefresh}
-                        className={`w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center text-gray-400 hover:text-white transition-colors ${loading ? 'animate-spin' : ''}`}
                     >
                         <RefreshCw size={14} />
-                    </button>
+                    </Button>
                 </div>
             </header>
 
@@ -296,18 +254,17 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
 
                 {/* ── Section 1: Top Cards ── */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
-                    {/* Saccos card — real data + click-through */}
                     <button
                         onClick={() => navigate("/sacco")}
-                        className="bg-[#0f1420] border border-white/5 rounded-lg p-3 text-left hover:border-white/10 hover:bg-white/[0.02] transition-colors cursor-pointer"
+                        className="bg-card border border-border rounded-lg p-3 text-left hover:border-foreground/20 hover:bg-muted/50 transition-colors cursor-pointer"
                     >
-                        <div className="flex items-center gap-2 text-gray-400 mb-1">
+                        <div className="flex items-center gap-2 text-muted-foreground mb-1">
                             <Building2 size={14} />
                             <span className="text-[10px]">Saccos</span>
                         </div>
 
                         {saccoStatsLoading ? (
-                            <div className="h-7 w-10 bg-white/5 rounded animate-pulse" />
+                            <div className="h-7 w-10 bg-muted rounded animate-pulse" />
                         ) : (
                             <p className="font-mono text-xl font-bold">{saccoStats?.currentCount ?? 0}</p>
                         )}
@@ -317,16 +274,17 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
                         )}
                     </button>
 
-                    {/* Trips card — real data, day-over-day */}
-                    <div className="bg-[#0f1420] border border-white/5 rounded-lg p-3"
-                        onClick={() => navigate("/trips")}>
-                        <div className="flex items-center gap-2 text-emerald-400 mb-1">
+                    <div
+                        className="bg-card border border-border rounded-lg p-3 cursor-pointer hover:bg-muted/50 transition-colors"
+                        onClick={() => navigate("/trips")}
+                    >
+                        <div className="flex items-center gap-2 text-emerald-500 mb-1">
                             <Bus size={14} />
-                            <span className="text-[10px] text-gray-400">Trips</span>
+                            <span className="text-[10px] text-muted-foreground">Trips</span>
                         </div>
 
                         {tripStatsLoading ? (
-                            <div className="h-7 w-10 bg-white/5 rounded animate-pulse" />
+                            <div className="h-7 w-10 bg-muted rounded animate-pulse" />
                         ) : (
                             <p className="font-mono text-xl font-bold">{tripStats?.today ?? 0}</p>
                         )}
@@ -341,48 +299,45 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
                         )}
                     </div>
 
-                    <div className="bg-[#0f1420] border border-white/5 rounded-lg p-3">
-                        <div className="flex items-center gap-2 text-blue-400 mb-1">
+                    <div className="bg-card border border-border rounded-lg p-3">
+                        <div className="flex items-center gap-2 text-blue-500 mb-1">
                             <Ticket size={14} />
-                            <span className="text-[10px] text-gray-400">Bookings</span>
+                            <span className="text-[10px] text-muted-foreground">Bookings</span>
                         </div>
                         <p className="font-mono text-xl font-bold">{metrics.bookingsToday.toLocaleString()}</p>
-                        <p className="text-[10px] text-gray-400">today</p>
+                        <p className="text-[10px] text-muted-foreground">today</p>
                     </div>
 
-                    {/* Revenue card — real data, gross fares only (no commission model yet) */}
-                    <div className="bg-[#f97316] rounded-lg p-3 col-span-1">
-                        <div className="flex items-center gap-2 text-white/80 mb-1">
+                    {/* Revenue card — kept as a brand accent, not part of the dark palette */}
+                    <div className="bg-primary rounded-lg p-3 col-span-1">
+                        <div className="flex items-center gap-2 text-primary-foreground/80 mb-1">
                             <DollarSign size={14} />
-                            <span className="text-[10px] text-white/70">Revenue</span>
+                            <span className="text-[10px] text-primary-foreground/70">Revenue</span>
                         </div>
 
                         {earningsLoading ? (
-                            <div className="h-7 w-20 bg-white/20 rounded animate-pulse" />
+                            <div className="h-7 w-20 bg-primary-foreground/20 rounded animate-pulse" />
                         ) : (
-                            <p className="font-mono text-xl font-bold text-white">
+                            <p className="font-mono text-xl font-bold text-primary-foreground">
                                 {formatCurrency(todayEarnings?.grossRevenue ?? 0)}
                             </p>
                         )}
-                        <p className="text-[10px] text-white/70">today, all saccos</p>
+                        <p className="text-[10px] text-primary-foreground/70">today, all saccos</p>
                     </div>
 
-
-
-                    {/* Total Passengers card — real data, daily headcount, day-over-day */}
-                    <div className="bg-[#0f1420] border border-white/5 rounded-lg p-3">
-                        <div className="flex items-center gap-2 text-cyan-400 mb-1">
+                    <div className="bg-card border border-border rounded-lg p-3">
+                        <div className="flex items-center gap-2 text-cyan-500 mb-1">
                             <Users size={14} />
-                            <span className="text-[10px] text-gray-400">Total Passengers</span>
+                            <span className="text-[10px] text-muted-foreground">Total Passengers</span>
                         </div>
 
                         {passengerCountLoading ? (
-                            <div className="h-7 w-10 bg-white/5 rounded animate-pulse" />
+                            <div className="h-7 w-10 bg-muted rounded animate-pulse" />
                         ) : (
                             <p className="font-mono text-xl font-bold">{passengerCountStats?.today ?? 0}</p>
                         )}
 
-                        <p className="text-[10px] text-gray-400">today</p>
+                        <p className="text-[10px] text-muted-foreground">today</p>
 
                         {!passengerCountLoading && passengerCountStats && (
                             <TrendBadge
@@ -394,25 +349,23 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
                         )}
                     </div>
 
-                    {/* Replaces the old "New Users" card — this tracks real riders, not staff accounts */}
-                    {/* Unique Riders card */}
-                    <div className="bg-[#0f1420] border border-white/5 rounded-lg p-3">
-                        <div className="flex items-center gap-2 text-amber-400 mb-1">
+                    <div className="bg-card border border-border rounded-lg p-3">
+                        <div className="flex items-center gap-2 text-amber-500 mb-1">
                             <Users size={14} />
-                            <span className="text-[10px] text-gray-400">Unique Riders</span>
+                            <span className="text-[10px] text-muted-foreground">Unique Riders</span>
                         </div>
 
                         {passengerStatsLoading ? (
-                            <div className="h-7 w-10 bg-white/5 rounded animate-pulse" />
+                            <div className="h-7 w-10 bg-muted rounded animate-pulse" />
                         ) : (
                             <p className="font-mono text-xl font-bold">{passengerStats?.thisWeekUnique ?? 0}</p>
                         )}
 
-                        <p className="text-[10px] text-gray-400">this week</p>
+                        <p className="text-[10px] text-muted-foreground">this week</p>
 
                         {!passengerStatsLoading && passengerStats && (
                             <>
-                                <p className="text-[10px] text-gray-400">
+                                <p className="text-[10px] text-muted-foreground">
                                     {passengerStats.newThisWeek} new · {passengerStats.returningThisWeek} returning
                                 </p>
                                 <TrendBadge
@@ -433,56 +386,59 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
                 </div>
 
                 {/* ── Section 2: System Health ── */}
-                <div className="bg-[#0f1420] border border-white/5 rounded-xl overflow-hidden">
+                <div className="bg-card border border-border rounded-xl overflow-hidden">
                     <CardHeader title="System Health" icon={<Activity size={14} />} />
                     <div className="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
                         {systemHealthLoading ? (
-                            <div className="col-span-full h-6 bg-white/5 rounded animate-pulse" />
+                            <div className="col-span-full h-6 bg-muted rounded animate-pulse" />
                         ) : (
                             <>
                                 <div className="flex items-center gap-2">
                                     {systemHealth?.api.status === 'up' ? (
-                                        <CheckCircle size={14} className="text-emerald-400" />
+                                        <CheckCircle size={14} className="text-emerald-500" />
                                     ) : (
-                                        <AlertCircle size={14} className="text-red-400" />
+                                        <AlertCircle size={14} className="text-red-500" />
                                     )}
                                     <span className="text-xs">API</span>
-                                    <span className="text-xs text-gray-400">
+                                    <span className="text-xs text-muted-foreground">
                                         {systemHealth?.api.status ?? "unknown"}
                                     </span>
                                 </div>
 
                                 <div className="flex items-center gap-2">
                                     {systemHealth?.database.status === 'up' ? (
-                                        <CheckCircle size={14} className="text-emerald-400" />
+                                        <CheckCircle size={14} className="text-emerald-500" />
                                     ) : (
-                                        <AlertCircle size={14} className="text-red-400" />
+                                        <AlertCircle size={14} className="text-red-500" />
                                     )}
                                     <span className="text-xs">Database</span>
-                                    <span className="text-xs text-gray-400">
+                                    <span className="text-xs text-muted-foreground">
                                         {systemHealth?.database.responseTime ?? 0}ms
                                     </span>
                                 </div>
 
                                 <div className="flex items-center gap-2">
-                                    <span className="text-xs text-gray-400">Errors</span>
-                                    <span className={`text-xs font-mono ${(systemHealth?.failedRequests ?? 0) > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                    <span className="text-xs text-muted-foreground">Errors</span>
+                                    <span className={cn(
+                                        "text-xs font-mono",
+                                        (systemHealth?.failedRequests ?? 0) > 0 ? "text-amber-500" : "text-emerald-500"
+                                    )}>
                                         {systemHealth?.failedRequests ?? 0}
                                     </span>
                                 </div>
 
                                 <div className="flex items-center gap-2">
-                                    <Zap size={14} className="text-blue-400" />
+                                    <Zap size={14} className="text-blue-500" />
                                     <span className="text-xs">Jobs</span>
-                                    <span className="text-xs text-gray-400">
+                                    <span className="text-xs text-muted-foreground">
                                         {systemHealth?.queueJobs ?? "Not tracked"}
                                     </span>
                                 </div>
 
                                 <div className="flex items-center gap-2">
-                                    <Clock size={14} className="text-gray-400" />
+                                    <Clock size={14} className="text-muted-foreground" />
                                     <span className="text-xs">Backup</span>
-                                    <span className="text-xs text-gray-400">
+                                    <span className="text-xs text-muted-foreground">
                                         {systemHealth?.lastBackup ?? "Not tracked"}
                                     </span>
                                 </div>
@@ -492,89 +448,93 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
                 </div>
 
                 {/* ── Section 3: Revenue & Trips Trend (7 days) ── */}
-                <div className="bg-[#0f1420] border border-white/5 rounded-xl overflow-hidden">
+                <div className="bg-card border border-border rounded-xl overflow-hidden">
                     <CardHeader title="Revenue & Trips (Last 7 Days)" icon={<TrendingUp size={14} />} />
                     <div className="p-4">
                         {trendLoading ? (
-                            <div className="h-[180px] bg-white/5 rounded animate-pulse" />
+                            <div className="h-[180px] bg-muted rounded animate-pulse" />
                         ) : (
                             <ResponsiveContainer width="100%" height={180}>
                                 <LineChart data={combinedTrend}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
                                     <XAxis
                                         dataKey="date"
-                                        tick={{ fill: "#6b7694", fontSize: 9 }}
+                                        tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 9 }}
                                         axisLine={false}
                                         tickLine={false}
                                         tickFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
                                     />
-                                    <YAxis yAxisId="left" tick={{ fill: "#6b7694", fontSize: 9 }} axisLine={false} tickLine={false} />
-                                    <YAxis yAxisId="right" orientation="right" tick={{ fill: "#6b7694", fontSize: 9 }} axisLine={false} tickLine={false} />
+                                    <YAxis yAxisId="left" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 9 }} axisLine={false} tickLine={false} />
+                                    <YAxis yAxisId="right" orientation="right" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 9 }} axisLine={false} tickLine={false} />
                                     <Tooltip
-                                        contentStyle={{ backgroundColor: '#0f1420', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }}
-                                        labelStyle={{ color: '#6b7694', fontSize: '10px' }}
-                                        labelFormatter={(d) =>
-                                            new Date(d as string | number).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
-                                        }
+                                        contentStyle={{
+                                            backgroundColor: "hsl(var(--popover))",
+                                            border: "1px solid hsl(var(--border))",
+                                            borderRadius: "8px",
+                                        }}
+                                        labelStyle={{ color: "hsl(var(--muted-foreground))", fontSize: "10px" }}
+                                        labelFormatter={(label) => {
+                                            const d = new Date(label as string);
+                                            return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+                                        }}
                                         formatter={(value, name) => {
-                                            const numValue = typeof value === "number" ? value : Number(value ?? 0);
+                                            const numValue = Array.isArray(value) ? Number(value[0] ?? 0) : Number(value ?? 0);
                                             return name === "revenue" ? [formatCurrency(numValue), "Revenue"] : [numValue, "Trips"];
                                         }}
                                     />
-                                    <Line yAxisId="left" type="monotone" dataKey="revenue" stroke="#f97316" strokeWidth={2} dot={false} />
+                                    <Line yAxisId="left" type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
                                     <Line yAxisId="right" type="monotone" dataKey="trips" stroke="#3b82f6" strokeWidth={2} dot={false} />
                                 </LineChart>
                             </ResponsiveContainer>
                         )}
-                        <div className="flex justify-center gap-6 text-[10px] text-gray-400 mt-2">
-                            <span><span className="inline-block w-2 h-2 rounded-full bg-[#f97316] mr-1"></span> Revenue (fares)</span>
-                            <span><span className="inline-block w-2 h-2 rounded-full bg-blue-400 mr-1"></span> Trips</span>
+                        <div className="flex justify-center gap-6 text-[10px] text-muted-foreground mt-2">
+                            <span><span className="inline-block w-2 h-2 rounded-full bg-primary mr-1"></span> Revenue (fares)</span>
+                            <span><span className="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1"></span> Trips</span>
                         </div>
                     </div>
                 </div>
 
                 {/* ── Section 4: Sacco Performance Table ── */}
-                {/* ── Section 4: Sacco Performance Table ── */}
-                <div className="bg-[#0f1420] border border-white/5 rounded-xl overflow-hidden">
+                <div className="bg-card border border-border rounded-xl overflow-hidden">
                     <CardHeader title="Sacco Performance" icon={<Building2 size={14} />} />
                     <div className="overflow-x-auto">
                         <table className="w-full text-sm">
                             <thead>
-                                <tr className="border-b border-white/5">
-                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-gray-400">Sacco</th>
-                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-gray-400">Trips</th>
-                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-gray-400">Bookings</th>
-                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-gray-400">Fares Collected</th>
-                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-gray-400">Last Active</th>
-                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-gray-400">Status</th>
+                                <tr className="border-b border-border">
+                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-muted-foreground">Sacco</th>
+                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-muted-foreground">Trips</th>
+                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-muted-foreground">Bookings</th>
+                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-muted-foreground">Fares Collected</th>
+                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-muted-foreground">Last Active</th>
+                                    <th className="text-left px-4 py-2 text-[10px] font-mono text-muted-foreground">Status</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {saccoPerformanceLoading ? (
                                     Array.from({ length: 4 }).map((_, i) => (
-                                        <tr key={i} className="border-b border-white/5">
+                                        <tr key={i} className="border-b border-border">
                                             <td colSpan={6} className="px-4 py-2.5">
-                                                <div className="h-4 w-full bg-white/5 rounded animate-pulse" />
+                                                <div className="h-4 w-full bg-muted rounded animate-pulse" />
                                             </td>
                                         </tr>
                                     ))
                                 ) : saccoPerformance && saccoPerformance.length > 0 ? (
                                     saccoPerformance.map((s) => (
-                                        <tr key={s.saccoId} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                        <tr key={s.saccoId} className="border-b border-border hover:bg-muted/50 transition-colors">
                                             <td className="px-4 py-2.5 text-xs font-medium">{s.saccoName}</td>
                                             <td className="px-4 py-2.5 text-xs">
                                                 {s.tripsThisWeek}
                                                 {s.tripsChangePercent !== null && (
-                                                    <span className={s.tripsChangePercent >= 0 ? "text-emerald-400 ml-1" : "text-red-400 ml-1"}>
+                                                    <span className={s.tripsChangePercent >= 0 ? "text-emerald-500 ml-1" : "text-red-500 ml-1"}>
                                                         ({s.tripsChangePercent > 0 ? "+" : ""}{s.tripsChangePercent}%)
                                                     </span>
                                                 )}
                                             </td>
                                             <td className="px-4 py-2.5 text-xs">{s.bookingsThisWeek}</td>
-                                            <td className="px-4 py-2.5 text-xs font-mono text-[#f97316]">
+                                            <td className="px-4 py-2.5 text-xs font-mono text-primary">
                                                 {formatCurrency(s.grossFaresThisWeek)}
                                             </td>
-                                            <td className="px-4 py-2.5 text-xs text-gray-400">
+                                            <td className="px-4 py-2.5 text-xs text-muted-foreground">
                                                 {s.lastActiveDate
                                                     ? new Date(s.lastActiveDate).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })
                                                     : "Never"}
@@ -584,7 +544,7 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
                                     ))
                                 ) : (
                                     <tr>
-                                        <td colSpan={6} className="px-4 py-6 text-center text-xs text-gray-400">
+                                        <td colSpan={6} className="px-4 py-6 text-center text-xs text-muted-foreground">
                                             No saccos found
                                         </td>
                                     </tr>
@@ -595,26 +555,26 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
                 </div>
 
                 {/* ── Section 5: Alerts ── */}
-                <div className="bg-[#0f1420] border border-white/5 rounded-xl overflow-hidden">
+                <div className="bg-card border border-border rounded-xl overflow-hidden">
                     <CardHeader title="Alerts" icon={<AlertCircle size={14} />} />
-                    <div className="divide-y divide-white/5">
+                    <div className="divide-y divide-border">
                         {saccoPerformanceLoading ? (
                             <div className="px-4 py-2.5">
-                                <div className="h-4 w-full bg-white/5 rounded animate-pulse" />
+                                <div className="h-4 w-full bg-muted rounded animate-pulse" />
                             </div>
                         ) : alerts.length === 0 ? (
-                            <div className="px-4 py-6 text-center text-xs text-gray-400 flex items-center justify-center gap-2">
-                                <CheckCircle size={14} className="text-emerald-400" />
+                            <div className="px-4 py-6 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
+                                <CheckCircle size={14} className="text-emerald-500" />
                                 All saccos healthy — no alerts
                             </div>
                         ) : (
                             alerts.map((alert, idx) => {
                                 const Icon = alert.type === 'critical' ? AlertCircle : alert.type === 'warning' ? AlertTriangle : AlertCircle;
-                                const color = alert.type === 'critical' ? 'text-red-400' : alert.type === 'warning' ? 'text-amber-400' : 'text-blue-400';
+                                const color = alert.type === 'critical' ? 'text-red-500' : alert.type === 'warning' ? 'text-amber-500' : 'text-blue-500';
                                 return (
                                     <div key={idx} className="px-4 py-2.5 flex items-center gap-3 text-xs">
                                         <Icon size={14} className={color} />
-                                        <span className="text-white">{alert.message}</span>
+                                        <span className="text-foreground">{alert.message}</span>
                                         {getStatusBadge(alert.type)}
                                     </div>
                                 );
@@ -624,50 +584,50 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
                 </div>
 
                 {/* ── Section 6: Recent Activity ── */}
-                <div className="bg-[#0f1420] border border-white/5 rounded-xl overflow-hidden">
+                <div className="bg-card border border-border rounded-xl overflow-hidden">
                     <CardHeader title="Recent Activity" icon={<Zap size={14} />} />
-                    <div className="divide-y divide-white/5 max-h-40 overflow-y-auto">
+                    <div className="divide-y divide-border max-h-40 overflow-y-auto">
                         {recentActivity.map((item, idx) => (
-                            <div key={idx} className="px-4 py-2 flex items-center gap-3 text-xs hover:bg-white/[0.02] transition-colors">
-                                <span className="text-gray-500 font-mono w-12">{item.time}</span>
-                                <span className="text-gray-300">{item.action}</span>
+                            <div key={idx} className="px-4 py-2 flex items-center gap-3 text-xs hover:bg-muted/50 transition-colors">
+                                <span className="text-muted-foreground font-mono w-12">{item.time}</span>
+                                <span className="text-foreground/80">{item.action}</span>
                             </div>
                         ))}
                     </div>
                 </div>
 
                 {/* ── Section 7: Top Routes ── */}
-                <div className="bg-[#0f1420] border border-white/5 rounded-xl overflow-hidden">
+                <div className="bg-card border border-border rounded-xl overflow-hidden">
                     <CardHeader title="Top Routes" icon={<Bus size={14} />} />
-                    <div className="divide-y divide-white/5">
+                    <div className="divide-y divide-border">
                         {topRoutes.map((route, idx) => (
-                            <div key={idx} className="px-4 py-2.5 flex items-center justify-between text-xs hover:bg-white/[0.02] transition-colors">
-                                <span className="text-white">{route.route}</span>
-                                <span className="text-gray-400 font-mono">{route.bookings} bookings</span>
+                            <div key={idx} className="px-4 py-2.5 flex items-center justify-between text-xs hover:bg-muted/50 transition-colors">
+                                <span className="text-foreground">{route.route}</span>
+                                <span className="text-muted-foreground font-mono">{route.bookings} bookings</span>
                             </div>
                         ))}
                     </div>
                 </div>
 
                 {/* ── Section 8: Quick Actions ── */}
-                <div className="bg-[#0f1420] border border-white/5 rounded-xl p-4">
-                    <h3 className="text-xs font-semibold text-white mb-3">Quick Actions</h3>
+                <div className="bg-card border border-border rounded-xl p-4">
+                    <h3 className="text-xs font-semibold text-foreground mb-3">Quick Actions</h3>
                     <div className="flex flex-wrap gap-2">
-                        <button className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white text-xs px-3 py-2 rounded-lg transition-colors">
+                        <Button variant="outline" size="sm" className="gap-1.5 text-xs">
                             <Building2 size={14} /> Add Sacco
-                        </button>
-                        <button className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white text-xs px-3 py-2 rounded-lg transition-colors">
+                        </Button>
+                        <Button variant="outline" size="sm" className="gap-1.5 text-xs">
                             <Bus size={14} /> Add Route
-                        </button>
-                        <button className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white text-xs px-3 py-2 rounded-lg transition-colors">
+                        </Button>
+                        <Button variant="outline" size="sm" className="gap-1.5 text-xs">
                             <Users size={14} /> Create Admin
-                        </button>
-                        <button className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white text-xs px-3 py-2 rounded-lg transition-colors">
+                        </Button>
+                        <Button variant="outline" size="sm" className="gap-1.5 text-xs">
                             <FileText size={14} /> View Reports
-                        </button>
-                        <button className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white text-xs px-3 py-2 rounded-lg transition-colors">
+                        </Button>
+                        <Button variant="outline" size="sm" className="gap-1.5 text-xs">
                             <Activity size={14} /> System Logs
-                        </button>
+                        </Button>
                     </div>
                 </div>
 
