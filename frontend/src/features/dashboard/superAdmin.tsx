@@ -48,7 +48,7 @@ const recentActivity = [
     { time: "09:21", action: "Vehicle KDL 245A dispatched" },
     { time: "09:40", action: "Clerk John created Route Nairobi–Kisumu" },
     { time: "10:02", action: "Admin suspended user" },
-    { time: "10:15", action: "Payment of KSh 12,000 processed" },
+
 ];
 
 const topRoutes = [
