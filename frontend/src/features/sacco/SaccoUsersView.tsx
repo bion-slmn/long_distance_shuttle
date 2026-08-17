@@ -56,6 +56,7 @@ import {
 import AdminCreateUser from "@/features/auth/AdmincreateUser"
 import { useSaccoName } from "@/hooks/useSaccoName"
 import { ALL_ADMINS, RoleGuard } from "../auth/RoleGuard"
+import type { User } from "@/api/authApi"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -63,16 +64,7 @@ interface SaccoUsersTableProps {
     saccoId?: string
 }
 
-interface User {
-    id: string
-    fullName: string
-    email: string
-    phoneNumber: string
-    role: string
-    saccoId: string | null
-    createdAt: string
-    updatedAt: string
-}
+
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -321,7 +313,7 @@ export function SaccoUsersTable({ saccoId }: SaccoUsersTableProps) {
                                         showSacco={!saccoId}
                                         onSelect={() => setSelectedUser(user)}
                                         onEdit={() => setEditingUser(user)}
-                                        onDelete={() => setDeletingUser(user)}
+                                        onDelete={() => setDeletingUser(user!)}
                                     />
                                 ))}
                             </TableBody>
@@ -601,7 +593,7 @@ function UserDetailsDialog({
                     <div className="grid grid-cols-2 gap-4 border-t pt-4">
                         <div className="space-y-1">
                             <p className="text-xs text-muted-foreground">Joined</p>
-                            <p className="text-xs">{formatDate(user.createdAt)}</p>
+                            <p className="text-xs">{formatDate(user.createdAt!)}</p>
                         </div>
                         <div className="space-y-1">
                             <p className="text-xs text-muted-foreground">User ID</p>

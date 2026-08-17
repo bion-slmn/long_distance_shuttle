@@ -50,10 +50,10 @@ export function PublicLayout() {
                                 </Link>
                             ))}
                             <div className="flex items-center gap-3">
-                                <Button variant="outline" size="sm" asChild>
+                                <Button variant="outline" size="sm" >
                                     <Link to="/login">Sign In</Link>
                                 </Button>
-                                <Button size="sm" asChild>
+                                <Button size="sm" >
                                     <Link to="/register">Get Started</Link>
                                 </Button>
                             </div>
@@ -95,12 +95,12 @@ export function PublicLayout() {
                                 </Link>
                             ))}
                             <div className="pt-3 space-y-2 border-t border-gray-200">
-                                <Button variant="outline" className="w-full" asChild>
+                                <Button variant="outline" className="w-full" >
                                     <Link to="/login" onClick={() => setIsMenuOpen(false)}>
                                         Sign In
                                     </Link>
                                 </Button>
-                                <Button className="w-full" asChild>
+                                <Button className="w-full" >
                                     <Link to="/register" onClick={() => setIsMenuOpen(false)}>
                                         Get Started
                                     </Link>

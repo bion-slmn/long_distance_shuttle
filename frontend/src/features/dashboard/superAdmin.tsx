@@ -513,10 +513,13 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
                                     <Tooltip
                                         contentStyle={{ backgroundColor: '#0f1420', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }}
                                         labelStyle={{ color: '#6b7694', fontSize: '10px' }}
-                                        labelFormatter={(d) => new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
-                                        formatter={(value: number, name: string) =>
-                                            name === "revenue" ? [formatCurrency(value), "Revenue"] : [value, "Trips"]
+                                        labelFormatter={(d) =>
+                                            new Date(d as string | number).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
                                         }
+                                        formatter={(value, name) => {
+                                            const numValue = typeof value === "number" ? value : Number(value ?? 0);
+                                            return name === "revenue" ? [formatCurrency(numValue), "Revenue"] : [numValue, "Trips"];
+                                        }}
                                     />
                                     <Line yAxisId="left" type="monotone" dataKey="revenue" stroke="#f97316" strokeWidth={2} dot={false} />
                                     <Line yAxisId="right" type="monotone" dataKey="trips" stroke="#3b82f6" strokeWidth={2} dot={false} />

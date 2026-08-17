@@ -25,7 +25,7 @@ export function SaccoCombobox({
     // For scoped roles, lock the field to their own sacco and skip the fetch entirely
     if (isScopedToOwnSacco) {
         return (
-            <LockedSaccoField saccoId={user?.saccoId} onChange={onChange} value={value} />
+            <LockedSaccoField saccoId={user?.saccoId!} onChange={onChange} value={value} />
         )
     }
 

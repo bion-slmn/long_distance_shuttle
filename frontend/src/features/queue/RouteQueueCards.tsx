@@ -598,9 +598,7 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
     }
 
     const handleCall = () => {
-        if (entry.vehicle?.driverPhone) {
-            window.location.href = `tel:${entry.vehicle.driverPhone}`
-        }
+        console.log(`Calling ${phone}...`)
     }
 
     // Quick seat presets
@@ -812,7 +810,7 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
                 </div>
 
                 <SheetFooter className="flex flex-col gap-2">
-                    {!isFull && entry.vehicle.driverPhone && (
+                    {!isFull && (
                         <Button
                             type="button"
                             variant="outline"
@@ -975,10 +973,7 @@ export function ManifestSheet({ open, onOpenChange, side, entry, bookings, isLoa
                             <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wide">Collected</p>
                             <p className="text-sm font-semibold mt-0.5">KSh {totalFare.toLocaleString()}</p>
                         </div>
-                        <div className="rounded-md bg-muted/40 px-2.5 py-2">
-                            <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wide">Driver</p>
-                            <p className="text-sm font-semibold mt-0.5 truncate">{entry.vehicle.driverName || "—"}</p>
-                        </div>
+
                     </div>
                 </SheetHeader>
 

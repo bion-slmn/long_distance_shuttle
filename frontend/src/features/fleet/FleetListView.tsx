@@ -507,7 +507,6 @@ function FleetToolbar({
                         value={saccoFilter}
                         onChange={onSaccoFilterChange}
                         placeholder="All Saccos..."
-                        className="h-auto py-1.5 px-2.5 text-xs"
                     />
                 </div>
 

@@ -44,6 +44,8 @@ export interface Booking {
     paymentStatus: PaymentStatus;
     mpesaCheckoutRequestId: string | null;
     mpesaReceiptNumber: string | null;
+    preferredBoardingFrom: string | null;
+    preferredBoardingTo: string | null;
     createdByUserId: string | null;
     createdAt: string;
     updatedAt: string;
@@ -52,6 +54,7 @@ export interface Booking {
         origin: string;
         destination: string;
         fare: number;
+        description: string;
     };
     trip?: {
         id: string;
@@ -73,12 +76,16 @@ export interface BookingAvailability {
 }
 
 export interface CreateBookingPayload {
+    bookingId?: string; // include on retry for idempotency
     routeId: string;
     travelDate?: string; // omit = today, on the backend
     passengerName: string;
     passengerPhone: string;
     paymentMethod: PaymentMethod;
     createdByUserId?: string;
+    status?: BookingStatus;
+    preferredBoardingFrom?: string; // HH:mm or HH:mm:ss
+    preferredBoardingTo?: string;   // HH:mm or HH:mm:ss
 }
 
 export interface UpdateBookingPayload {

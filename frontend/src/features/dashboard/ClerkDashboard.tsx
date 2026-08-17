@@ -125,7 +125,7 @@ export function ClerkDashboard({ onSelectRoute, className }: ClerkDashboardProps
                 </div>
                 <div className="flex items-center gap-2">
                     <Popover open={dateOpen} onOpenChange={setDateOpen}>
-                        <PopoverTrigger asChild>
+                        <PopoverTrigger >
                             <Button
                                 variant="outline"
                                 size="sm"
@@ -145,7 +145,7 @@ export function ClerkDashboard({ onSelectRoute, className }: ClerkDashboardProps
                                     setDateOpen(false)
                                 }}
                                 disabled={(date) => date > new Date()}
-                                initialFocus
+                                autoFocus
                             />
                         </PopoverContent>
                     </Popover>

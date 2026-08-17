@@ -104,9 +104,17 @@ interface GetSaccosOptions {
     withCounts?: boolean
 }
 
+interface GetSaccosResponse {
+    data: Sacco[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+}
+
 export async function getSaccosRequest(
     options: GetSaccosOptions = {},
-) {
+): Promise<GetSaccosResponse> {
     const {
         includeInactive = false,
         page = 1,
@@ -126,7 +134,7 @@ export async function getSaccosRequest(
     if (search?.trim()) params.set("search", search.trim());
     if (withCounts) params.set("withCounts", "true");
 
-    const res = await api.get(`/saccos?${params.toString()}`);
+    const res = await api.get<GetSaccosResponse>(`/saccos?${params.toString()}`);
     return res.data;
 }
 

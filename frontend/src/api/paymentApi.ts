@@ -47,6 +47,8 @@ export interface Payment {
     completedAt: string | null;
     createdAt: string;
     updatedAt: string;
+    initiationErrorCode: string | null
+    initiationErrorMessage: string | null
 }
 
 export interface InitiateMpesaPaymentPayload {

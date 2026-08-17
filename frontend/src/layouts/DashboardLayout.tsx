@@ -162,7 +162,7 @@ export function DashboardLayout() {
                                     const active = location.pathname.startsWith(item.href)
                                     return (
                                         <SidebarMenuItem key={item.href}>
-                                            <SidebarMenuButton asChild isActive={active} tooltip={item.label}>
+                                            <SidebarMenuButton isActive={active} tooltip={item.label}>
                                                 <Link to={item.href} className="flex w-full items-center gap-2">
                                                     <item.icon className="size-4 shrink-0" />
                                                     <span>{item.label}</span>
@@ -185,14 +185,14 @@ export function DashboardLayout() {
                                     it's account-level, not role-gated content, so this footer
                                     block doubles as the entry point instead of a nav row.
                                 */}
-                                <SidebarMenuButton asChild tooltip="Profile">
+                                <SidebarMenuButton tooltip="Profile">
                                     <Link
                                         to="/profile"
                                         className="flex w-full items-center gap-2"
                                     >
                                         <Avatar className="size-8 shrink-0">
                                             <AvatarFallback className="bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400 text-xs font-medium">
-                                                {getInitials(user.fullName, user.email)}
+                                                {getInitials(user.fullName, user.email!)}
                                             </AvatarFallback>
                                         </Avatar>
                                         <div className="min-w-0 group-data-[collapsible=icon]:hidden">

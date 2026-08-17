@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 
-export function useElapsedTime(since: string | Date, intervalMs = 30_000) {
+export function useElapsedTime(clockedInAt: string | Date | null | undefined, intervalMs = 30_000) {
     const [now, setNow] = useState(() => Date.now())
 
     useEffect(() => {
@@ -8,7 +8,9 @@ export function useElapsedTime(since: string | Date, intervalMs = 30_000) {
         return () => clearInterval(id)
     }, [intervalMs])
 
-    const sinceMs = new Date(since).getTime()
+    if (!clockedInAt) return "—"
+
+    const sinceMs = new Date(clockedInAt).getTime()
     const diffMinutes = Math.max(0, Math.floor((now - sinceMs) / 60_000))
 
     if (diffMinutes < 1) return "just now"

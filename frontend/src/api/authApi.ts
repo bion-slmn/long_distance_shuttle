@@ -44,6 +44,7 @@ export interface User {
     saccoId?: string | null;
     createdAt?: string;
     assignedStage?: string | null
+    isActive: boolean
 }
 
 export interface AuthResponse {

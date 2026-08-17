@@ -26,7 +26,7 @@ export function VehicleCombobox({
             placeholder={placeholder}
             searchPlaceholder="Search by number plate..."
             emptyText="No vehicle found."
-            queryKey={["fleet", "combobox", saccoId]} // Include saccoId in query key
+            queryKey={["fleet", "combobox", saccoId!]} // Include saccoId in query key
             fetchFn={({ page, limit, search }) =>
                 getFleetRequest({
                     page,

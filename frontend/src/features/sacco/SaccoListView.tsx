@@ -488,7 +488,7 @@ function DesktopSaccoRow({
                         />
                     </RoleGuard>
                     <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
+                        <DropdownMenuTrigger >
                             <Button
                                 variant="ghost"
                                 size="icon"
@@ -592,7 +592,7 @@ function MobileSaccoCard({
                 </Badge>
 
                 <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
+                    <DropdownMenuTrigger >
                         <Button
                             variant="ghost"
                             size="icon"

@@ -348,7 +348,7 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                     </div>
                     <div className="flex items-center gap-2">
                         <Popover open={dateOpen} onOpenChange={setDateOpen}>
-                            <PopoverTrigger asChild>
+                            <PopoverTrigger >
                                 <Button
                                     variant="outline"
                                     size="sm"
@@ -368,7 +368,7 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                                         setDateOpen(false)
                                     }}
                                     disabled={(date) => date > new Date()}
-                                    initialFocus
+                                    autoFocus
                                 />
                             </PopoverContent>
                         </Popover>
@@ -455,7 +455,7 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                         </div>
                         <div className="flex items-center gap-2 flex-wrap">
                             <Popover open={dateOpen} onOpenChange={setDateOpen}>
-                                <PopoverTrigger asChild>
+                                <PopoverTrigger >
                                     <Button
                                         variant="outline"
                                         size="sm"
@@ -475,7 +475,7 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
                                             setDateOpen(false)
                                         }}
                                         disabled={(date) => date > new Date()}
-                                        initialFocus
+                                        autoFocus
                                     />
                                 </PopoverContent>
                             </Popover>
@@ -652,7 +652,8 @@ function RouteDashboard({ routes, counts, onSelectRoute, isMobile, selectedDate 
         return (
             <div className="grid gap-2">
                 {routes.map((route) => {
-                    const count = counts.find(c => c.routeId === route.id) || { waiting: 0, boarding: 0, dispatched: 0, total: 0 }
+                    // in RouteDashboard (mobile branch)
+                    const count = counts.find(c => c.routeId === route.id) || { routeId: route.id, waiting: 0, boarding: 0, dispatched: 0, total: 0 }
                     return (
                         <RouteDashboardMobileRow
                             key={route.id}
@@ -682,7 +683,8 @@ function RouteDashboard({ routes, counts, onSelectRoute, isMobile, selectedDate 
                 </TableHeader>
                 <TableBody>
                     {routes.map((route) => {
-                        const count = counts.find(c => c.routeId === route.id) || { waiting: 0, boarding: 0, dispatched: 0, total: 0 }
+                        // in RouteDashboard (mobile branch)
+                        const count = counts.find(c => c.routeId === route.id) || { routeId: route.id, waiting: 0, boarding: 0, dispatched: 0, total: 0 }
                         return (
                             <RouteDashboardTableRow
                                 key={route.id}

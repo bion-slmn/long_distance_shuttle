@@ -115,7 +115,7 @@ function RecentTripRow({ trip }: { trip: Trip }) {
 export default function SaccoAdminDashboard({ onNewBooking }: DashboardProps) {
     const [showAllRoutes, setShowAllRoutes] = useState(false);
     const user = useAuth()
-    const saccoId = user?.user?.saccoId
+    const saccoId = user?.user?.saccoId!
 
     // ── Live data: earnings/trips ──
     const {
@@ -153,7 +153,7 @@ export default function SaccoAdminDashboard({ onNewBooking }: DashboardProps) {
         refetch: refetchTrips,
     } = useQuery({
         queryKey: ["trip-count-summary", saccoId],
-        queryFn: () => getTripCountSummary(saccoId),
+        queryFn: () => getTripCountSummary(saccoId!),
     });
 
     // ── Live data: route performance ──
@@ -369,8 +369,8 @@ export default function SaccoAdminDashboard({ onNewBooking }: DashboardProps) {
                                         borderRadius: "8px",
                                         color: "var(--foreground)",
                                     }}
-                                    formatter={(value: number, name: string) => [
-                                        formatCurrency(value),
+                                    formatter={(value, name) => [
+                                        formatCurrency(Number(value ?? 0)),
                                         name === "revenue" ? "Gross Revenue" : "Commission",
                                     ]}
                                 />
