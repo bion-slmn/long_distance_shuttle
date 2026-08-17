@@ -32,16 +32,32 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
-        host: config.get<string>('DB_HOST'),
-        port: config.get<number>('DB_PORT'),
-        username: config.get<string>('DB_USERNAME'),
-        password: config.get<string>('DB_PASSWORD'),
-        database: config.get<string>('DB_NAME'),
-        autoLoadEntities: true,
-        synchronize: false, // ← changed
-      }),
+      useFactory: (config: ConfigService) => {
+        const databaseUrl = config.get<string>('DATABASE_URL');
+
+        if (databaseUrl) {
+          // Render / Neon / Supabase - managed Postgres via full connection URL
+          return {
+            type: 'postgres' as const,
+            url: databaseUrl,
+            ssl: { rejectUnauthorized: false }, // Render Postgres requires SSL
+            autoLoadEntities: true,
+            synchronize: false,
+          };
+        }
+
+        // Local dev fallback (docker-compose)
+        return {
+          type: 'postgres' as const,
+          host: config.get<string>('DB_HOST'),
+          port: config.get<number>('DB_PORT'),
+          username: config.get<string>('DB_USERNAME'),
+          password: config.get<string>('DB_PASSWORD'),
+          database: config.get<string>('DB_NAME'),
+          autoLoadEntities: true,
+          synchronize: false,
+        };
+      },
     }),
 
     PassportModule.register({ defaultStrategy: 'jwt' }),  // ← add
