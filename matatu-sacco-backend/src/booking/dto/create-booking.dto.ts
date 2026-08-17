@@ -11,6 +11,13 @@ import {
 import { BookingStatus, PaymentMethod } from '../entities/booking.entity';
 
 export class CreateBookingDto {
+
+    @IsOptional()
+    @IsUUID()
+    bookingId?: string; // present on retry
+
+
+
     @IsUUID()
     declare routeId: string;
 
@@ -44,4 +51,12 @@ export class CreateBookingDto {
     @IsOptional()
     @IsEnum(BookingStatus)
     status?: BookingStatus;
+
+    @IsOptional()
+    @Matches(/^\d{2}:\d{2}(:\d{2})?$/, { message: 'preferredBoardingFrom must be HH:mm or HH:mm:ss' })
+    preferredBoardingFrom?: string;
+
+    @IsOptional()
+    @Matches(/^\d{2}:\d{2}(:\d{2})?$/, { message: 'preferredBoardingTo must be HH:mm or HH:mm:ss' })
+    preferredBoardingTo?: string;
 }

@@ -21,6 +21,20 @@ services:
     volumes:
       - redis_data:/data
 
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shuttle-backend
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+
 volumes:
   postgres_data:
   redis_data:

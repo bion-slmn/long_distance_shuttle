@@ -106,6 +106,12 @@ export class Booking {
     @Column({ type: 'uuid', nullable: true })
     declare createdByUserId: string | null;
 
+    @Column({ type: 'time', nullable: true })
+    declare preferredBoardingFrom: string | null;
+
+    @Column({ type: 'time', nullable: true })
+    declare preferredBoardingTo: string | null;
+
     @CreateDateColumn()
     declare createdAt: Date;
 

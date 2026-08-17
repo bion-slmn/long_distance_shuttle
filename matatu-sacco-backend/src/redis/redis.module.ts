@@ -19,7 +19,7 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
                     password: config.get<string>('REDIS_PASSWORD') || undefined,
                     // If BullMQ is already pointed at a different Redis (e.g. a managed
                     // instance), swap these three lines for the same env vars it uses,
-                    // once you confirm what those are.
+                    // once you confirm what those are. 
                 });
             },
         },

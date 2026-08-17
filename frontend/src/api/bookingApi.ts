@@ -94,8 +94,11 @@ export interface GetBookingsOptions {
     saccoId?: string;
     routeId?: string;
     travelDate?: string;
+    from?: string;      // ← new
+    to?: string;        // ← new
     status?: BookingStatus;
     tripId?: string;
+    vehicleId?: string; // ← new
 }
 
 // ─── Booking Requests ──────────────────────────────────────────────────────
@@ -127,8 +130,11 @@ export async function getBookingsRequest(
     if (options.saccoId) params.set("saccoId", options.saccoId);
     if (options.routeId) params.set("routeId", options.routeId);
     if (options.travelDate) params.set("travelDate", options.travelDate);
+    if (options.from) params.set("from", options.from);       // ← new
+    if (options.to) params.set("to", options.to);             // ← new
     if (options.status) params.set("status", options.status);
     if (options.tripId) params.set("tripId", options.tripId);
+    if (options.vehicleId) params.set("vehicleId", options.vehicleId); // ← new
 
     const query = params.toString();
     const res = await api.get(`/bookings${query ? `?${query}` : ""}`);
@@ -216,4 +222,22 @@ export interface UniquePassengerStats {
 export async function getUniquePassengerStatsRequest(): Promise<UniquePassengerStats> {
     const { data } = await api.get<UniquePassengerStats>("/bookings/stats/unique-passengers");
     return data;
+}
+
+// ─── Booking status (public, minimal) ─────────────────────────────────────
+// Matches GET /bookings/:id/status — the public polling endpoint, distinct
+// from getBookingRequest which is staff-only and returns the full Booking
+// (including passengerPhone). Only what the confirmation screen needs.
+
+export interface BookingStatusSummary {
+    id: string;
+    status: BookingStatus;
+    paymentStatus: PaymentStatus;
+    seatNumber: number | null;
+    mpesaReceiptNumber: string | null;
+}
+
+export async function getBookingStatusRequest(id: string): Promise<BookingStatusSummary> {
+    const res = await api.get(`/bookings/${id}/status`, { skipAuthRefresh: true });
+    return res.data;
 }

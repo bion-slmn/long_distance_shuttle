@@ -12,6 +12,7 @@ import { BookingService } from 'src/booking/booking.service';
 import { TripService } from 'src/trip/trip.service';
 import { Trip } from 'src/trip/entities/trip.entity';
 import { Booking } from 'src/booking/entities/booking.entity';
+import { SaccoSettingsService } from './sacco-settings.service';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -83,8 +84,7 @@ export class SaccoService {
     constructor(
         @InjectRepository(Sacco)
         private readonly saccoRepository: Repository<Sacco>,
-        private readonly tripService: TripService,
-        private readonly bookingService: BookingService,
+        private readonly saccoSettingsService: SaccoSettingsService,
     ) { }
 
     private toDateString(date: Date): string {
@@ -240,7 +240,9 @@ export class SaccoService {
         });
 
         try {
-            return await this.saccoRepository.save(sacco);
+            const saved = await this.saccoRepository.save(sacco);
+            await this.saccoSettingsService.createDefaults(saved.id);
+            return saved;
         } catch (err) {
             this.handleUniqueViolation(err);
         }

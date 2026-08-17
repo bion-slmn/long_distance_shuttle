@@ -24,6 +24,7 @@ import { RolesGuard } from 'src/guards/roles.guard';
 import { CurrentUser } from 'src/decorators/current-user.decorator';
 import { UserRole } from 'src/auth/entities/user.entity';
 import { Roles } from 'src/decorators/roles.decorator';
+import { Public } from 'src/decorators/public.decorator';
 
 @Controller('bookings')
 export class BookingController {
@@ -34,6 +35,7 @@ export class BookingController {
   // and no JWT. createdByUserId stays optional/null for these; it's only
   // populated when a CLERK creates a booking on a passenger's behalf
   // (walk-in booking), which is why we still try req.user first.
+  @Public()
   @Post()
   create(@Body() dto: CreateBookingDto) {
     return this.bookingService.create(dto);
@@ -42,6 +44,7 @@ export class BookingController {
   // ── PUBLIC: seat availability check ──────────────────────────────────
   // A passenger needs to see open seats *before* they have any booking or
   // account, so this has to stay open too.
+  @Public()
   @Get('availability')
   getAvailability(
     @Query('routeId', new ParseUUIDPipe()) routeId: string,
@@ -55,26 +58,34 @@ export class BookingController {
   // cancelling all expose passenger names/phones and payment state —
   // never safe to leave open to the public.
 
-  // GET /bookings?routeId=&travelDate=&status=&tripId=
-  // saccoId is derived from the authenticated user, never from the query
-  // string — same fix as TripController.findAll.
+  // GET /bookings?saccoId=&routeId=&travelDate=&from=&to=&status=&tripId=&vehicleId=
+  // saccoId is derived from the authenticated user for SACCO_ADMIN/CLERK —
+  // never trusted from the query string for them. SUPER_ADMIN may pass
+  // ?saccoId= to scope to one sacco, or omit it to see all saccos.
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
   findAll(
     @CurrentUser() user: any,
+    @Query('saccoId') saccoIdParam?: string,
     @Query('routeId') routeId?: string,
     @Query('travelDate') travelDate?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
     @Query('status') status?: BookingStatus,
     @Query('tripId') tripId?: string,
+    @Query('vehicleId') vehicleId?: string,
   ) {
     const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
     return this.bookingService.findAll({
-      saccoId: isSuperAdmin ? undefined : user.saccoId,
+      saccoId: isSuperAdmin ? saccoIdParam : user.saccoId,
       routeId,
       travelDate,
+      from,
+      to,
       status,
       tripId,
+      vehicleId,
     });
   }
 
@@ -85,6 +96,25 @@ export class BookingController {
     const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
     return this.bookingService.getUniquePassengerStats(isSuperAdmin ? undefined : user.saccoId);
   }
+
+  // ── PUBLIC: minimal status check for the passenger-facing polling loop ──
+  // Deliberately returns a slim shape, not the full Booking — a passenger
+  // only needs to know if payment resolved, not to re-fetch their own phone
+  // number back. UUID alone is the "auth" here, same trust model as the
+  // booking confirmation screen itself (knowledge of the id = you made it).
+  @Public()
+  @Get(':id/status')
+  async getStatus(@Param('id', new ParseUUIDPipe()) id: string) {
+    const booking = await this.bookingService.findOne(id);
+    return {
+      id: booking.id,
+      status: booking.status,
+      paymentStatus: booking.paymentStatus,
+      seatNumber: booking.seatNumber,
+      mpesaReceiptNumber: booking.mpesaReceiptNumber,
+    };
+  }
+
 
   // GET /bookings/:id
   // Staff-only. Scoped so a SACCO_ADMIN/CLERK can't fetch another sacco's
@@ -132,45 +162,6 @@ export class BookingController {
     return this.bookingService.getTodayPassengerStats(saccoId);
   }
 
-  // ── PATCH /bookings/:id/confirm-payment ───────────────────────────────
-  // ⚠️ This is called by the M-Pesa Daraja callback, which is a server-to-
-  // server webhook — it will never carry a user JWT. Putting JwtAuthGuard
-  // here would break the real payment flow, not secure it.
-  // Instead this needs its OWN verification: either an M-Pesa-signed
-  // payload check, a shared secret header, or restricting by source IP
-  // at the infra/load-balancer level. Do NOT leave this endpoint
-  // completely open with no check at all — right now it has none, which
-  // means anyone who finds the URL could mark any booking as PAID.
-  // Placeholder shown below; replace with your actual Daraja verification.
-  @Patch(':id/confirm-payment')
-  confirmPayment(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() dto: ConfirmPaymentDto,
-    @Headers('x-mpesa-signature') signature?: string,
-  ) {
-    // TODO: verify `signature` against Daraja's callback payload before
-    // trusting this. Failing that, at minimum require a pre-shared secret
-    // header set only in your Daraja callback URL config.
-    if (!signature) {
-      throw new UnauthorizedException('Missing payment callback signature.');
-    }
-    return this.bookingService.confirmPayment(id, dto);
-  }
-
-  // PATCH /bookings/:id/payment-failed
-  // Same concern as confirm-payment — this can be triggered by the Daraja
-  // callback on failure, so it needs the same webhook-level protection,
-  // not a user JWT guard.
-  @Patch(':id/payment-failed')
-  markPaymentFailed(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Headers('x-mpesa-signature') signature?: string,
-  ) {
-    if (!signature) {
-      throw new UnauthorizedException('Missing payment callback signature.');
-    }
-    return this.bookingService.markPaymentFailed(id);
-  }
 
   // DELETE /bookings/:id → soft "delete" = CANCELLED
   // Staff-only, scoped from the user rather than the query string.
@@ -216,4 +207,6 @@ export class BookingController {
     }
     return this.bookingService.getRevenueTrend(days ? Number(days) : 7, saccoId);
   }
+
+
 }

@@ -9,11 +9,18 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
-import { Booking, BookingStatus, PaymentStatus } from './entities/booking.entity';
+import { Booking, BookingStatus, PaymentMethod, PaymentStatus } from './entities/booking.entity';
 import { Trip, TripStatus } from '../trip/entities/trip.entity';
 import { Route } from '../route/entities/route.entity';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { UpdateBookingDto } from './dto/update-booking.dto';
+import { PaymentService } from 'src/payment/payment.service';
+import {
+  Payment,
+  PaymentMethod as PaymentEntityMethod,
+  PaymentStatus as PaymentEntityStatus,
+  PaymentReferenceType,
+} from '../payment/entities/payment.entity';
 
 export interface UniquePassengerStats {
   saccoId: string | null;
@@ -45,93 +52,194 @@ export class BookingService {
 
     @InjectRepository(Route)
     private readonly routeRepository: Repository<Route>,
+    private readonly paymentService: PaymentService
   ) { }
 
   private toDateString(date: Date): string {
     return date.toISOString().slice(0, 10);
   }
 
-  // ─── Create ──────────────────────────────────────────────────────────────
-  // Tries to slot straight into an already-boarding trip with space.
-  // Falls back to AWAITING_TRIP against the route/date if no trip exists
-  // yet, or the existing one(s) are full.
-  // booking.service.ts
+
   async create(dto: CreateBookingDto): Promise<Booking> {
-    const route = await this.routeRepository.findOne({ where: { id: dto.routeId } });
-    if (!route) {
-      throw new NotFoundException(`Route "${dto.routeId}" not found.`);
-    }
+    const route = await this.getRouteOrThrow(dto.routeId);
+    this.validatePreferredWindow(dto.preferredBoardingFrom, dto.preferredBoardingTo);
 
     const travelDate = dto.travelDate ?? this.toDateString(new Date());
+    const paymentStatus = this.initialPaymentStatus(dto.paymentMethod);
 
-    // MVP: no live M-Pesa gateway yet, so both payment methods are treated
-    // as settled at the moment of creation — the clerk is physically present
-    // for cash, and reads back the M-Pesa confirmation SMS before submitting.
-    // Once Daraja is wired up, only MPESA should flip back to PENDING here,
-    // with confirmPayment() taking over via the real callback.
-    const paymentStatus = PaymentStatus.PAID;
+    const savedBooking = await this.bookingRepository.manager.transaction((manager) =>
+      this.createBookingInTransaction(manager, { dto, route, travelDate, paymentStatus }),
+    );
 
-    return this.bookingRepository.manager.transaction(async (manager) => {
-      const openTrip = await manager
-        .createQueryBuilder(Trip, 't')
-        .where('t.routeId = :routeId', { routeId: dto.routeId })
-        .andWhere('t.travelDate = :travelDate', { travelDate })
-        .andWhere('t.status = :status', { status: TripStatus.BOARDING })
-        .setLock('pessimistic_write')
-        .getOne();
+    if (dto.paymentMethod === PaymentMethod.MPESA) {
+      await this.triggerMpesaPayment(savedBooking);
+    }
 
-      if (openTrip) {
-        const seatedCount = await manager
-          .createQueryBuilder(Booking, 'b')
-          .where('b.tripId = :tripId', { tripId: openTrip.id })
-          .andWhere('b.status IN (:...statuses)', {
-            statuses: [BookingStatus.CONFIRMED, BookingStatus.BOARDED],
-          })
-          .getCount();
+    return savedBooking;
+  }
 
-        if (seatedCount < openTrip.vehicleCapacity) {
-          const booking = manager.create(Booking, {
-            routeId: dto.routeId,
-            travelDate,
-            tripId: openTrip.id,
-            seatNumber: seatedCount + 1,
-            saccoId: route.saccoId,
-            passengerName: dto.passengerName,
-            passengerPhone: dto.passengerPhone,
-            fare: route.fare,
-            status: BookingStatus.CONFIRMED,
-            paymentMethod: dto.paymentMethod,
-            paymentStatus,
-            createdByUserId: dto.createdByUserId ?? null,
-          });
-          const saved = await manager.save(Booking, booking);
-          this.logger.log(
-            `Booking ${saved.id} confirmed on trip ${openTrip.id} (seat ${saved.seatNumber})`,
-          );
-          return saved;
-        }
-      }
 
-      const booking = manager.create(Booking, {
-        routeId: dto.routeId,
-        travelDate,
-        tripId: null,
-        seatNumber: null,
+  private async getRouteOrThrow(routeId: string): Promise<Route> {
+    const route = await this.routeRepository.findOne({ where: { id: routeId } });
+    if (!route) throw new NotFoundException(`Route "${routeId}" not found.`);
+    return route;
+  }
+
+  private validatePreferredWindow(from?: string, to?: string): void {
+    if (from && to && from > to) {
+      throw new BadRequestException('preferredBoardingFrom must not be after preferredBoardingTo.');
+    }
+  }
+
+  private initialPaymentStatus(method: PaymentMethod): PaymentStatus {
+    return method === PaymentMethod.CASH ? PaymentStatus.PAID : PaymentStatus.PENDING;
+  }
+
+  // The transaction body — still one function, but now it's ONLY DB logic,
+  // no validation, no payment initiation mixed in.
+  private async createBookingInTransaction(
+    manager: EntityManager,
+    ctx: { dto: CreateBookingDto; route: Route; travelDate: string; paymentStatus: PaymentStatus },
+  ): Promise<Booking> {
+    const { dto, route, travelDate, paymentStatus } = ctx;
+
+    const openTrip = await this.findLockedOpenTrip(manager, dto.routeId, travelDate);
+    const windowOk = this.isWithinPreferredWindow(
+      openTrip ? this.timeOfDay(openTrip.createdAt) : null,
+      dto.preferredBoardingFrom ?? null,
+      dto.preferredBoardingTo ?? null,
+    );
+
+    let saved: Booking | null = null;
+
+    if (openTrip && windowOk) {
+      saved = await this.trySeatOnTrip(manager, openTrip, { dto, route, travelDate, paymentStatus });
+    }
+
+    if (!saved) {
+      saved = await this.createAwaitingTripBooking(manager, { dto, route, travelDate, paymentStatus });
+    }
+
+    if (dto.paymentMethod === PaymentMethod.CASH) {
+      await this.recordCashPaymentInTransaction(manager, saved, route);
+    }
+
+    return saved;
+  }
+
+  private async recordCashPaymentInTransaction(
+    manager: EntityManager,
+    booking: Booking,
+    route: Route,
+  ): Promise<void> {
+    await manager.getRepository(Payment).save(
+      manager.create(Payment, {
+        referenceType: PaymentReferenceType.BOOKING,
+        referenceId: booking.id,
         saccoId: route.saccoId,
-        passengerName: dto.passengerName,
-        passengerPhone: dto.passengerPhone,
-        fare: route.fare,
-        status: BookingStatus.AWAITING_TRIP,
-        paymentMethod: dto.paymentMethod,
-        paymentStatus,
-        createdByUserId: dto.createdByUserId ?? null,
-      });
-      const saved = await manager.save(Booking, booking);
-      this.logger.log(
-        `Booking ${saved.id} queued AWAITING_TRIP for route ${dto.routeId} on ${travelDate}`,
-      );
-      return saved;
+        amount: route.fare,
+        method: PaymentEntityMethod.CASH,
+        status: PaymentEntityStatus.SUCCESS,
+        completedAt: new Date(),
+      }),
+    );
+  }
+  private async findLockedOpenTrip(
+    manager: EntityManager,
+    routeId: string,
+    travelDate: string,
+  ): Promise<Trip | null> {
+    return manager
+      .createQueryBuilder(Trip, 't')
+      .where('t.routeId = :routeId', { routeId })
+      .andWhere('t.travelDate = :travelDate', { travelDate })
+      .andWhere('t.status = :status', { status: TripStatus.BOARDING })
+      .setLock('pessimistic_write')
+      .getOne();
+  }
+
+  private async trySeatOnTrip(
+    manager: EntityManager,
+    trip: Trip,
+    ctx: { dto: CreateBookingDto; route: Route; travelDate: string; paymentStatus: PaymentStatus },
+  ): Promise<Booking | null> {
+    const { dto, route, travelDate, paymentStatus } = ctx;
+
+    const seatedCount = await manager
+      .createQueryBuilder(Booking, 'b')
+      .where('b.tripId = :tripId', { tripId: trip.id })
+      .andWhere('b.status IN (:...statuses)', {
+        statuses: [BookingStatus.CONFIRMED, BookingStatus.BOARDED],
+      })
+      .getCount();
+
+    if (seatedCount >= trip.vehicleCapacity) return null;
+
+    const booking = manager.create(Booking, {
+      routeId: dto.routeId,
+      travelDate,
+      tripId: trip.id,
+      seatNumber: seatedCount + 1,
+      saccoId: route.saccoId,
+      passengerName: dto.passengerName,
+      passengerPhone: dto.passengerPhone,
+      fare: route.fare,
+      status: BookingStatus.CONFIRMED,
+      paymentMethod: dto.paymentMethod,
+      paymentStatus,
+      createdByUserId: dto.createdByUserId ?? null,
+      preferredBoardingFrom: dto.preferredBoardingFrom ?? null,
+      preferredBoardingTo: dto.preferredBoardingTo ?? null,
     });
+    const saved = await manager.save(Booking, booking);
+    this.logger.log(`Booking ${saved.id} confirmed on trip ${trip.id} (seat ${saved.seatNumber})`);
+    return saved;
+  }
+
+  private async createAwaitingTripBooking(
+    manager: EntityManager,
+    ctx: { dto: CreateBookingDto; route: Route; travelDate: string; paymentStatus: PaymentStatus },
+  ): Promise<Booking> {
+    const { dto, route, travelDate, paymentStatus } = ctx;
+
+    const booking = manager.create(Booking, {
+      routeId: dto.routeId,
+      travelDate,
+      tripId: null,
+      seatNumber: null,
+      saccoId: route.saccoId,
+      passengerName: dto.passengerName,
+      passengerPhone: dto.passengerPhone,
+      fare: route.fare,
+      status: BookingStatus.AWAITING_TRIP,
+      paymentMethod: dto.paymentMethod,
+      paymentStatus,
+      createdByUserId: dto.createdByUserId ?? null,
+      preferredBoardingFrom: dto.preferredBoardingFrom ?? null,
+      preferredBoardingTo: dto.preferredBoardingTo ?? null,
+    });
+    const saved = await manager.save(Booking, booking);
+    this.logger.log(`Booking ${saved.id} queued AWAITING_TRIP for route ${dto.routeId} on ${travelDate}`);
+    return saved;
+  }
+
+  private async triggerMpesaPayment(booking: Booking): Promise<void> {
+    try {
+      await this.paymentService.initiateMpesaPayment({
+        referenceType: PaymentReferenceType.BOOKING,
+        referenceId: booking.id,
+        saccoId: booking.saccoId,
+        amount: booking.fare,
+        payerPhone: booking.passengerPhone,
+        accountReference: booking.id.slice(0, 8).toUpperCase(),
+      });
+    } catch (err: any) {
+      await this.markPaymentFailed(booking.id);
+      this.logger.error(`Failed to initiate M-Pesa for booking ${booking.id}: ${err.message}`);
+    }
+  }
+  private timeOfDay(date: Date): string {
+    return date.toTimeString().slice(0, 8); // 'HH:mm:ss' in server-local time
   }
 
   // ─── Called from RouteService once a QueueEntry boards and a Trip is
@@ -162,8 +270,22 @@ export class BookingService {
       .getMany();
 
     let assigned = 0;
+    let skippedOutsideWindow = 0;
+
     for (const booking of pending) {
-      if (seat >= trip.vehicleCapacity) break; // rest stay AWAITING_TRIP for the next trip
+      if (seat >= trip.vehicleCapacity) break;
+
+      const windowOk = this.isWithinPreferredWindow(
+        this.timeOfDay(trip.createdAt),
+        booking.preferredBoardingFrom,
+        booking.preferredBoardingTo,
+      );
+
+      if (!windowOk) {
+        skippedOutsideWindow++;
+        continue; // stays AWAITING_TRIP, eligible for a later trip that fits their window
+      }
+
       seat++;
       assigned++;
       booking.tripId = trip.id;
@@ -172,9 +294,10 @@ export class BookingService {
       await manager.save(Booking, booking);
     }
 
-    if (assigned > 0) {
+    if (assigned > 0 || skippedOutsideWindow > 0) {
       this.logger.log(
-        `Assigned ${assigned} pending booking(s) to trip ${trip.id} (${seat}/${trip.vehicleCapacity} seats filled)`,
+        `Assigned ${assigned} pending booking(s) to trip ${trip.id} (${seat}/${trip.vehicleCapacity} seats filled)` +
+        (skippedOutsideWindow > 0 ? `, ${skippedOutsideWindow} skipped (outside preferred window)` : ''),
       );
     }
   }
@@ -207,17 +330,23 @@ export class BookingService {
   async markPaymentFailed(id: string): Promise<Booking> {
     const booking = await this.findOne(id);
     booking.paymentStatus = PaymentStatus.FAILED;
-    this.logger.warn(`Payment failed for booking ${id}`);
+    booking.status = BookingStatus.CANCELLED; // ← payment never completed — this booking never happened
+    this.logger.warn(`Payment failed for booking ${id} — marked CANCELLED`);
     return this.bookingRepository.save(booking);
   }
 
   // ─── Find ────────────────────────────────────────────────────────────────
+  // src/booking/booking.service.ts
+
   async findAll(filters?: {
     saccoId?: string;
     routeId?: string;
-    travelDate?: string;
+    travelDate?: string;   // exact-day filter, kept for backward compatibility
+    from?: string;         // ← new — range start (inclusive)
+    to?: string;           // ← new — range end (inclusive)
     status?: BookingStatus;
     tripId?: string;
+    vehicleId?: string;
   }): Promise<Booking[]> {
     const qb = this.bookingRepository
       .createQueryBuilder('b')
@@ -226,9 +355,17 @@ export class BookingService {
 
     if (filters?.saccoId) qb.andWhere('b.saccoId = :saccoId', { saccoId: filters.saccoId });
     if (filters?.routeId) qb.andWhere('b.routeId = :routeId', { routeId: filters.routeId });
-    if (filters?.travelDate) qb.andWhere('b.travelDate = :travelDate', { travelDate: filters.travelDate });
-    if (filters?.status) qb.andWhere('b.status = :status', { status: filters.status });
     if (filters?.tripId) qb.andWhere('b.tripId = :tripId', { tripId: filters.tripId });
+    if (filters?.vehicleId) qb.andWhere('trip.vehicleId = :vehicleId', { vehicleId: filters.vehicleId });
+    if (filters?.status) qb.andWhere('b.status = :status', { status: filters.status });
+
+    // ── Date filtering: exact day OR a range, not both ──────────────────
+    if (filters?.travelDate) {
+      qb.andWhere('b.travelDate = :travelDate', { travelDate: filters.travelDate });
+    } else if (filters?.from || filters?.to) {
+      if (filters.from) qb.andWhere('b.travelDate >= :from', { from: filters.from });
+      if (filters.to) qb.andWhere('b.travelDate <= :to', { to: filters.to });
+    }
 
     return qb.orderBy('b.createdAt', 'ASC').getMany();
   }
@@ -555,5 +692,18 @@ export class BookingService {
       changeCount,
       changePercent: changePercent !== null ? Number(changePercent.toFixed(1)) : null,
     };
+  }
+
+  // ─── Helper: is a trip's boarding time within the passenger's preferred window? ──
+  // No window on the booking = no preference = matches anything (keeps old
+  // bookings and window-less API calls working exactly as before).
+  private isWithinPreferredWindow(
+    boardingTime: string | null, // 'HH:mm:ss', from trip
+    from: string | null,
+    to: string | null,
+  ): boolean {
+    if (!from || !to) return true;       // passenger didn't specify — always eligible
+    if (!boardingTime) return true;      // trip has no known boarding time yet — don't block on it
+    return boardingTime >= from && boardingTime <= to; // TIME strings compare lexically, safe for HH:mm:ss
   }
 }

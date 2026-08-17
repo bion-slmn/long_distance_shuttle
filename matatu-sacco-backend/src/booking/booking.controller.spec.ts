@@ -3,320 +3,340 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { BookingController } from './booking.controller';
 import { BookingService } from './booking.service';
-import { BookingStatus } from './entities/booking.entity';
-import { UserRole } from 'src/auth/entities/user.entity';
-import { JwtAuthGuard } from 'src/guards/jwt-auth.guard';
-import { RolesGuard } from 'src/guards/roles.guard';
+import { BookingStatus, PaymentStatus } from './entities/booking.entity';
+import { UserRole } from '../auth/entities/user.entity';
 
 describe('BookingController', () => {
   let controller: BookingController;
-  let bookingService: jest.Mocked<BookingService>;
+  let bookingService: Partial<Record<keyof BookingService, jest.Mock>>;
 
-  const saccoAdminUser = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-1' };
-  const superAdminUser = { role: UserRole.SUPER_ADMIN, saccoId: null };
-  const clerkUser = { role: UserRole.CLERK, saccoId: 'sacco-1' };
+  const superAdmin = { role: UserRole.SUPER_ADMIN, saccoId: null };
+  const saccoAdmin = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-1' };
+  const saccoAdminNoSacco = { role: UserRole.SACCO_ADMIN, saccoId: null };
+  const clerk = { role: UserRole.CLERK, saccoId: 'sacco-1' };
+
+  const baseBooking = {
+    id: 'booking-1',
+    saccoId: 'sacco-1',
+    status: BookingStatus.CONFIRMED,
+    paymentStatus: PaymentStatus.PAID,
+    seatNumber: 4,
+    mpesaReceiptNumber: 'NLJ7RT61SV',
+    passengerName: 'Jane Wanjiru',
+    passengerPhone: '0712345678',
+  };
 
   beforeEach(async () => {
+    bookingService = {
+      create: jest.fn(),
+      getAvailability: jest.fn(),
+      findAll: jest.fn(),
+      getUniquePassengerStats: jest.fn(),
+      findOne: jest.fn(),
+      update: jest.fn(),
+      getTodayPassengerStats: jest.fn(),
+      confirmPayment: jest.fn(),
+      markPaymentFailed: jest.fn(),
+      cancel: jest.fn(),
+      getTodayEarnings: jest.fn(),
+      getRevenueTrend: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       controllers: [BookingController],
-      providers: [
-        {
-          provide: BookingService,
-          useValue: {
-            create: jest.fn(),
-            getAvailability: jest.fn(),
-            findAll: jest.fn(),
-            findOne: jest.fn(),
-            update: jest.fn(),
-            cancel: jest.fn(),
-            confirmPayment: jest.fn(),
-            markPaymentFailed: jest.fn(),
-            getUniquePassengerStats: jest.fn(),
-            getTodayPassengerStats: jest.fn(),
-            getTodayEarnings: jest.fn(),
-            getRevenueTrend: jest.fn(),
-          },
-        },
-      ],
-    })
-      .overrideGuard(JwtAuthGuard)
-      .useValue({ canActivate: () => true })
-      .overrideGuard(RolesGuard)
-      .useValue({ canActivate: () => true })
-      .compile();
+      providers: [{ provide: BookingService, useValue: bookingService }],
+    }).compile();
 
-    controller = module.get(BookingController);
-    bookingService = module.get(BookingService);
+    controller = module.get<BookingController>(BookingController);
   });
 
-  afterEach(() => jest.clearAllMocks());
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
 
-  // ── public endpoints ─────────────────────────────────────────────────
+  // ─── create (public) ───────────────────────────────────────────────
   describe('create', () => {
-    it('delegates straight to bookingService.create', async () => {
-      const dto = { passengerName: 'Jane' } as any;
-      bookingService.create.mockResolvedValue({ id: 'b1' } as any);
+    it('delegates the dto directly to bookingService.create', () => {
+      const dto = { routeId: 'route-1' };
+      bookingService.create!.mockReturnValue({ id: 'booking-1' });
 
-      const result = await controller.create(dto);
+      const result = controller.create(dto as any);
 
       expect(bookingService.create).toHaveBeenCalledWith(dto);
-      expect(result).toEqual({ id: 'b1' });
+      expect(result).toEqual({ id: 'booking-1' });
     });
   });
 
+  // ─── getAvailability (public) ──────────────────────────────────────
   describe('getAvailability', () => {
-    it('passes routeId and travelDate through', async () => {
-      await controller.getAvailability('route-1', '2026-08-03');
+    it('passes routeId and optional travelDate through', () => {
+      bookingService.getAvailability!.mockReturnValue({ hasOpenTrip: true });
 
-      expect(bookingService.getAvailability).toHaveBeenCalledWith('route-1', '2026-08-03');
+      controller.getAvailability('route-1', '2026-08-17');
+
+      expect(bookingService.getAvailability).toHaveBeenCalledWith('route-1', '2026-08-17');
     });
 
-    it('allows travelDate to be omitted', async () => {
-      await controller.getAvailability('route-1');
+    it('works with travelDate omitted', () => {
+      bookingService.getAvailability!.mockReturnValue({ hasOpenTrip: false });
+
+      controller.getAvailability('route-1', undefined);
 
       expect(bookingService.getAvailability).toHaveBeenCalledWith('route-1', undefined);
     });
   });
 
-  // ── findAll ──────────────────────────────────────────────────────────
+  // ─── findAll ───────────────────────────────────────────────────────
   describe('findAll', () => {
-    it('scopes to the caller sacco for a SACCO_ADMIN, ignoring nothing from query', async () => {
-      await controller.findAll(saccoAdminUser, 'route-1', '2026-08-03', BookingStatus.CONFIRMED, 'trip-1');
+    it('SUPER_ADMIN: uses the provided saccoId query param', () => {
+      bookingService.findAll!.mockReturnValue([]);
 
-      expect(bookingService.findAll).toHaveBeenCalledWith({
-        saccoId: 'sacco-1',
-        routeId: 'route-1',
-        travelDate: '2026-08-03',
-        status: BookingStatus.CONFIRMED,
-        tripId: 'trip-1',
-      });
+      controller.findAll(superAdmin, 'sacco-9', 'route-1', '2026-08-17');
+
+      expect(bookingService.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: 'sacco-9', routeId: 'route-1', travelDate: '2026-08-17' }),
+      );
     });
 
-    it('scopes to the caller sacco for a CLERK too', async () => {
-      await controller.findAll(clerkUser);
+    it('SACCO_ADMIN/CLERK: ignores query saccoId, scopes to their own saccoId', () => {
+      bookingService.findAll!.mockReturnValue([]);
+
+      controller.findAll(saccoAdmin, 'sacco-other');
 
       expect(bookingService.findAll).toHaveBeenCalledWith(
         expect.objectContaining({ saccoId: 'sacco-1' }),
       );
     });
 
-    it('leaves saccoId undefined for a SUPER_ADMIN (platform-wide)', async () => {
-      await controller.findAll(superAdminUser);
+    it('passes through all optional filters', () => {
+      bookingService.findAll!.mockReturnValue([]);
 
-      expect(bookingService.findAll).toHaveBeenCalledWith(
-        expect.objectContaining({ saccoId: undefined }),
+      controller.findAll(
+        superAdmin,
+        'sacco-1',
+        'route-1',
+        '2026-08-17',
+        '2026-08-01',
+        '2026-08-31',
+        BookingStatus.CONFIRMED,
+        'trip-1',
+        'vehicle-1',
       );
+
+      expect(bookingService.findAll).toHaveBeenCalledWith({
+        saccoId: 'sacco-1',
+        routeId: 'route-1',
+        travelDate: '2026-08-17',
+        from: '2026-08-01',
+        to: '2026-08-31',
+        status: BookingStatus.CONFIRMED,
+        tripId: 'trip-1',
+        vehicleId: 'vehicle-1',
+      });
     });
   });
 
-  // ── findOne ──────────────────────────────────────────────────────────
-  describe('findOne', () => {
-    it('returns the booking when it belongs to the caller sacco', async () => {
-      bookingService.findOne.mockResolvedValue({ id: 'b1', saccoId: 'sacco-1' } as any);
-
-      const result = await controller.findOne('b1', saccoAdminUser);
-
-      expect(result).toEqual({ id: 'b1', saccoId: 'sacco-1' });
-    });
-
-    it('throws ForbiddenException when the booking belongs to a different sacco', async () => {
-      bookingService.findOne.mockResolvedValue({ id: 'b1', saccoId: 'sacco-2' } as any);
-
-      await expect(controller.findOne('b1', saccoAdminUser)).rejects.toThrow(ForbiddenException);
-    });
-
-    it('allows a SUPER_ADMIN to view a booking from any sacco', async () => {
-      bookingService.findOne.mockResolvedValue({ id: 'b1', saccoId: 'sacco-2' } as any);
-
-      const result = await controller.findOne('b1', superAdminUser);
-
-      expect(result).toEqual({ id: 'b1', saccoId: 'sacco-2' });
-    });
-
-    it('throws ForbiddenException for a CLERK viewing another sacco booking', async () => {
-      bookingService.findOne.mockResolvedValue({ id: 'b1', saccoId: 'sacco-2' } as any);
-
-      await expect(controller.findOne('b1', clerkUser)).rejects.toThrow(ForbiddenException);
-    });
-  });
-
-  // ── update ───────────────────────────────────────────────────────────
-  describe('update', () => {
-    it('scopes update to the caller sacco for a SACCO_ADMIN', async () => {
-      const dto = { status: BookingStatus.BOARDED } as any;
-
-      await controller.update('b1', dto, saccoAdminUser);
-
-      expect(bookingService.update).toHaveBeenCalledWith('b1', dto, 'sacco-1');
-    });
-
-    it('leaves saccoId undefined for a SUPER_ADMIN', async () => {
-      const dto = { status: BookingStatus.BOARDED } as any;
-
-      await controller.update('b1', dto, superAdminUser);
-
-      expect(bookingService.update).toHaveBeenCalledWith('b1', dto, undefined);
-    });
-  });
-
-  // ── cancel ───────────────────────────────────────────────────────────
-  describe('cancel', () => {
-    it('scopes cancel to the caller sacco', async () => {
-      await controller.cancel('b1', saccoAdminUser);
-
-      expect(bookingService.cancel).toHaveBeenCalledWith('b1', 'sacco-1');
-    });
-
-    it('leaves saccoId undefined for a SUPER_ADMIN', async () => {
-      await controller.cancel('b1', superAdminUser);
-
-      expect(bookingService.cancel).toHaveBeenCalledWith('b1', undefined);
-    });
-  });
-
-  // ── confirmPayment / markPaymentFailed (webhook endpoints) ────────────
-  describe('confirmPayment', () => {
-    const dto = { mpesaReceiptNumber: 'ABC123' } as any;
-
-    it('throws UnauthorizedException when no signature header is present', () => {
-      expect(() => controller.confirmPayment('b1', dto, undefined)).toThrow(
-        UnauthorizedException,
-      );
-      expect(bookingService.confirmPayment).not.toHaveBeenCalled();
-    });
-
-    it('calls through when a signature header is present', async () => {
-      bookingService.confirmPayment.mockResolvedValue({ id: 'b1' } as any);
-
-      await controller.confirmPayment('b1', dto, 'valid-signature');
-
-      expect(bookingService.confirmPayment).toHaveBeenCalledWith('b1', dto);
-    });
-
-    it('accepts any non-empty signature value without verifying it (documents the TODO)', async () => {
-      bookingService.confirmPayment.mockResolvedValue({ id: 'b1' } as any);
-
-      await controller.confirmPayment('b1', dto, 'totally-fake-signature');
-
-      expect(bookingService.confirmPayment).toHaveBeenCalledWith('b1', dto);
-    });
-  });
-
-  describe('markPaymentFailed', () => {
-    it('throws UnauthorizedException when no signature header is present', () => {
-      expect(() => controller.markPaymentFailed('b1', undefined)).toThrow(
-        UnauthorizedException,
-      );
-      expect(bookingService.markPaymentFailed).not.toHaveBeenCalled();
-    });
-
-    it('calls through when a signature header is present', async () => {
-      await controller.markPaymentFailed('b1', 'valid-signature');
-
-      expect(bookingService.markPaymentFailed).toHaveBeenCalledWith('b1');
-    });
-  });
-
-  // ── stats endpoints ──────────────────────────────────────────────────
+  // ─── getUniquePassengerStats ───────────────────────────────────────
   describe('getUniquePassengerStats', () => {
-    it('scopes to caller sacco for SACCO_ADMIN', async () => {
-      await controller.getUniquePassengerStats(saccoAdminUser);
-      expect(bookingService.getUniquePassengerStats).toHaveBeenCalledWith('sacco-1');
-    });
+    it('SUPER_ADMIN: passes undefined saccoId (platform-wide)', () => {
+      bookingService.getUniquePassengerStats!.mockReturnValue({});
 
-    it('is platform-wide for SUPER_ADMIN', async () => {
-      await controller.getUniquePassengerStats(superAdminUser);
+      controller.getUniquePassengerStats(superAdmin);
+
       expect(bookingService.getUniquePassengerStats).toHaveBeenCalledWith(undefined);
     });
+
+    it('SACCO_ADMIN: scopes to their own saccoId', () => {
+      bookingService.getUniquePassengerStats!.mockReturnValue({});
+
+      controller.getUniquePassengerStats(saccoAdmin);
+
+      expect(bookingService.getUniquePassengerStats).toHaveBeenCalledWith('sacco-1');
+    });
   });
 
+  // ─── getStatus (public) ────────────────────────────────────────────
+  describe('getStatus', () => {
+    it('returns only the slim public-safe shape, not the full booking', async () => {
+      bookingService.findOne!.mockResolvedValue(baseBooking);
+
+      const result = await controller.getStatus('booking-1');
+
+      expect(result).toEqual({
+        id: baseBooking.id,
+        status: baseBooking.status,
+        paymentStatus: baseBooking.paymentStatus,
+        seatNumber: baseBooking.seatNumber,
+        mpesaReceiptNumber: baseBooking.mpesaReceiptNumber,
+      });
+      // Explicitly must NOT leak passenger PII
+      expect(result).not.toHaveProperty('passengerName');
+      expect(result).not.toHaveProperty('passengerPhone');
+      expect(result).not.toHaveProperty('saccoId');
+    });
+  });
+
+  // ─── findOne (staff) ───────────────────────────────────────────────
+  describe('findOne', () => {
+    it('returns the booking for SUPER_ADMIN regardless of sacco', async () => {
+      bookingService.findOne!.mockResolvedValue(baseBooking);
+
+      const result = await controller.findOne('booking-1', superAdmin);
+
+      expect(result).toEqual(baseBooking);
+    });
+
+    it('returns the booking when SACCO_ADMIN owns it', async () => {
+      bookingService.findOne!.mockResolvedValue(baseBooking);
+
+      const result = await controller.findOne('booking-1', saccoAdmin);
+
+      expect(result).toEqual(baseBooking);
+    });
+
+    it('throws ForbiddenException when a different sacco requests it', async () => {
+      bookingService.findOne!.mockResolvedValue(baseBooking);
+
+      await expect(
+        controller.findOne('booking-1', { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-2' }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('propagates NotFoundException from the service', async () => {
+      bookingService.findOne!.mockRejectedValue(new Error('not found'));
+
+      await expect(controller.findOne('missing', superAdmin)).rejects.toThrow();
+    });
+  });
+
+  // ─── update ────────────────────────────────────────────────────────
+  describe('update', () => {
+    it('SUPER_ADMIN: passes undefined saccoId (no scoping)', () => {
+      bookingService.update!.mockReturnValue(baseBooking);
+
+      controller.update('booking-1', { status: BookingStatus.BOARDED } as any, superAdmin);
+
+      expect(bookingService.update).toHaveBeenCalledWith(
+        'booking-1',
+        { status: BookingStatus.BOARDED },
+        undefined,
+      );
+    });
+
+    it('SACCO_ADMIN/CLERK: scopes update to their own saccoId', () => {
+      bookingService.update!.mockReturnValue(baseBooking);
+
+      controller.update('booking-1', { status: BookingStatus.BOARDED } as any, clerk);
+
+      expect(bookingService.update).toHaveBeenCalledWith(
+        'booking-1',
+        { status: BookingStatus.BOARDED },
+        'sacco-1',
+      );
+    });
+  });
+
+  // ─── getTodayPassengerStats ────────────────────────────────────────
   describe('getTodayPassengerStats', () => {
-    it('forces saccoId to the caller sacco for a SACCO_ADMIN, ignoring any query param', async () => {
-      await controller.getTodayPassengerStats('someone-elses-sacco', saccoAdminUser);
+    it('SUPER_ADMIN: uses provided saccoId query param (may be undefined)', () => {
+      bookingService.getTodayPassengerStats!.mockReturnValue({});
 
-      expect(bookingService.getTodayPassengerStats).toHaveBeenCalledWith('sacco-1');
-    });
-
-    it('throws ForbiddenException when a SACCO_ADMIN has no saccoId assigned', () => {
-      const unassignedAdmin = { role: UserRole.SACCO_ADMIN, saccoId: null };
-
-      expect(() =>
-        controller.getTodayPassengerStats(undefined, unassignedAdmin),
-      ).toThrow(ForbiddenException);
-    });
-
-    it('respects an explicit saccoId query param for a SUPER_ADMIN', async () => {
-      await controller.getTodayPassengerStats('sacco-9', superAdminUser);
+      controller.getTodayPassengerStats('sacco-9', superAdmin);
 
       expect(bookingService.getTodayPassengerStats).toHaveBeenCalledWith('sacco-9');
     });
 
-    it('is platform-wide for a SUPER_ADMIN with no saccoId query param', async () => {
-      await controller.getTodayPassengerStats(undefined, superAdminUser);
+    it('SACCO_ADMIN: overrides query param with their own saccoId', () => {
+      bookingService.getTodayPassengerStats!.mockReturnValue({});
 
-      expect(bookingService.getTodayPassengerStats).toHaveBeenCalledWith(undefined);
+      controller.getTodayPassengerStats('sacco-other', saccoAdmin);
+
+      expect(bookingService.getTodayPassengerStats).toHaveBeenCalledWith('sacco-1');
+    });
+
+    it('SACCO_ADMIN with no assigned sacco: throws ForbiddenException', () => {
+      expect(() => controller.getTodayPassengerStats(undefined, saccoAdminNoSacco)).toThrow(
+        ForbiddenException,
+      );
+      expect(bookingService.getTodayPassengerStats).not.toHaveBeenCalled();
     });
   });
 
+
+  // ─── cancel ─────────────────────────────────────────────────────────
+  describe('cancel', () => {
+    it('SUPER_ADMIN: passes undefined saccoId', () => {
+      bookingService.cancel!.mockReturnValue({ ...baseBooking, status: BookingStatus.CANCELLED });
+
+      controller.cancel('booking-1', superAdmin);
+
+      expect(bookingService.cancel).toHaveBeenCalledWith('booking-1', undefined);
+    });
+
+    it('SACCO_ADMIN/CLERK: scopes to their own saccoId', () => {
+      bookingService.cancel!.mockReturnValue({ ...baseBooking, status: BookingStatus.CANCELLED });
+
+      controller.cancel('booking-1', clerk);
+
+      expect(bookingService.cancel).toHaveBeenCalledWith('booking-1', 'sacco-1');
+    });
+  });
+
+  // ─── getTodayEarnings ──────────────────────────────────────────────
   describe('getTodayEarnings', () => {
-    it('forces saccoId to the caller sacco for a SACCO_ADMIN, ignoring any query param', async () => {
-      await controller.getTodayEarnings('someone-elses-sacco', saccoAdminUser);
+    it('SUPER_ADMIN: uses provided saccoId query param', () => {
+      bookingService.getTodayEarnings!.mockReturnValue({});
+
+      controller.getTodayEarnings('sacco-9', superAdmin);
+
+      expect(bookingService.getTodayEarnings).toHaveBeenCalledWith('sacco-9');
+    });
+
+    it('SACCO_ADMIN: overrides with own saccoId', () => {
+      bookingService.getTodayEarnings!.mockReturnValue({});
+
+      controller.getTodayEarnings(undefined, saccoAdmin);
 
       expect(bookingService.getTodayEarnings).toHaveBeenCalledWith('sacco-1');
     });
 
-    it('throws ForbiddenException when a SACCO_ADMIN has no saccoId assigned', () => {
-      const unassignedAdmin = { role: UserRole.SACCO_ADMIN, saccoId: null };
-
-      expect(() =>
-        controller.getTodayEarnings(undefined, unassignedAdmin),
-      ).toThrow(ForbiddenException);
-    });
-
-    it('respects the query saccoId for a SUPER_ADMIN', async () => {
-      await controller.getTodayEarnings('sacco-9', superAdminUser);
-
-      expect(bookingService.getTodayEarnings).toHaveBeenCalledWith('sacco-9');
+    it('SACCO_ADMIN with no sacco: throws ForbiddenException', () => {
+      expect(() => controller.getTodayEarnings(undefined, saccoAdminNoSacco)).toThrow(
+        ForbiddenException,
+      );
     });
   });
 
+  // ─── getRevenueTrend ───────────────────────────────────────────────
   describe('getRevenueTrend', () => {
-    it('forces saccoId to the caller sacco for a SACCO_ADMIN regardless of query param', async () => {
-      await controller.getRevenueTrend('30', 'someone-elses-sacco', saccoAdminUser);
+    it('defaults days to 7 when not provided', () => {
+      bookingService.getRevenueTrend!.mockReturnValue([]);
+
+      controller.getRevenueTrend(undefined, undefined, superAdmin);
+
+      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(7, undefined);
+    });
+
+    it('converts the days query string to a number', () => {
+      bookingService.getRevenueTrend!.mockReturnValue([]);
+
+      controller.getRevenueTrend('14', 'sacco-9', superAdmin);
+
+      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(14, 'sacco-9');
+    });
+
+    it('SACCO_ADMIN: overrides saccoId with their own', () => {
+      bookingService.getRevenueTrend!.mockReturnValue([]);
+
+      controller.getRevenueTrend('30', 'sacco-other', saccoAdmin);
 
       expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(30, 'sacco-1');
     });
 
-    it('throws ForbiddenException when a SACCO_ADMIN has no saccoId assigned', () => {
-      const unassignedAdmin = { role: UserRole.SACCO_ADMIN, saccoId: null };
-
-      expect(() =>
-        controller.getRevenueTrend(undefined, undefined, unassignedAdmin),
-      ).toThrow(ForbiddenException);
-    });
-
-    it('defaults days to 7 when not provided', async () => {
-      await controller.getRevenueTrend(undefined, undefined, saccoAdminUser);
-
-      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(7, 'sacco-1');
-    });
-
-    it('converts the days query string to a number', async () => {
-      await controller.getRevenueTrend('14', undefined, saccoAdminUser);
-
-      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(14, 'sacco-1');
-    });
-
-    it('respects an explicit saccoId query param for a SUPER_ADMIN', async () => {
-      await controller.getRevenueTrend('7', 'sacco-9', superAdminUser);
-
-      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(7, 'sacco-9');
-    });
-
-    it('is platform-wide for SUPER_ADMIN with no saccoId query param', async () => {
-      await controller.getRevenueTrend('7', undefined, superAdminUser);
-
-      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(7, undefined);
+    it('SACCO_ADMIN with no sacco: throws ForbiddenException', () => {
+      expect(() => controller.getRevenueTrend('7', undefined, saccoAdminNoSacco)).toThrow(
+        ForbiddenException,
+      );
     });
   });
 });

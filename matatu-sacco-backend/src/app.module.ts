@@ -19,6 +19,8 @@ import { RedisModule } from './redis/redis.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { HealthModule } from './health/health.module';
 
+import { EventEmitterModule } from '@nestjs/event-emitter';
+
 @Module({
   imports: [
     // 1. Load the environment variables globally across the app
@@ -41,19 +43,20 @@ import { HealthModule } from './health/health.module';
         synchronize: false, // ← changed
       }),
     }),
-    PassportModule.register({ defaultStrategy: 'jwt' }),  // ← add
 
+    PassportModule.register({ defaultStrategy: 'jwt' }),  // ← add
+    EventEmitterModule.forRoot(),
     SaccoModule,
     FleetModule,
     BookingModule,
-    PaymentModule,
     AuthModule,
     RouteModule,
     TripModule,
-    RedisModule,     // ← added
+    RedisModule,
+    PaymentModule,
     MetricsModule, HealthModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController,],
   providers: [
     AppService,
     JwtStrategy,          // ← register globally
@@ -65,6 +68,7 @@ import { HealthModule } from './health/health.module';
       provide: APP_GUARD,
       useClass: RolesGuard,    // ← runs second, user already set
     },
+
   ],
 })
 export class AppModule { }

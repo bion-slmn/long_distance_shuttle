@@ -289,28 +289,30 @@ export class RouteQueueService {
             dto.status !== QueueEntryStatus.BOARDING;
 
         if (isEnteringBoardingDirectly) {
-            const saved = await this.queueEntryRepository.save(entry);
-            const trip = await this.tripService.createFromQueueEntry({
-                queueEntryId: saved.id,
-                routeId: entry.routeQueue.routeId,
-                vehicleId: saved.vehicleId,
-                saccoId: currentRoute.saccoId,
-                fare: currentRoute.fare,
-                vehicleCapacity: entry.vehicle.seatingCapacity,
-                travelDate: entry.routeQueue.queueDate,
+            return await this.queueEntryRepository.manager.transaction(async (manager) => {
+                const saved = await manager.save(QueueEntry, entry);
+                const trip = await this.tripService.createFromQueueEntry(
+                    {
+                        queueEntryId: saved.id,
+                        routeId: entry.routeQueue.routeId,
+                        vehicleId: saved.vehicleId,
+                        saccoId: currentRoute.saccoId,
+                        fare: currentRoute.fare,
+                        vehicleCapacity: entry.vehicle.seatingCapacity,
+                        travelDate: entry.routeQueue.queueDate,
+                    },
+                    manager, // ← pass the transactional manager here too
+                );
+
+                this.logger.log(`Trip ${trip?.id} created for queue entry ${saved.id} via direct boarding on route ${currentRoute.origin} → ${currentRoute.destination}`);
+
+                if (trip) {
+                    await this.bookingService.assignPendingBookingsToTrip(trip, manager);
+                    this.logger.log(`Bookings assigned to trip ${trip.id}`);
+                }
+
+                return saved;
             });
-
-            this.logger.log(`Trip ${trip?.id} created for queue entry ${saved.id} via direct boarding on route ${currentRoute.origin} → ${currentRoute.destination}`);
-
-            return saved;
-        }
-
-        if (!isLeavingBoarding) {
-            const saved = await this.queueEntryRepository.save(entry);
-            if (dto.status) {
-                this.logger.log(`Queue entry ${saved.id} status updated to ${saved.status}`);
-            }
-            return saved;
         }
 
         return this.saveAndPromoteNextWaiting(entry);

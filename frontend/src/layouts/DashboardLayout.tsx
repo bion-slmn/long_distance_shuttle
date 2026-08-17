@@ -11,6 +11,9 @@ import {
     Book,
     LayoutDashboard,
     Gauge,
+    Settings,
+    Wallet,
+    ClipboardList,
 } from "lucide-react"
 
 import {
@@ -64,12 +67,7 @@ const NAV_ITEMS: NavItem[] = [
         icon: Road,
         roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
-    {
-        label: "Book",
-        href: "/book",
-        icon: Book,
-        roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
-    },
+
     {
         label: "Users",
         href: "/users-saccos",
@@ -87,6 +85,24 @@ const NAV_ITEMS: NavItem[] = [
         label: "Dashboard",
         href: "/dashboard",
         icon: ListOrdered,
+        roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
+    },
+    {
+        label: "Settings",
+        href: "/settings",
+        icon: Settings,
+        roles: ["SACCO_ADMIN"],
+    },
+    {
+        label: "Payments",
+        href: "/payments",
+        icon: Wallet,
+        roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
+    },
+    {
+        label: "Bookings Report",
+        href: "/bookings-report",
+        icon: ClipboardList,
         roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
 

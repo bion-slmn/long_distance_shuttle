@@ -196,3 +196,71 @@ export const removeSaccoEmailRequest = async (
     );
     return data;
 };
+
+// ─── Sacco Settings ──────────────────────────────────────────────────────────
+
+export interface SaccoSettings {
+    saccoId: string;
+    commissionRate: number;
+    isAcceptingBookings: boolean;
+    acceptsMpesa: boolean;
+    acceptsCash: boolean;
+    mpesaShortcode?: string;
+    mpesaConfigured: boolean;
+    createdAt: string;
+    updatedAt: string;
+    // Note: mpesaConsumerKey, mpesaConsumerSecretEncrypted, and
+    // mpesaPasskeyEncrypted are intentionally never returned by the API.
+}
+
+export interface UpdateSaccoSettingsDto {
+    commissionRate?: number;
+    isAcceptingBookings?: boolean;
+    acceptsCash?: boolean;
+}
+
+export interface ConfigureMpesaDto {
+    shortcode: string;
+    consumerKey: string;
+    consumerSecret: string;
+    passkey: string;
+}
+
+// GET /saccos/:saccoId/settings — SUPER_ADMIN, SACCO_ADMIN (own sacco only)
+export const getSaccoSettingsRequest = async (
+    saccoId: string,
+): Promise<SaccoSettings> => {
+    const { data } = await api.get<SaccoSettings>(`/saccos/${saccoId}/settings`);
+    return data;
+};
+
+// PATCH /saccos/:saccoId/settings — SUPER_ADMIN, SACCO_ADMIN (own sacco only)
+export const updateSaccoSettingsRequest = async (
+    saccoId: string,
+    payload: UpdateSaccoSettingsDto,
+): Promise<SaccoSettings> => {
+    const { data } = await api.patch<SaccoSettings>(`/saccos/${saccoId}/settings`, payload);
+    return data;
+};
+
+// POST /saccos/:saccoId/settings/mpesa — SUPER_ADMIN, SACCO_ADMIN (own sacco only)
+export const configureSaccoMpesaRequest = async (
+    saccoId: string,
+    payload: ConfigureMpesaDto,
+): Promise<SaccoSettings> => {
+    const { data } = await api.post<SaccoSettings>(
+        `/saccos/${saccoId}/settings/mpesa`,
+        payload,
+    );
+    return data;
+};
+
+// POST /saccos/:saccoId/settings/mpesa/disable — SUPER_ADMIN, SACCO_ADMIN (own sacco only)
+export const disableSaccoMpesaRequest = async (
+    saccoId: string,
+): Promise<SaccoSettings> => {
+    const { data } = await api.post<SaccoSettings>(
+        `/saccos/${saccoId}/settings/mpesa/disable`,
+    );
+    return data;
+};

@@ -57,7 +57,6 @@ export class RouteService {
     }
 
     const stages = this.normalizeStages(dto.stages ?? []);
-
     const fare = Number(dto.fare);
 
     if (dto.fare === undefined || dto.fare === null || isNaN(fare) || fare <= 0) {
@@ -71,11 +70,35 @@ export class RouteService {
       description: dto.description.trim(),
       stages,
       isActive: true,
-      fare, // now a number, matches entity type
+      fare,
     });
 
     const saved = await this.routeRepository.save(route);
     this.logger.log(`Route created: ${saved.origin} → ${saved.destination} (${saved.id})`);
+
+    // ← new: mirror the route in the opposite direction
+    if (dto.createReturnLeg) {
+      const returnExists = await this.routeRepository.findOne({
+        where: { saccoId: dto.saccoId, origin: destination, destination: origin },
+      });
+
+      if (!returnExists) {
+        const returnRoute = this.routeRepository.create({
+          saccoId: dto.saccoId,
+          origin: destination,       // swapped
+          destination: origin,       // swapped
+          description: dto.description.trim(),
+          stages: [...stages].reverse(), // reverse stage order for the return trip
+          isActive: true,
+          fare,
+        });
+
+        const savedReturn = await this.routeRepository.save(returnRoute);
+        this.logger.log(`Return leg created: ${savedReturn.origin} → ${savedReturn.destination} (${savedReturn.id})`);
+      } else {
+        this.logger.log(`Return leg ${destination} → ${origin} already exists — skipped.`);
+      }
+    }
 
     return saved;
   }
@@ -84,6 +107,8 @@ export class RouteService {
 
   async findAll(saccoId?: string, assignedStage?: string): Promise<Route[]> {
     const where: any = { isActive: true };
+
+    console.log('findAll called with saccoId:', saccoId, 'assignedStage:', assignedStage);
 
     if (saccoId) where.saccoId = saccoId;
     // A clerk only sees routes that depart from their assigned stage —

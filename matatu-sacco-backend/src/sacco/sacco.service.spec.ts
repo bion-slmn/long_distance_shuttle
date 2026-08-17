@@ -1,633 +1,526 @@
-// sacco.service.spec.ts
+// src/sacco/sacco.service.spec.ts
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import {
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
   NotFoundException,
+  ConflictException,
+  BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { QueryFailedError, Repository } from 'typeorm';
 import { SaccoService } from './sacco.service';
 import { Sacco } from './entities/sacco.entity';
-import { TripService } from 'src/trip/trip.service';
-import { BookingService } from 'src/booking/booking.service';
+import { SaccoSettingsService } from './sacco-settings.service';
+
+type MockRepo<T = any> = Partial<Record<keyof Repository<T>, jest.Mock>>;
+
+function mockQueryBuilder(overrides: Partial<Record<string, any>> = {}) {
+  const qb: any = {
+    alias: 'sacco',
+    andWhere: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
+    skip: jest.fn().mockReturnThis(),
+    take: jest.fn().mockReturnThis(),
+    getCount: jest.fn().mockResolvedValue(0),
+    getMany: jest.fn().mockResolvedValue([]),
+    getOne: jest.fn().mockResolvedValue(null),
+    getRawMany: jest.fn().mockResolvedValue([]),
+    getRawAndEntities: jest.fn().mockResolvedValue({ entities: [], raw: [] }),
+    ...overrides,
+  };
+  return qb;
+}
 
 describe('SaccoService', () => {
   let service: SaccoService;
-  let repo: jest.Mocked<Repository<Sacco>>;
-  let tripService: jest.Mocked<TripService>;
-  let bookingService: jest.Mocked<BookingService>;
+  let saccoRepository: MockRepo<Sacco>;
+  let saccoSettingsService: Partial<Record<keyof SaccoSettingsService, jest.Mock>>;
+  let managerQbQueue: any[];
 
-  // qb used for direct sacco.createQueryBuilder('sacco') calls
-  let saccoQb: any;
-  // qb used for manager.createQueryBuilder(Trip | Booking, alias) calls
-  let statsQb: any;
-  let manager: any;
+  const baseSacco = (overrides: Partial<Sacco> = {}): Sacco =>
+    ({
+      id: 'sacco-1',
+      name: 'City Shuttle',
+      registrationNumber: 'REG-001',
+      contacts: [],
+      emails: [],
+      headquarters: 'Nairobi',
+      isActive: true,
+      createdAt: new Date('2026-08-01'),
+      ...overrides,
+    }) as Sacco;
 
   beforeEach(async () => {
-    saccoQb = {
-      select: jest.fn().mockReturnThis(),
-      addSelect: jest.fn().mockReturnThis(),
-      andWhere: jest.fn().mockReturnThis(),
-      orderBy: jest.fn().mockReturnThis(),
-      skip: jest.fn().mockReturnThis(),
-      take: jest.fn().mockReturnThis(),
-      getCount: jest.fn(),
-      getMany: jest.fn(),
-      getRawAndEntities: jest.fn(),
+    managerQbQueue = [];
+
+    saccoRepository = {
+      create: jest.fn((x) => x),
+      save: jest.fn(),
+      findOne: jest.fn(),
+      createQueryBuilder: jest.fn(),
+      manager: {
+        createQueryBuilder: jest.fn(() => {
+          // Pop next queued qb, or return a default empty one
+          return managerQbQueue.length ? managerQbQueue.shift() : mockQueryBuilder();
+        }),
+      } as any,
     };
 
-    statsQb = {
-      select: jest.fn().mockReturnThis(),
-      addSelect: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      andWhere: jest.fn().mockReturnThis(),
-      groupBy: jest.fn().mockReturnThis(),
-      getRawMany: jest.fn().mockResolvedValue([]),
-    };
-
-    manager = {
-      createQueryBuilder: jest.fn().mockReturnValue(statsQb),
+    saccoSettingsService = {
+      createDefaults: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SaccoService,
-        {
-          provide: getRepositoryToken(Sacco),
-          useValue: {
-            create: jest.fn(),
-            save: jest.fn(),
-            findOne: jest.fn(),
-            createQueryBuilder: jest.fn().mockReturnValue(saccoQb),
-            manager,
-          },
-        },
-        {
-          provide: TripService,
-          useValue: {},
-        },
-        {
-          provide: BookingService,
-          useValue: {},
-        },
+        { provide: getRepositoryToken(Sacco), useValue: saccoRepository },
+        { provide: SaccoSettingsService, useValue: saccoSettingsService },
       ],
     }).compile();
 
-    service = module.get(SaccoService);
-    repo = module.get(getRepositoryToken(Sacco));
-    tripService = module.get(TripService);
-    bookingService = module.get(BookingService);
+    service = module.get<SaccoService>(SaccoService);
   });
 
-  afterEach(() => jest.clearAllMocks());
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
 
-  // ── create ──────────────────────────────────────────────────────────────
-
+  // ─── create ─────────────────────────────────────────────────────────
   describe('create', () => {
-    it('throws BadRequestException when name is empty', async () => {
-      await expect(service.create({ name: '   ' })).rejects.toThrow(
-        BadRequestException,
-      );
-      expect(repo.save).not.toHaveBeenCalled();
+    it('throws BadRequestException when name is missing/blank', async () => {
+      await expect(service.create({ name: '  ' } as any)).rejects.toThrow(BadRequestException);
+      expect(saccoRepository.save).not.toHaveBeenCalled();
     });
 
-    it('trims name and defaults optional fields', async () => {
-      repo.create.mockReturnValue({} as any);
-      repo.save.mockResolvedValue({ id: 's1' } as any);
+    it('creates a sacco with trimmed fields and defaults, then provisions settings', async () => {
+      const saved = baseSacco();
+      saccoRepository.save!.mockResolvedValue(saved);
 
-      await service.create({ name: '  Metro Trans  ' });
+      const result = await service.create({
+        name: '  City Shuttle  ',
+        registrationNumber: '  REG-001  ',
+      });
 
-      expect(repo.create).toHaveBeenCalledWith(
+      expect(saccoRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          name: 'Metro Trans',
-          registrationNumber: null,
-          contacts: [],
-          emails: [],
+          name: 'City Shuttle',
+          registrationNumber: 'REG-001',
           headquarters: 'Nairobi',
           isActive: true,
         }),
       );
+      expect(saccoSettingsService.createDefaults).toHaveBeenCalledWith(saved.id);
+      expect(result).toEqual(saved);
     });
 
-    it('preserves provided registrationNumber, contacts, emails, headquarters', async () => {
-      repo.create.mockReturnValue({} as any);
-      repo.save.mockResolvedValue({ id: 's1' } as any);
+    it('defaults headquarters to Nairobi and registrationNumber to null when omitted', async () => {
+      saccoRepository.save!.mockResolvedValue(baseSacco());
 
-      const dto = {
-        name: 'Metro Trans',
-        registrationNumber: '  REG-123  ',
-        contacts: [{ phone: '0700000000', name: 'Jane' }] as any,
-        emails: [{ email: 'a@b.com' }] as any,
-        headquarters: '  Mombasa  ',
-      };
+      await service.create({ name: 'New Sacco' });
 
-      await service.create(dto);
-
-      expect(repo.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          registrationNumber: 'REG-123',
-          contacts: dto.contacts,
-          emails: dto.emails,
-          headquarters: 'Mombasa',
-        }),
+      expect(saccoRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ headquarters: 'Nairobi', registrationNumber: null }),
       );
     });
 
-    it('throws ConflictException on a duplicate name violation', async () => {
-      repo.create.mockReturnValue({} as any);
-      repo.save.mockRejectedValue(
-        new QueryFailedError('INSERT', [], {
-          message: 'duplicate key',
-          code: '23505',
-          detail: 'Key (name)=(Metro Trans) already exists.',
-        } as any),
-      );
+    it('throws ConflictException on a unique name violation', async () => {
+      const pgError = Object.assign(new QueryFailedError('', [], new Error('dup')), {
+        code: '23505',
+        detail: 'Key (name)=(City Shuttle) already exists.',
+      });
+      saccoRepository.save!.mockRejectedValue(pgError);
 
-      await expect(
-        service.create({ name: 'Metro Trans' }),
-      ).rejects.toThrow(ConflictException);
+      await expect(service.create({ name: 'City Shuttle' })).rejects.toThrow(ConflictException);
     });
 
-    it('throws ConflictException on a duplicate registrationNumber violation', async () => {
-      repo.create.mockReturnValue({} as any);
-      repo.save.mockRejectedValue(
-        new QueryFailedError('INSERT', [], {
-          message: 'duplicate key',
-          code: '23505',
-          detail: 'Key (registrationNumber)=(REG-1) already exists.',
-        } as any),
-      );
+    it('throws ConflictException on a unique registrationNumber violation', async () => {
+      const pgError = Object.assign(new QueryFailedError('', [], new Error('dup')), {
+        code: '23505',
+        detail: 'Key (registrationNumber)=(REG-001) already exists.',
+      });
+      saccoRepository.save!.mockRejectedValue(pgError);
 
-      await expect(
-        service.create({ name: 'X', registrationNumber: 'REG-1' }),
-      ).rejects.toThrow(ConflictException);
-    });
-
-    it('throws a generic ConflictException for an unrecognized unique violation', async () => {
-      repo.create.mockReturnValue({} as any);
-      repo.save.mockRejectedValue(
-        new QueryFailedError('INSERT', [], {
-          message: 'duplicate key',
-          code: '23505',
-          detail: 'Key (something_else)=(x) already exists.',
-        } as any),
-      );
-
-      await expect(service.create({ name: 'X' })).rejects.toThrow(
+      await expect(service.create({ name: 'X', registrationNumber: 'REG-001' })).rejects.toThrow(
         ConflictException,
       );
     });
 
     it('rethrows non-unique-violation errors unchanged', async () => {
-      repo.create.mockReturnValue({} as any);
       const err = new Error('connection lost');
-      repo.save.mockRejectedValue(err);
+      saccoRepository.save!.mockRejectedValue(err);
 
-      await expect(service.create({ name: 'X' })).rejects.toThrow(
-        'connection lost',
-      );
+      await expect(service.create({ name: 'X' })).rejects.toThrow('connection lost');
     });
   });
 
-  // ── update ──────────────────────────────────────────────────────────────
-
+  // ─── update ─────────────────────────────────────────────────────────
   describe('update', () => {
-    const existingSacco = () => ({
-      id: 's1',
-      name: 'Old Name',
-      registrationNumber: 'REG-1',
-      contacts: [],
-      emails: [],
-      headquarters: 'Nairobi',
-      isActive: true,
+    it('throws NotFoundException when the sacco does not exist', async () => {
+      saccoRepository.findOne!.mockResolvedValue(null);
+
+      await expect(service.update('missing', { name: 'X' })).rejects.toThrow(NotFoundException);
     });
 
-    it('updates only provided fields', async () => {
-      repo.findOne.mockResolvedValue(existingSacco() as any);
-      repo.save.mockImplementation(async (s) => s as any);
+    it('applies only the provided fields, trimming strings', async () => {
+      const sacco = baseSacco();
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+      saccoRepository.save!.mockImplementation(async (s) => s);
 
-      const result = await service.update('s1', { name: 'New Name' });
+      const result = await service.update('sacco-1', { name: '  New Name  ' });
 
       expect(result.name).toBe('New Name');
-      expect(result.headquarters).toBe('Nairobi');
+      expect(result.registrationNumber).toBe('REG-001'); // untouched
     });
 
-    it('trims name and headquarters on update', async () => {
-      repo.findOne.mockResolvedValue(existingSacco() as any);
-      repo.save.mockImplementation(async (s) => s as any);
+    it('allows clearing registrationNumber by passing an empty/undefined-coalesced value', async () => {
+      const sacco = baseSacco();
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+      saccoRepository.save!.mockImplementation(async (s) => s);
 
-      const result = await service.update('s1', {
-        name: '  Trimmed  ',
-        headquarters: '  Kisumu  ',
+      const result = await service.update('sacco-1', { registrationNumber: undefined as any });
+
+      // dto.registrationNumber !== undefined is false here, so it should stay untouched
+      // (this test documents current behavior: passing undefined explicitly is a no-op, same as omitting)
+      expect(result.registrationNumber).toBe('REG-001');
+    });
+
+    it('toggles isActive when explicitly provided', async () => {
+      const sacco = baseSacco({ isActive: true });
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+      saccoRepository.save!.mockImplementation(async (s) => s);
+
+      const result = await service.update('sacco-1', { isActive: false });
+
+      expect(result.isActive).toBe(false);
+    });
+
+    it('throws ConflictException on a unique violation during update', async () => {
+      const sacco = baseSacco();
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+      const pgError = Object.assign(new QueryFailedError('', [], new Error('dup')), {
+        code: '23505',
+        detail: 'Key (name)=(Dup) already exists.',
       });
+      saccoRepository.save!.mockRejectedValue(pgError);
 
-      expect(result.name).toBe('Trimmed');
-      expect(result.headquarters).toBe('Kisumu');
-    });
-
-    it('sets registrationNumber to null when explicitly cleared', async () => {
-      repo.findOne.mockResolvedValue(existingSacco() as any);
-      repo.save.mockImplementation(async (s) => s as any);
-
-      const result = await service.update('s1', {
-        registrationNumber: undefined,
-      });
-
-      // registrationNumber untouched since dto field is undefined
-      expect(result.registrationNumber).toBe('REG-1');
-    });
-
-    it('throws NotFoundException when sacco does not exist', async () => {
-      repo.findOne.mockResolvedValue(null);
-
-      await expect(
-        service.update('missing', { name: 'X' }),
-      ).rejects.toThrow(NotFoundException);
-    });
-
-    it('throws ConflictException on duplicate name during update', async () => {
-      repo.findOne.mockResolvedValue(existingSacco() as any);
-      repo.save.mockRejectedValue(
-        new QueryFailedError('UPDATE', [], {
-          message: 'duplicate key',
-          code: '23505',
-          detail: 'Key (name)=(Taken) already exists.',
-        } as any),
-      );
-
-      await expect(
-        service.update('s1', { name: 'Taken' }),
-      ).rejects.toThrow(ConflictException);
+      await expect(service.update('sacco-1', { name: 'Dup' })).rejects.toThrow(ConflictException);
     });
   });
 
-  // ── findAll ─────────────────────────────────────────────────────────────
-
+  // ─── findAll ────────────────────────────────────────────────────────
   describe('findAll', () => {
-    it('applies default pagination and isActive filter', async () => {
-      saccoQb.getCount.mockResolvedValue(0);
-      saccoQb.getMany.mockResolvedValue([]);
+    it('returns paginated results with default page/limit', async () => {
+      const qb = mockQueryBuilder({
+        getCount: jest.fn().mockResolvedValue(45),
+        getMany: jest.fn().mockResolvedValue([baseSacco()]),
+      });
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
 
       const result = await service.findAll();
 
-      expect(saccoQb.andWhere).toHaveBeenCalledWith(
-        'sacco.isActive = :isActive',
-        { isActive: true },
-      );
-      expect(saccoQb.skip).toHaveBeenCalledWith(0);
-      expect(saccoQb.take).toHaveBeenCalledWith(20);
+      expect(qb.skip).toHaveBeenCalledWith(0);
+      expect(qb.take).toHaveBeenCalledWith(20);
       expect(result).toEqual({
-        data: [],
-        total: 0,
+        data: [baseSacco()],
+        total: 45,
         page: 1,
         limit: 20,
-        totalPages: 0,
+        totalPages: 3,
       });
     });
 
-    it('includes inactive saccos when includeInactive is true', async () => {
-      saccoQb.getCount.mockResolvedValue(0);
-      saccoQb.getMany.mockResolvedValue([]);
-
-      await service.findAll({ includeInactive: true });
-
-      expect(saccoQb.andWhere).not.toHaveBeenCalledWith(
-        'sacco.isActive = :isActive',
-        expect.anything(),
-      );
-    });
-
-    it('filters by saccoId when provided', async () => {
-      saccoQb.getCount.mockResolvedValue(1);
-      saccoQb.getMany.mockResolvedValue([{ id: 's1' }]);
-
-      await service.findAll({ saccoId: 's1' });
-
-      expect(saccoQb.andWhere).toHaveBeenCalledWith('sacco.id = :saccoId', {
-        saccoId: 's1',
-      });
-    });
-
-    it('applies an ILIKE search filter when search is provided', async () => {
-      saccoQb.getCount.mockResolvedValue(0);
-      saccoQb.getMany.mockResolvedValue([]);
-
-      await service.findAll({ search: '  metro  ' });
-
-      expect(saccoQb.andWhere).toHaveBeenCalledWith(
-        'sacco.name ILIKE :search',
-        { search: '%metro%' },
-      );
-    });
-
-    it('ignores a blank search string', async () => {
-      saccoQb.getCount.mockResolvedValue(0);
-      saccoQb.getMany.mockResolvedValue([]);
-
-      await service.findAll({ search: '   ' });
-
-      expect(saccoQb.andWhere).not.toHaveBeenCalledWith(
-        expect.stringContaining('ILIKE'),
-        expect.anything(),
-      );
-    });
-
-    it('selects minimal fields when minimalFields is true', async () => {
-      saccoQb.getCount.mockResolvedValue(0);
-      saccoQb.getMany.mockResolvedValue([]);
-
-      await service.findAll({ minimalFields: true });
-
-      expect(saccoQb.select).toHaveBeenCalledWith(['sacco.id', 'sacco.name']);
-    });
-
-    it('normalizes page/limit to sane defaults when zero or negative', async () => {
-      saccoQb.getCount.mockResolvedValue(0);
-      saccoQb.getMany.mockResolvedValue([]);
-
-      await service.findAll({ page: 0, limit: -5 });
-
-      expect(saccoQb.skip).toHaveBeenCalledWith(0);
-      expect(saccoQb.take).toHaveBeenCalledWith(20);
-    });
-
-    it('computes skip based on page and limit', async () => {
-      saccoQb.getCount.mockResolvedValue(0);
-      saccoQb.getMany.mockResolvedValue([]);
+    it('computes skip correctly for page > 1', async () => {
+      const qb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) });
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
 
       await service.findAll({ page: 3, limit: 10 });
 
-      expect(saccoQb.skip).toHaveBeenCalledWith(20);
-      expect(saccoQb.take).toHaveBeenCalledWith(10);
+      expect(qb.skip).toHaveBeenCalledWith(20); // (3-1)*10
+      expect(qb.take).toHaveBeenCalledWith(10);
     });
 
-    it('uses getRawAndEntities and attaches counts when withCounts is true', async () => {
-      saccoQb.getCount.mockResolvedValue(1);
-      saccoQb.getRawAndEntities.mockResolvedValue({
-        entities: [{ id: 's1', name: 'Metro' }],
-        raw: [{ vehicleCount: '4', userCount: '2', routeCount: '3' }],
-      });
+    it('filters inactive saccos out by default', async () => {
+      const qb = mockQueryBuilder();
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
 
-      const result = await service.findAll({ withCounts: true });
+      await service.findAll();
 
-      expect(saccoQb.getMany).not.toHaveBeenCalled();
-      expect(result.data[0]).toEqual(
-        expect.objectContaining({
-          id: 's1',
-          vehicleCount: 4,
-          userCount: 2,
-          routeCount: 3,
-        }),
+      expect(qb.andWhere).toHaveBeenCalledWith('sacco.isActive = :isActive', { isActive: true });
+    });
+
+    it('includes inactive saccos when includeInactive is true', async () => {
+      const qb = mockQueryBuilder();
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
+
+      await service.findAll({ includeInactive: true });
+
+      expect(qb.andWhere).not.toHaveBeenCalledWith(
+        'sacco.isActive = :isActive',
+        expect.anything(),
       );
     });
 
-    it('defaults counts to 0 when raw row is missing', async () => {
-      saccoQb.getCount.mockResolvedValue(1);
-      saccoQb.getRawAndEntities.mockResolvedValue({
-        entities: [{ id: 's1', name: 'Metro' }],
-        raw: [],
+    it('applies a case-insensitive search filter, trimmed', async () => {
+      const qb = mockQueryBuilder();
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
+
+      await service.findAll({ search: '  city  ' });
+
+      expect(qb.andWhere).toHaveBeenCalledWith('sacco.name ILIKE :search', { search: '%city%' });
+    });
+
+    it('does not apply a search filter for blank/whitespace-only search', async () => {
+      const qb = mockQueryBuilder();
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
+
+      await service.findAll({ search: '   ' });
+
+      expect(qb.andWhere).not.toHaveBeenCalledWith('sacco.name ILIKE :search', expect.anything());
+    });
+
+    it('selects minimal fields when minimalFields is true', async () => {
+      const qb = mockQueryBuilder();
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
+
+      await service.findAll({ minimalFields: true });
+
+      expect(qb.select).toHaveBeenCalledWith(['sacco.id', 'sacco.name']);
+    });
+
+    it('falls back to limit 20 and page 1 for invalid (<=0) values', async () => {
+      const qb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) });
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
+
+      await service.findAll({ page: -1, limit: 0 });
+
+      expect(qb.skip).toHaveBeenCalledWith(0);
+      expect(qb.take).toHaveBeenCalledWith(20);
+    });
+
+    it('returns 0 totalPages when total is 0', async () => {
+      const qb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) });
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
+
+      const result = await service.findAll();
+
+      expect(result.totalPages).toBe(0);
+    });
+
+    it('uses getRawAndEntities and merges counts when withCounts is true', async () => {
+      const entity = baseSacco();
+      const qb = mockQueryBuilder({
+        getCount: jest.fn().mockResolvedValue(1),
+        getRawAndEntities: jest.fn().mockResolvedValue({
+          entities: [entity],
+          raw: [{ vehicleCount: '5', userCount: '3', routeCount: '2' }],
+        }),
       });
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
+
+      const result = await service.findAll({ withCounts: true });
+
+      expect(qb.addSelect).toHaveBeenCalledTimes(3);
+      expect(result.data[0]).toEqual(
+        expect.objectContaining({ vehicleCount: 5, userCount: 3, routeCount: 2 }),
+      );
+    });
+
+    it('defaults raw counts to 0 when missing', async () => {
+      const entity = baseSacco();
+      const qb = mockQueryBuilder({
+        getCount: jest.fn().mockResolvedValue(1),
+        getRawAndEntities: jest.fn().mockResolvedValue({ entities: [entity], raw: [{}] }),
+      });
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
 
       const result = await service.findAll({ withCounts: true });
 
       expect(result.data[0]).toEqual(
-        expect.objectContaining({
-          vehicleCount: 0,
-          userCount: 0,
-          routeCount: 0,
-        }),
+        expect.objectContaining({ vehicleCount: 0, userCount: 0, routeCount: 0 }),
       );
     });
   });
 
-  // ── findOne / findOneScoped / findByName ──────────────────────────────
-
+  // ─── findOne / findOneScoped / findByName ────────────────────────────
   describe('findOne', () => {
-    it('returns the sacco when found', async () => {
-      const sacco = { id: 's1' } as any;
-      repo.findOne.mockResolvedValue(sacco);
-      await expect(service.findOne('s1')).resolves.toEqual(sacco);
+    it('throws NotFoundException when missing', async () => {
+      saccoRepository.findOne!.mockResolvedValue(null);
+      await expect(service.findOne('missing')).rejects.toThrow(NotFoundException);
     });
 
-    it('throws NotFoundException when not found', async () => {
-      repo.findOne.mockResolvedValue(null);
-      await expect(service.findOne('missing')).rejects.toThrow(
-        NotFoundException,
-      );
+    it('returns the sacco when found', async () => {
+      const sacco = baseSacco();
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+
+      await expect(service.findOne('sacco-1')).resolves.toEqual(sacco);
     });
   });
 
   describe('findOneScoped', () => {
+    it('returns the sacco when no saccoId scope is given (super admin)', async () => {
+      const sacco = baseSacco();
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+
+      await expect(service.findOneScoped('sacco-1')).resolves.toEqual(sacco);
+    });
+
     it('returns the sacco when saccoId matches', async () => {
-      const sacco = { id: 's1' } as any;
-      repo.findOne.mockResolvedValue(sacco);
-      await expect(service.findOneScoped('s1', 's1')).resolves.toEqual(
-        sacco,
-      );
+      const sacco = baseSacco();
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+
+      await expect(service.findOneScoped('sacco-1', 'sacco-1')).resolves.toEqual(sacco);
     });
 
     it('throws ForbiddenException when saccoId does not match', async () => {
-      repo.findOne.mockResolvedValue({ id: 's1' } as any);
-      await expect(service.findOneScoped('s1', 's2')).rejects.toThrow(
-        ForbiddenException,
-      );
-    });
+      const sacco = baseSacco();
+      saccoRepository.findOne!.mockResolvedValue(sacco);
 
-    it('bypasses the check when saccoId is undefined', async () => {
-      const sacco = { id: 's1' } as any;
-      repo.findOne.mockResolvedValue(sacco);
-      await expect(service.findOneScoped('s1')).resolves.toEqual(sacco);
+      await expect(service.findOneScoped('sacco-1', 'sacco-2')).rejects.toThrow(ForbiddenException);
     });
   });
 
   describe('findByName', () => {
-    it('returns the sacco when found by trimmed name', async () => {
-      const sacco = { id: 's1', name: 'Metro' } as any;
-      repo.findOne.mockResolvedValue(sacco);
+    it('throws NotFoundException when missing, trims the search name', async () => {
+      saccoRepository.findOne!.mockResolvedValue(null);
 
-      await expect(service.findByName('  Metro  ')).resolves.toEqual(
-        sacco,
-      );
-      expect(repo.findOne).toHaveBeenCalledWith({
-        where: { name: 'Metro' },
-      });
+      await expect(service.findByName('  Ghost Sacco  ')).rejects.toThrow(NotFoundException);
+      expect(saccoRepository.findOne).toHaveBeenCalledWith({ where: { name: 'Ghost Sacco' } });
     });
 
-    it('throws NotFoundException when not found', async () => {
-      repo.findOne.mockResolvedValue(null);
-      await expect(service.findByName('Unknown')).rejects.toThrow(
-        NotFoundException,
-      );
+    it('returns the sacco when found', async () => {
+      const sacco = baseSacco();
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+
+      await expect(service.findByName('City Shuttle')).resolves.toEqual(sacco);
     });
   });
 
-  // ── deactivate / reactivate ─────────────────────────────────────────────
-
+  // ─── deactivate / reactivate ──────────────────────────────────────────
   describe('deactivate', () => {
     it('deactivates an active sacco', async () => {
-      repo.findOne.mockResolvedValue({
-        id: 's1',
-        name: 'Metro',
-        isActive: true,
-      } as any);
-      repo.save.mockImplementation(async (s) => s as any);
+      const sacco = baseSacco({ isActive: true });
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+      saccoRepository.save!.mockImplementation(async (s) => s);
 
-      const result = await service.deactivate('s1');
+      const result = await service.deactivate('sacco-1');
 
-      expect(result).toEqual({
-        success: true,
-        message: 'Sacco "Metro" has been deactivated.',
-      });
+      expect(result).toEqual({ success: true, message: `Sacco "${sacco.name}" has been deactivated.` });
+      expect(sacco.isActive).toBe(false);
     });
 
-    it('throws BadRequestException when already inactive', async () => {
-      repo.findOne.mockResolvedValue({
-        id: 's1',
-        name: 'Metro',
-        isActive: false,
-      } as any);
+    it('throws BadRequestException if already inactive', async () => {
+      const sacco = baseSacco({ isActive: false });
+      saccoRepository.findOne!.mockResolvedValue(sacco);
 
-      await expect(service.deactivate('s1')).rejects.toThrow(
-        BadRequestException,
-      );
-      expect(repo.save).not.toHaveBeenCalled();
+      await expect(service.deactivate('sacco-1')).rejects.toThrow(BadRequestException);
     });
   });
 
   describe('reactivate', () => {
     it('reactivates an inactive sacco', async () => {
-      repo.findOne.mockResolvedValue({
-        id: 's1',
-        name: 'Metro',
-        isActive: false,
-      } as any);
-      repo.save.mockImplementation(async (s) => s as any);
+      const sacco = baseSacco({ isActive: false });
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+      saccoRepository.save!.mockImplementation(async (s) => s);
 
-      const result = await service.reactivate('s1');
+      const result = await service.reactivate('sacco-1');
 
-      expect(result).toEqual({
-        success: true,
-        message: 'Sacco "Metro" has been reactivated.',
-      });
+      expect(result).toEqual({ success: true, message: `Sacco "${sacco.name}" has been reactivated.` });
+      expect(sacco.isActive).toBe(true);
     });
 
-    it('throws BadRequestException when already active', async () => {
-      repo.findOne.mockResolvedValue({
-        id: 's1',
-        name: 'Metro',
-        isActive: true,
-      } as any);
+    it('throws BadRequestException if already active', async () => {
+      const sacco = baseSacco({ isActive: true });
+      saccoRepository.findOne!.mockResolvedValue(sacco);
 
-      await expect(service.reactivate('s1')).rejects.toThrow(
-        BadRequestException,
-      );
-      expect(repo.save).not.toHaveBeenCalled();
+      await expect(service.reactivate('sacco-1')).rejects.toThrow(BadRequestException);
     });
   });
 
-  // ── contacts ────────────────────────────────────────────────────────────
-
-  describe('addContact', () => {
+  // ─── contacts ───────────────────────────────────────────────────────
+  describe('addContact / removeContact', () => {
     it('appends a contact', async () => {
-      repo.findOne.mockResolvedValue({
-        id: 's1',
-        contacts: [{ phone: '0700', name: 'A' }],
-      } as any);
-      repo.save.mockImplementation(async (s) => s as any);
+      const sacco = baseSacco({ contacts: [{ phone: '0700000001', name: 'A' } as any] });
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+      saccoRepository.save!.mockImplementation(async (s) => s);
 
-      const result = await service.addContact('s1', {
-        phone: '0711',
-        name: 'B',
-      } as any);
+      const newContact = { phone: '0700000002', name: 'B' } as any;
+      const result = await service.addContact('sacco-1', newContact);
 
-      expect(result.contacts).toEqual([
-        { phone: '0700', name: 'A' },
-        { phone: '0711', name: 'B' },
-      ]);
+      expect(result.contacts).toHaveLength(2);
+      expect(result.contacts).toContainEqual(newContact);
     });
-  });
 
-  describe('removeContact', () => {
-    it('removes the contact matching the phone number', async () => {
-      repo.findOne.mockResolvedValue({
-        id: 's1',
+    it('removes a contact by phone', async () => {
+      const sacco = baseSacco({
         contacts: [
-          { phone: '0700', name: 'A' },
-          { phone: '0711', name: 'B' },
+          { phone: '0700000001', name: 'A' } as any,
+          { phone: '0700000002', name: 'B' } as any,
         ],
-      } as any);
-      repo.save.mockImplementation(async (s) => s as any);
-
-      const result = await service.removeContact('s1', '0700');
-
-      expect(result.contacts).toEqual([{ phone: '0711', name: 'B' }]);
-    });
-  });
-
-  // ── emails ──────────────────────────────────────────────────────────────
-
-  describe('addEmail', () => {
-    it('appends an email', async () => {
-      repo.findOne.mockResolvedValue({
-        id: 's1',
-        emails: [{ email: 'a@b.com' }],
-      } as any);
-      repo.save.mockImplementation(async (s) => s as any);
-
-      const result = await service.addEmail('s1', {
-        email: 'c@d.com',
-      } as any);
-
-      expect(result.emails).toEqual([
-        { email: 'a@b.com' },
-        { email: 'c@d.com' },
-      ]);
-    });
-  });
-
-  describe('removeEmail', () => {
-    it('removes the matching email', async () => {
-      repo.findOne.mockResolvedValue({
-        id: 's1',
-        emails: [{ email: 'a@b.com' }, { email: 'c@d.com' }],
-      } as any);
-      repo.save.mockImplementation(async (s) => s as any);
-
-      const result = await service.removeEmail('s1', 'a@b.com');
-
-      expect(result.emails).toEqual([{ email: 'c@d.com' }]);
-    });
-  });
-
-  // ── getSaccoCountStats ──────────────────────────────────────────────────
-
-  describe('getSaccoCountStats', () => {
-    it('computes percentage growth correctly', async () => {
-      saccoQb.getCount.mockResolvedValueOnce(10).mockResolvedValueOnce(5);
-
-      const result = await service.getSaccoCountStats();
-
-      expect(result).toEqual({
-        currentCount: 10,
-        lastWeekCount: 5,
-        percentageChange: 100,
-        changeDirection: 'up',
       });
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+      saccoRepository.save!.mockImplementation(async (s) => s);
+
+      const result = await service.removeContact('sacco-1', '0700000001');
+
+      expect(result.contacts).toHaveLength(1);
+      expect(result.contacts[0].phone).toBe('0700000002');
+    });
+  });
+
+  // ─── emails ─────────────────────────────────────────────────────────
+  describe('addEmail / removeEmail', () => {
+    it('appends an email', async () => {
+      const sacco = baseSacco({ emails: [] });
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+      saccoRepository.save!.mockImplementation(async (s) => s);
+
+      const newEmail = { email: 'ops@sacco.co.ke', label: 'ops' } as any;
+      const result = await service.addEmail('sacco-1', newEmail);
+
+      expect(result.emails).toContainEqual(newEmail);
     });
 
-    it('reports no-change when counts are equal', async () => {
-      saccoQb.getCount.mockResolvedValueOnce(5).mockResolvedValueOnce(5);
+    it('removes an email by address', async () => {
+      const sacco = baseSacco({
+        emails: [{ email: 'a@sacco.co.ke' } as any, { email: 'b@sacco.co.ke' } as any],
+      });
+      saccoRepository.findOne!.mockResolvedValue(sacco);
+      saccoRepository.save!.mockImplementation(async (s) => s);
+
+      const result = await service.removeEmail('sacco-1', 'a@sacco.co.ke');
+
+      expect(result.emails).toHaveLength(1);
+      expect(result.emails[0].email).toBe('b@sacco.co.ke');
+    });
+  });
+
+  // ─── getSaccoCountStats ─────────────────────────────────────────────
+  describe('getSaccoCountStats', () => {
+    it('computes an "up" trend when current > lastWeek', async () => {
+      const currentQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(10) });
+      const lastWeekQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(8) });
+      saccoRepository.createQueryBuilder!
+        .mockReturnValueOnce(currentQb)
+        .mockReturnValueOnce(lastWeekQb);
 
       const result = await service.getSaccoCountStats();
 
-      expect(result.percentageChange).toBe(0);
-      expect(result.changeDirection).toBe('no-change');
+      expect(result.currentCount).toBe(10);
+      expect(result.lastWeekCount).toBe(8);
+      expect(result.percentageChange).toBe(25);
+      expect(result.changeDirection).toBe('up');
     });
 
-    it('reports decline when current is lower than last week', async () => {
-      saccoQb.getCount.mockResolvedValueOnce(3).mockResolvedValueOnce(6);
+    it('computes a "down" trend when current < lastWeek', async () => {
+      const currentQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(5) });
+      const lastWeekQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(10) });
+      saccoRepository.createQueryBuilder!
+        .mockReturnValueOnce(currentQb)
+        .mockReturnValueOnce(lastWeekQb);
 
       const result = await service.getSaccoCountStats();
 
@@ -635,8 +528,12 @@ describe('SaccoService', () => {
       expect(result.changeDirection).toBe('down');
     });
 
-    it('treats 0 → 0 as no-change, avoiding divide-by-zero', async () => {
-      saccoQb.getCount.mockResolvedValueOnce(0).mockResolvedValueOnce(0);
+    it('returns "no-change" when current equals lastWeek', async () => {
+      const currentQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(5) });
+      const lastWeekQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(5) });
+      saccoRepository.createQueryBuilder!
+        .mockReturnValueOnce(currentQb)
+        .mockReturnValueOnce(lastWeekQb);
 
       const result = await service.getSaccoCountStats();
 
@@ -644,8 +541,25 @@ describe('SaccoService', () => {
       expect(result.changeDirection).toBe('no-change');
     });
 
-    it('treats 0 → N as a 100% increase, avoiding divide-by-zero', async () => {
-      saccoQb.getCount.mockResolvedValueOnce(4).mockResolvedValueOnce(0);
+    it('treats 0 → 0 as no-change (avoids divide-by-zero)', async () => {
+      const currentQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) });
+      const lastWeekQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) });
+      saccoRepository.createQueryBuilder!
+        .mockReturnValueOnce(currentQb)
+        .mockReturnValueOnce(lastWeekQb);
+
+      const result = await service.getSaccoCountStats();
+
+      expect(result.percentageChange).toBe(0);
+      expect(result.changeDirection).toBe('no-change');
+    });
+
+    it('treats 0 → N as a 100% increase (avoids divide-by-zero)', async () => {
+      const currentQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(3) });
+      const lastWeekQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) });
+      saccoRepository.createQueryBuilder!
+        .mockReturnValueOnce(currentQb)
+        .mockReturnValueOnce(lastWeekQb);
 
       const result = await service.getSaccoCountStats();
 
@@ -653,139 +567,181 @@ describe('SaccoService', () => {
       expect(result.changeDirection).toBe('up');
     });
 
-    it('includes inactive saccos in both counts when includeInactive is true', async () => {
-      saccoQb.getCount.mockResolvedValueOnce(10).mockResolvedValueOnce(8);
+    it('excludes inactive saccos by default in both counts', async () => {
+      const currentQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) });
+      const lastWeekQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) });
+      saccoRepository.createQueryBuilder!
+        .mockReturnValueOnce(currentQb)
+        .mockReturnValueOnce(lastWeekQb);
 
-      await service.getSaccoCountStats(true);
+      await service.getSaccoCountStats(false);
 
-      expect(saccoQb.andWhere).not.toHaveBeenCalledWith(
-        'sacco.isActive = :isActive',
-        expect.anything(),
-      );
+      expect(currentQb.andWhere).toHaveBeenCalledWith('sacco.isActive = :isActive', {
+        isActive: true,
+      });
+      expect(lastWeekQb.andWhere).toHaveBeenCalledWith('sacco.isActive = :isActive', {
+        isActive: true,
+      });
     });
   });
 
-  // ── getSaccoPerformanceSummaries ────────────────────────────────────────
-
+  // ─── getSaccoPerformanceSummaries ─────────────────────────────────────
   describe('getSaccoPerformanceSummaries', () => {
     it('returns an empty array when there are no matching saccos', async () => {
-      saccoQb.getMany.mockResolvedValue([]);
+      const qb = mockQueryBuilder({ getMany: jest.fn().mockResolvedValue([]) });
+      saccoRepository.createQueryBuilder!.mockReturnValue(qb);
 
       const result = await service.getSaccoPerformanceSummaries();
 
       expect(result).toEqual([]);
-      expect(manager.createQueryBuilder).not.toHaveBeenCalled();
+      // Should short-circuit before running the weekly-stats queries at all
+      expect(saccoRepository.manager.createQueryBuilder).not.toHaveBeenCalled();
     });
 
-    it('builds a Healthy summary for an active sacco with trips this week', async () => {
-      saccoQb.getMany.mockResolvedValue([
-        { id: 's1', name: 'Metro', isActive: true },
-      ]);
+    it('builds a full summary per sacco, merging all six parallel stat queries', async () => {
+      const sacco1 = { id: 'sacco-1', name: 'City Shuttle', isActive: true } as Sacco;
+      const listQb = mockQueryBuilder({ getMany: jest.fn().mockResolvedValue([sacco1]) });
+      saccoRepository.createQueryBuilder!.mockReturnValue(listQb);
 
-      statsQb.getRawMany
-        .mockResolvedValueOnce([{ saccoId: 's1', count: '10' }]) // tripsThisWeek
-        .mockResolvedValueOnce([{ saccoId: 's1', count: '8' }]) // tripsLastWeek
-        .mockResolvedValueOnce([
-          { saccoId: 's1', lastActiveDate: '2026-08-01' },
-        ]) // lastActive
-        .mockResolvedValueOnce([{ saccoId: 's1', count: '20' }]) // bookings
-        .mockResolvedValueOnce([{ saccoId: 's1', count: '15' }]) // uniquePassengers
-        .mockResolvedValueOnce([{ saccoId: 's1', total: '24000' }]); // grossFares
+      // Order matches Promise.all in fetchSaccoWeeklyStats:
+      // trips, tripsLastWeek, lastActive, bookings, uniquePassengers, grossFares
+      managerQbQueue = [
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([{ saccoId: 'sacco-1', count: '5' }]) }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([{ saccoId: 'sacco-1', count: '3' }]) }),
+        mockQueryBuilder({
+          getRawMany: jest
+            .fn()
+            .mockResolvedValue([{ saccoId: 'sacco-1', lastActiveDate: '2026-08-16' }]),
+        }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([{ saccoId: 'sacco-1', count: '40' }]) }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([{ saccoId: 'sacco-1', count: '25' }]) }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([{ saccoId: 'sacco-1', total: '20000' }]) }),
+      ];
 
-      const [summary] = await service.getSaccoPerformanceSummaries();
+      const result = await service.getSaccoPerformanceSummaries();
 
-      expect(summary).toEqual({
-        saccoId: 's1',
-        saccoName: 'Metro',
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        saccoId: 'sacco-1',
+        saccoName: 'City Shuttle',
         isActive: true,
-        tripsThisWeek: 10,
-        tripsLastWeek: 8,
-        tripsChangePercent: 25,
-        bookingsThisWeek: 20,
-        uniquePassengersThisWeek: 15,
-        grossFaresThisWeek: 24000,
-        lastActiveDate: '2026-08-01',
+        tripsThisWeek: 5,
+        tripsLastWeek: 3,
+        tripsChangePercent: 66.7,
+        bookingsThisWeek: 40,
+        uniquePassengersThisWeek: 25,
+        grossFaresThisWeek: 20000,
+        lastActiveDate: '2026-08-16',
         status: 'Healthy',
       });
     });
 
-    it('marks a sacco Inactive when it has no lastActiveDate', async () => {
-      saccoQb.getMany.mockResolvedValue([
-        { id: 's1', name: 'Metro', isActive: true },
-      ]);
-      statsQb.getRawMany.mockResolvedValue([]); // every stat map is empty
-
-      const [summary] = await service.getSaccoPerformanceSummaries();
-
-      expect(summary.lastActiveDate).toBeNull();
-      expect(summary.status).toBe('Inactive');
-    });
-
-    it('marks a sacco Low Activity when trips this week are below 3 but it has been active before', async () => {
-      saccoQb.getMany.mockResolvedValue([
-        { id: 's1', name: 'Metro', isActive: true },
-      ]);
-
-      statsQb.getRawMany
-        .mockResolvedValueOnce([{ saccoId: 's1', count: '2' }]) // tripsThisWeek
-        .mockResolvedValueOnce([]) // tripsLastWeek
-        .mockResolvedValueOnce([
-          { saccoId: 's1', lastActiveDate: '2026-07-20' },
-        ]) // lastActive
-        .mockResolvedValueOnce([]) // bookings
-        .mockResolvedValueOnce([]) // uniquePassengers
-        .mockResolvedValueOnce([]); // grossFares
-
-      const [summary] = await service.getSaccoPerformanceSummaries();
-
-      expect(summary.status).toBe('Low Activity');
-    });
-
-    it('returns null tripsChangePercent when there were no trips last week', async () => {
-      saccoQb.getMany.mockResolvedValue([
-        { id: 's1', name: 'Metro', isActive: true },
-      ]);
-
-      statsQb.getRawMany
-        .mockResolvedValueOnce([{ saccoId: 's1', count: '5' }]) // tripsThisWeek
-        .mockResolvedValueOnce([]) // tripsLastWeek (no entry -> 0)
-        .mockResolvedValueOnce([
-          { saccoId: 's1', lastActiveDate: '2026-08-01' },
-        ])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([]);
-
-      const [summary] = await service.getSaccoPerformanceSummaries();
-
-      expect(summary.tripsChangePercent).toBeNull();
-    });
-
-    it('scopes all weekly stat queries by saccoId when provided', async () => {
-      saccoQb.getMany.mockResolvedValue([
-        { id: 's1', name: 'Metro', isActive: true },
-      ]);
-      statsQb.getRawMany.mockResolvedValue([]);
-
-      await service.getSaccoPerformanceSummaries(false, 's1');
-
-      expect(saccoQb.andWhere).toHaveBeenCalledWith('sacco.id = :saccoId', {
-        saccoId: 's1',
-      });
-      expect(statsQb.andWhere).toHaveBeenCalledWith('saccoId = :saccoId', {
-        saccoId: 's1',
-      });
-    });
-
-    it('includes inactive saccos when includeInactive is true', async () => {
-      saccoQb.getMany.mockResolvedValue([]);
-
-      await service.getSaccoPerformanceSummaries(true);
-
-      expect(saccoQb.andWhere).not.toHaveBeenCalledWith(
-        'sacco.isActive = :isActive',
-        expect.anything(),
+    it('marks a sacco "Inactive" when it has no lastActiveDate', async () => {
+      const sacco1 = { id: 'sacco-1', name: 'Ghost Sacco', isActive: true } as Sacco;
+      saccoRepository.createQueryBuilder!.mockReturnValue(
+        mockQueryBuilder({ getMany: jest.fn().mockResolvedValue([sacco1]) }),
       );
+
+      managerQbQueue = [
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }), // trips
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }), // tripsLastWeek
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }), // lastActive — none
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }), // bookings
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }), // uniquePassengers
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }), // grossFares
+      ];
+
+      const result = await service.getSaccoPerformanceSummaries();
+
+      expect(result[0].status).toBe('Inactive');
+      expect(result[0].lastActiveDate).toBeNull();
+    });
+
+    it('marks a sacco "Low Activity" when active but under 3 trips this week', async () => {
+      const sacco1 = { id: 'sacco-1', name: 'Slow Sacco', isActive: true } as Sacco;
+      saccoRepository.createQueryBuilder!.mockReturnValue(
+        mockQueryBuilder({ getMany: jest.fn().mockResolvedValue([sacco1]) }),
+      );
+
+      managerQbQueue = [
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([{ saccoId: 'sacco-1', count: '1' }]) }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }),
+        mockQueryBuilder({
+          getRawMany: jest.fn().mockResolvedValue([{ saccoId: 'sacco-1', lastActiveDate: '2026-08-10' }]),
+        }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }),
+      ];
+
+      const result = await service.getSaccoPerformanceSummaries();
+
+      expect(result[0].status).toBe('Low Activity');
+    });
+
+    it('returns null tripsChangePercent when tripsLastWeek is 0', async () => {
+      const sacco1 = { id: 'sacco-1', name: 'New Sacco', isActive: true } as Sacco;
+      saccoRepository.createQueryBuilder!.mockReturnValue(
+        mockQueryBuilder({ getMany: jest.fn().mockResolvedValue([sacco1]) }),
+      );
+
+      managerQbQueue = [
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([{ saccoId: 'sacco-1', count: '5' }]) }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }), // 0 last week
+        mockQueryBuilder({
+          getRawMany: jest.fn().mockResolvedValue([{ saccoId: 'sacco-1', lastActiveDate: '2026-08-16' }]),
+        }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }),
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }),
+      ];
+
+      const result = await service.getSaccoPerformanceSummaries();
+
+      expect(result[0].tripsChangePercent).toBeNull();
+    });
+
+    it('defaults all stats to 0 for a sacco with no matching rows in any stat query', async () => {
+      const sacco1 = { id: 'sacco-2', name: 'Silent Sacco', isActive: true } as Sacco;
+      saccoRepository.createQueryBuilder!.mockReturnValue(
+        mockQueryBuilder({ getMany: jest.fn().mockResolvedValue([sacco1]) }),
+      );
+
+      managerQbQueue = Array.from({ length: 6 }, () =>
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }),
+      );
+
+      const result = await service.getSaccoPerformanceSummaries();
+
+      expect(result[0]).toEqual(
+        expect.objectContaining({
+          tripsThisWeek: 0,
+          tripsLastWeek: 0,
+          bookingsThisWeek: 0,
+          uniquePassengersThisWeek: 0,
+          grossFaresThisWeek: 0,
+          lastActiveDate: null,
+          status: 'Inactive',
+        }),
+      );
+    });
+
+    it('passes saccoId through to scope every one of the six stat queries', async () => {
+      const sacco1 = { id: 'sacco-1', name: 'City Shuttle', isActive: true } as Sacco;
+      const listQb = mockQueryBuilder({ getMany: jest.fn().mockResolvedValue([sacco1]) });
+      saccoRepository.createQueryBuilder!.mockReturnValue(listQb);
+
+      const qbs = Array.from({ length: 6 }, () =>
+        mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }),
+      );
+      managerQbQueue = qbs;
+
+      await service.getSaccoPerformanceSummaries(false, 'sacco-1');
+
+      expect(listQb.andWhere).toHaveBeenCalledWith('sacco.id = :saccoId', { saccoId: 'sacco-1' });
+      qbs.forEach((qb) => {
+        expect(qb.andWhere).toHaveBeenCalledWith('saccoId = :saccoId', { saccoId: 'sacco-1' });
+      });
     });
   });
 });

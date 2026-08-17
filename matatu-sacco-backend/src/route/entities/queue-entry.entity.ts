@@ -22,7 +22,6 @@ export enum QueueEntryStatus {
 
 // One row per vehicle, per queue — this is what your original entity actually was
 @Entity('queue_entries')
-@Unique(['routeQueueId', 'vehicleId']) // a vehicle can only hold one slot in a given day's queue
 export class QueueEntry {
     @PrimaryColumn({ type: 'uuid' })
     declare id: string;
