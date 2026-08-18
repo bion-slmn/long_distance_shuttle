@@ -14,6 +14,7 @@ import {
     Settings,
     Wallet,
     ClipboardList,
+    Bus,
 } from "lucide-react"
 
 import {
@@ -29,6 +30,7 @@ import {
     SidebarMenuItem,
     SidebarProvider,
     SidebarTrigger,
+    useSidebar,
 } from "@/components/ui/sidebar"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Separator } from "@/components/ui/separator"
@@ -67,12 +69,11 @@ const NAV_ITEMS: NavItem[] = [
         icon: Road,
         roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
-
     {
         label: "Users",
         href: "/users-saccos",
         icon: LayoutDashboard,
-        roles: ["SUPER_ADMIN", "SACCO_ADMIN",],
+        roles: ["SUPER_ADMIN", "SACCO_ADMIN"],
     },
     {
         label: "Route Queue",
@@ -80,7 +81,6 @@ const NAV_ITEMS: NavItem[] = [
         icon: Gauge,
         roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
-
     {
         label: "Dashboard",
         href: "/dashboard",
@@ -105,8 +105,7 @@ const NAV_ITEMS: NavItem[] = [
         icon: ClipboardList,
         roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
-
-];
+]
 
 function getInitials(name?: string, email?: string) {
     if (name) {
@@ -118,12 +117,86 @@ function getInitials(name?: string, email?: string) {
     return email?.slice(0, 2).toUpperCase() ?? "?"
 }
 
+// ─── Nav links (separate component so useSidebar() has provider context) ──
+
+function NavLinks({
+    visibleItems,
+    activePath,
+}: {
+    visibleItems: NavItem[]
+    activePath: string
+}) {
+    const { setOpenMobile } = useSidebar()
+
+    return (
+        <SidebarMenu>
+            {visibleItems.map((item) => {
+                const active = activePath.startsWith(item.href)
+                return (
+                    <SidebarMenuItem key={item.href}>
+                        <SidebarMenuButton isActive={active} tooltip={item.label}>
+                            <Link
+                                to={item.href}
+                                className="flex w-full items-center gap-2"
+                                onClick={() => setOpenMobile(false)}
+                            >
+                                <item.icon className="size-4 shrink-0" />
+                                <span>{item.label}</span>
+                            </Link>
+                        </SidebarMenuButton>
+                    </SidebarMenuItem>
+                )
+            })}
+        </SidebarMenu>
+    )
+}
+
+// ─── Profile link (separate for the same reason) ──────────────────────────
+
+function ProfileLink({ user }: { user: NonNullable<ReturnType<typeof useAuth>["user"]> }) {
+    const { setOpenMobile } = useSidebar()
+
+    return (
+        <SidebarMenu>
+            <SidebarMenuItem>
+                {/*
+                    Profile lives at its own route rather than in NAV_ITEMS —
+                    it's account-level, not role-gated content, so this footer
+                    block doubles as the entry point instead of a nav row.
+                */}
+                <SidebarMenuButton tooltip="Profile">
+                    <Link
+                        to="/profile"
+                        className="flex w-full items-center gap-2"
+                        onClick={() => setOpenMobile(false)}
+                    >
+                        <Avatar className="size-8 shrink-0">
+                            <AvatarFallback className="bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400 text-xs font-medium">
+                                {getInitials(user.fullName, user.email!)}
+                            </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0 group-data-[collapsible=icon]:hidden">
+                            <p className="truncate text-xs font-medium">
+                                {user.fullName ?? user.email}
+                            </p>
+                            <p className="truncate text-[10px] text-muted-foreground">
+                                {user.role}
+                            </p>
+                        </div>
+                    </Link>
+                </SidebarMenuButton>
+            </SidebarMenuItem>
+        </SidebarMenu>
+    )
+}
+
+// ─── Layout ─────────────────────────────────────────────────────────────────
+
 export function DashboardLayout() {
     const location = useLocation()
     const { user, logout } = useAuth()
     const saccoName = useSaccoName(user?.saccoId!) // adjust field name if it differs on your user object
     const brandLabel = saccoName ?? "Fleet Admin"
-
 
     const visibleItems = NAV_ITEMS
         .filter((item) => !user?.role || item.roles.includes(user.role))
@@ -137,77 +210,31 @@ export function DashboardLayout() {
         <SidebarProvider>
             <Sidebar collapsible="icon">
                 <SidebarHeader>
-                    <div className="flex items-center gap-2 px-2 py-1.5">
-                        <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
-                            <Building2 className="size-4 text-primary" />
+                    <Link to="/dashboard" className="flex items-center gap-2 px-2 py-1.5">
+                        <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary">
+                            <Bus className="size-4 text-primary-foreground" />
                         </div>
                         <div className="min-w-0 group-data-[collapsible=icon]:hidden">
-                            <span className="font-semibold text-sm block truncate">
+                            <span className="font-bold text-sm block truncate">
+                                Shuttle<span className="text-primary">Hub</span>
+                            </span>
+                            <span className="text-[10px] text-muted-foreground block truncate">
                                 {brandLabel}
                             </span>
-                            {user?.role && (
-                                <span className="text-[10px] text-muted-foreground block truncate">
-                                    {user.role}
-                                </span>
-                            )}
                         </div>
-                    </div>
+                    </Link>
                 </SidebarHeader>
 
                 <SidebarContent>
                     <SidebarGroup>
                         <SidebarGroupContent>
-                            <SidebarMenu>
-                                {visibleItems.map((item) => {
-                                    const active = location.pathname.startsWith(item.href)
-                                    return (
-                                        <SidebarMenuItem key={item.href}>
-                                            <SidebarMenuButton isActive={active} tooltip={item.label}>
-                                                <Link to={item.href} className="flex w-full items-center gap-2">
-                                                    <item.icon className="size-4 shrink-0" />
-                                                    <span>{item.label}</span>
-                                                </Link>
-                                            </SidebarMenuButton>
-                                        </SidebarMenuItem>
-                                    )
-                                })}
-                            </SidebarMenu>
+                            <NavLinks visibleItems={visibleItems} activePath={location.pathname} />
                         </SidebarGroupContent>
                     </SidebarGroup>
                 </SidebarContent>
 
                 <SidebarFooter>
-                    {user && (
-                        <SidebarMenu>
-                            <SidebarMenuItem>
-                                {/*
-                                    Profile lives at its own route rather than in NAV_ITEMS —
-                                    it's account-level, not role-gated content, so this footer
-                                    block doubles as the entry point instead of a nav row.
-                                */}
-                                <SidebarMenuButton tooltip="Profile">
-                                    <Link
-                                        to="/profile"
-                                        className="flex w-full items-center gap-2"
-                                    >
-                                        <Avatar className="size-8 shrink-0">
-                                            <AvatarFallback className="bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400 text-xs font-medium">
-                                                {getInitials(user.fullName, user.email!)}
-                                            </AvatarFallback>
-                                        </Avatar>
-                                        <div className="min-w-0 group-data-[collapsible=icon]:hidden">
-                                            <p className="truncate text-xs font-medium">
-                                                {user.fullName ?? user.email}
-                                            </p>
-                                            <p className="truncate text-[10px] text-muted-foreground">
-                                                {user.role}
-                                            </p>
-                                        </div>
-                                    </Link>
-                                </SidebarMenuButton>
-                            </SidebarMenuItem>
-                        </SidebarMenu>
-                    )}
+                    {user && <ProfileLink user={user} />}
                     <SidebarMenu>
                         <SidebarMenuItem>
                             <SidebarMenuButton
@@ -227,6 +254,18 @@ export function DashboardLayout() {
                 <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
                     <SidebarTrigger />
                     <Separator orientation="vertical" className="h-4" />
+
+                    {/* Logo — always visible, including on mobile when the sidebar is closed */}
+                    <Link to="/dashboard" className="flex items-center gap-1.5 shrink-0">
+                        <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary">
+                            <Bus className="size-3.5 text-primary-foreground" />
+                        </div>
+                        <span className="font-bold text-sm hidden sm:inline">
+                            Shuttle<span className="text-primary">Hub</span>
+                        </span>
+                    </Link>
+                    <Separator orientation="vertical" className="h-4" />
+
                     <div className="flex items-baseline gap-2 min-w-0">
                         <span className="font-medium text-sm truncate">{brandLabel}</span>
                         {user?.role && (
