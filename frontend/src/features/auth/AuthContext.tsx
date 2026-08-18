@@ -53,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     function logout() {
         setAccessToken(null)
-        queryClient.setQueryData(["me"], null)
+        queryClient.clear()
         // api.post("/auth/logout").catch(() => {})
     }
 
