@@ -614,8 +614,6 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
         console.log(`Calling ${phone}...`)
     }
 
-    // Quick seat presets
-    const seatPresets = [1, 2, 3, 4].filter(n => n <= remaining)
 
     return (
         <Sheet open={open} onOpenChange={onOpenChange}>
@@ -701,13 +699,18 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
                     </div>
 
                     <div className="space-y-1.5">
-                        <Label htmlFor="seat-count">Number of seats</Label>
+                        <div className="flex items-center justify-between">
+                            <Label htmlFor="seat-count">Seats</Label>
+                            <span className="text-xs text-muted-foreground/60">
+                                {remaining} available
+                            </span>
+                        </div>
                         <div className="flex items-center gap-2">
                             <Button
                                 type="button"
                                 variant="outline"
                                 size="icon"
-                                className="h-9 w-9 shrink-0 transition-all hover:scale-105 disabled:opacity-50"
+                                className="h-10 w-10 shrink-0 text-lg"
                                 onClick={() => setSeats((s) => Math.max(1, s - 1))}
                                 disabled={seats <= 1 || isFull}
                             >
@@ -723,44 +726,20 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
                                     const val = Number(e.target.value)
                                     if (!Number.isNaN(val)) setSeats(Math.min(remaining, Math.max(1, val)))
                                 }}
-                                className="text-center transition-all focus:ring-2 focus:ring-primary/20"
+                                className="text-center h-10 text-base font-medium"
                                 disabled={isFull}
                             />
                             <Button
                                 type="button"
                                 variant="outline"
                                 size="icon"
-                                className="h-9 w-9 shrink-0 transition-all hover:scale-105 disabled:opacity-50"
+                                className="h-10 w-10 shrink-0 text-lg"
                                 onClick={() => setSeats((s) => Math.min(remaining, s + 1))}
                                 disabled={seats >= remaining || isFull}
                             >
                                 +
                             </Button>
                         </div>
-                        {seatPresets.length > 0 && (
-                            <div className="flex gap-1 mt-1.5">
-                                {seatPresets.map((num) => (
-                                    <Button
-                                        key={num}
-                                        type="button"
-                                        variant={seats === num ? "default" : "outline"}
-                                        size="sm"
-                                        className="h-7 px-2 text-xs flex-1 transition-all hover:scale-105"
-                                        onClick={() => setSeats(num)}
-                                        disabled={isFull}
-                                    >
-                                        {num}
-                                    </Button>
-                                ))}
-                            </div>
-                        )}
-                        <p className="text-xs text-muted-foreground/50">
-                            {isFull ? (
-                                <span className="text-red-500/70">This vehicle is fully booked</span>
-                            ) : (
-                                `Available: ${remaining} seat${remaining === 1 ? "" : "s"}`
-                            )}
-                        </p>
                     </div>
 
                     <div className="space-y-1.5">
@@ -823,17 +802,7 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
                 </div>
 
                 <SheetFooter className="flex flex-col gap-2">
-                    {!isFull && (
-                        <Button
-                            type="button"
-                            variant="outline"
-                            className="w-full gap-2 transition-all hover:scale-[1.02]"
-                            onClick={handleCall}
-                        >
-                            <PhoneCall className="size-4" />
-                            Call Driver
-                        </Button>
-                    )}
+
                     <Button
                         className={cn(
                             "w-full gap-2 transition-all",
@@ -954,7 +923,7 @@ export function ManifestSheet({ open, onOpenChange, side, entry, bookings, isLoa
                 side={side}
                 className={cn(
                     side === "bottom" && "rounded-t-xl max-h-[85vh]",
-                    "flex flex-col"
+                    "flex flex-col px-4 sm:px-6"  // ← add this to ManifestSheet too
                 )}
             >
                 <SheetHeader className="space-y-3 pb-3 border-b">
