@@ -47,6 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Called by LoginForm/RegisterForm directly on success — no need to
     // refetch, we already have the data from the login/register response.
     function setSession(data: AuthResponse) {
+        queryClient.clear()   // ← wipe any leftover cache from a previous session first
         setAccessToken(data.access_token)
         queryClient.setQueryData(["me"], data.user)
     }
