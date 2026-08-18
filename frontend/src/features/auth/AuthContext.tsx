@@ -6,8 +6,9 @@ import {
 } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { refreshRequest, type AuthResponse } from "@/api/authApi"
+import { logoutRequest, refreshRequest, type AuthResponse } from "@/api/authApi"
 import { setAccessToken } from "@/api/axios"
+import { useNavigate } from "react-router-dom"
 
 type AuthUser = AuthResponse["user"]
 
@@ -43,19 +44,29 @@ function useMeQuery() {
 export function AuthProvider({ children }: { children: ReactNode }) {
     const queryClient = useQueryClient()
     const { data: user, isLoading } = useMeQuery()
+    const navigate = useNavigate()
     const assignedStage = user?.assignedStage ?? null
     // Called by LoginForm/RegisterForm directly on success — no need to
     // refetch, we already have the data from the login/register response.
     function setSession(data: AuthResponse) {
-        queryClient.clear()   // ← wipe any leftover cache from a previous session first
         setAccessToken(data.access_token)
         queryClient.setQueryData(["me"], data.user)
+        // Clear all other leftover cache from a previous session,
+        // but leave "me" alone since we just set it explicitly above
+        queryClient.removeQueries({
+            predicate: (query) => query.queryKey[0] !== "me",
+        })
     }
 
-    function logout() {
+    async function logout() {
+        try {
+            await logoutRequest()
+        } catch {
+            // even if this fails (e.g. token already expired), still clear local state
+        }
         setAccessToken(null)
         queryClient.clear()
-        // api.post("/auth/logout").catch(() => {})
+        navigate("/login", { replace: true })   // ← add this
     }
 
     const value: AuthContextValue = {

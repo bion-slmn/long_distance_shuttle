@@ -112,6 +112,11 @@ export const refreshRequest = async (): Promise<AuthResponse> => {
     return data;
 };
 
+export async function logoutRequest() {
+    const res = await api.post("/auth/logout")
+    return res.data
+}
+
 // admin-only — creates drivers/clerks (requires auth token attached via interceptor)
 export const createStaffRequest = async (payload: CreateStaffPayload) => {
     const { data } = await api.post('/auth/staff', payload);
