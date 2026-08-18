@@ -40,6 +40,8 @@ class LoginDto {
 const REFRESH_COOKIE_NAME = 'refresh_token';
 const REFRESH_COOKIE_PATH = '/auth/refresh';
 
+const allowCrossSiteCookies = process.env.ALLOW_CROSS_SITE_COOKIES === 'true';
+
 // ─── Controller ──────────────────────────────────────────────────────────────
 
 @Controller('auth')
@@ -71,8 +73,8 @@ export class AuthController {
 
         res.cookie(REFRESH_COOKIE_NAME, refresh_token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+            secure: allowCrossSiteCookies || process.env.NODE_ENV === 'production',
+            sameSite: allowCrossSiteCookies ? 'none' : 'lax',
             path: REFRESH_COOKIE_PATH,
         });
 
@@ -100,8 +102,8 @@ export class AuthController {
 
         res.cookie(REFRESH_COOKIE_NAME, results.refresh_token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+            secure: allowCrossSiteCookies || process.env.NODE_ENV === 'production',
+            sameSite: allowCrossSiteCookies ? 'none' : 'lax',
             path: REFRESH_COOKIE_PATH,
         });
 
@@ -119,11 +121,10 @@ export class AuthController {
         @Res({ passthrough: true }) res: Response,
     ) {
         const result = await this.authService.logout(req.user.sub);
-
         res.clearCookie(REFRESH_COOKIE_NAME, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+            secure: allowCrossSiteCookies || process.env.NODE_ENV === 'production',
+            sameSite: allowCrossSiteCookies ? 'none' : 'lax',
             path: REFRESH_COOKIE_PATH,
         });
 

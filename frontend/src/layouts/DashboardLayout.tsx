@@ -78,7 +78,7 @@ const NAV_ITEMS: NavItem[] = [
         label: "Route Queue",
         href: "/routeQueue",
         icon: Gauge,
-        roles: ["SUPER_ADMIN", "SACCO_ADMIN"],
+        roles: ["SUPER_ADMIN", "SACCO_ADMIN", "CLERK"],
     },
 
     {

@@ -22,6 +22,7 @@ import {
     PhoneCall,
     Mail,
     MapPin,
+    Undo2,
 } from "lucide-react"
 import { toast } from "sonner"
 import { motion, AnimatePresence } from "framer-motion"
@@ -54,6 +55,7 @@ import {
     BookingStatus,
     type PaymentMethod as PaymentMethodType,
     type Booking,
+    updateBookingRequest,
 } from "@/api/bookingApi"
 import { QueueClockInDialog } from "./QueueClockInDialog"
 import { useElapsedTime } from "@/hooks/useElapsedTime"
@@ -269,8 +271,9 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
                     </div>
                 </div>
                 <Button
+                    variant="ghost"          // was default (solid/primary)
                     size="icon"
-                    className="h-7 w-7 shrink-0"
+                    className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
                     disabled={!isToday}
                     title="Clock in a vehicle"
                     aria-label="Clock in a vehicle"
@@ -407,22 +410,11 @@ function LoadingVehicleBlock({ entry, readOnly, isUpdating, onDispatch, onClick,
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.3 }}
-                role={onClick ? "button" : undefined}
-                tabIndex={onClick ? 0 : undefined}
-                onClick={onClick}
-                onKeyDown={(e) => {
-                    if (onClick && (e.key === "Enter" || e.key === " ")) {
-                        e.preventDefault()
-                        onClick()
-                    }
-                }}
                 className={cn(
                     "rounded-md border p-2.5 space-y-1.5 transition-all relative overflow-hidden",
                     isFull
                         ? "bg-gradient-to-r from-emerald-50 to-emerald-100/50 dark:from-emerald-950/30 dark:to-emerald-900/20 border-emerald-300 dark:border-emerald-700"
-                        : "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800/30",
-                    onClick && !isFull && "cursor-pointer hover:border-blue-300 dark:hover:border-blue-700 transition-colors",
-                    onClick && isFull && "cursor-not-allowed"
+                        : "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800/30"
                 )}
             >
                 {isFull && (
@@ -526,6 +518,27 @@ function LoadingVehicleBlock({ entry, readOnly, isUpdating, onDispatch, onClick,
                         )}
                     </div>
                 </div>
+
+                {!isFull && onClick && (
+                    <Button
+                        size="sm"
+                        className="w-full gap-1.5"
+                        onClick={(e) => {
+                            e.stopPropagation()
+                            onClick()
+                        }}
+                    >
+                        <UserPlus className="size-3.5" />
+                        Book Passenger
+                    </Button>
+                )}
+
+                {isFull && (
+                    <div className="flex items-center justify-center gap-1.5 rounded-md border border-dashed border-emerald-300 dark:border-emerald-700 py-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                        <CheckCircle2 className="size-3.5" />
+                        Ready to dispatch
+                    </div>
+                )}
             </motion.div>
         </AnimatePresence>
     )
@@ -863,7 +876,7 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
 }
 
 // ─── Manifest Sheet ─────────────────────────────────────────────────────────
-
+// ─── Manifest Sheet ─────────────────────────────────────────────────────────
 
 export interface ManifestSheetProps {
     open: boolean
@@ -873,7 +886,7 @@ export interface ManifestSheetProps {
     bookings: Booking[]
     isLoading?: boolean
     travelDate?: string
-    route?: { origin: string; destination: string } // ← new
+    route?: { origin: string; destination: string, id: string }
 }
 
 const MANIFEST_STATUS_STYLE: Record<BookingStatus, string> = {
@@ -891,7 +904,34 @@ export function ManifestSheet({ open, onOpenChange, side, entry, bookings, isLoa
     const capacity = entry.vehicle.seatingCapacity
     const totalFare = bookings.reduce((sum, b) => sum + toNumber(b.fare), 0)
     const isFull = bookings.length >= capacity
-    console.log(route, 33333333333333333)
+    const queryClient = useQueryClient()
+
+    // NOTE: must match the exact queryKey shape used inside useVehicleManifest's
+    // internal useQuery (whatever key wraps getBookingsRequest for this route/date/vehicle).
+    // Paste useVehicleManifest.ts so this can be corrected to match exactly —
+    // if it doesn't match, the optimistic update will land in the wrong cache entry
+    // and won't be visible until the next poll.
+    const manifestQueryKey = ["bookings", route?.id, travelDate,]
+
+    const statusMutation = useMutation({
+        mutationFn: ({ id, status }: { id: string; status: BookingStatus }) =>
+            updateBookingRequest(id, { status }),
+        onMutate: async ({ id, status }) => {
+            await queryClient.cancelQueries({ queryKey: manifestQueryKey })
+            const previous = queryClient.getQueryData<Booking[]>(manifestQueryKey)
+            queryClient.setQueryData<Booking[]>(manifestQueryKey, (old) =>
+                old?.map((b) => (b.id === id ? { ...b, status } : b))
+            )
+            return { previous }
+        },
+        onError: (_err, _vars, context) => {
+            queryClient.setQueryData(manifestQueryKey, context?.previous)
+            toast.error("Failed to update passenger status")
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: manifestQueryKey })
+        },
+    })
 
     const formattedDate = travelDate
         ? new Date(travelDate).toLocaleDateString("en-GB", {
@@ -973,7 +1013,6 @@ export function ManifestSheet({ open, onOpenChange, side, entry, bookings, isLoa
                             <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wide">Collected</p>
                             <p className="text-sm font-semibold mt-0.5">KSh {totalFare.toLocaleString()}</p>
                         </div>
-
                     </div>
                 </SheetHeader>
 
@@ -999,6 +1038,12 @@ export function ManifestSheet({ open, onOpenChange, side, entry, bookings, isLoa
                         <AnimatePresence mode="popLayout">
                             {bookings.map((b, index) => {
                                 const fare = toNumber(b.fare)
+                                const isPending = statusMutation.isPending && statusMutation.variables?.id === b.id
+                                const isDecided =
+                                    b.status === BookingStatus.BOARDED ||
+                                    b.status === BookingStatus.NO_SHOW ||
+                                    b.status === BookingStatus.CANCELLED
+
                                 return (
                                     <motion.div
                                         key={b.id}
@@ -1045,8 +1090,8 @@ export function ManifestSheet({ open, onOpenChange, side, entry, bookings, isLoa
                                                     )}
                                                 </div>
                                             </div>
-                                            <div className="flex items-center gap-2 shrink-0">
-                                                <span className="flex items-center gap-1 text-xs font-medium">
+                                            <div className="flex items-center gap-1 shrink-0">
+                                                <span className="flex items-center gap-1 text-xs font-medium mr-1">
                                                     {b.paymentMethod === PaymentMethod.MPESA ? (
                                                         <Smartphone className="size-3 text-green-600 dark:text-green-400" />
                                                     ) : (
@@ -1054,6 +1099,59 @@ export function ManifestSheet({ open, onOpenChange, side, entry, bookings, isLoa
                                                     )}
                                                     KSh {fare.toLocaleString()}
                                                 </span>
+
+                                                {/* Quick status toggles — one tap, shown only while undecided */}
+                                                {!isDecided && (
+                                                    <>
+                                                        <Button
+                                                            type="button"
+                                                            size="icon"
+                                                            variant="ghost"
+                                                            className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
+                                                            disabled={isPending}
+                                                            title="Mark boarded"
+                                                            aria-label="Mark boarded"
+                                                            onClick={() =>
+                                                                statusMutation.mutate({ id: b.id, status: BookingStatus.BOARDED })
+                                                            }
+                                                        >
+                                                            <CheckCircle2 className="size-4" />
+                                                        </Button>
+                                                        <Button
+                                                            type="button"
+                                                            size="icon"
+                                                            variant="ghost"
+                                                            className="h-7 w-7 text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                                                            disabled={isPending}
+                                                            title="Mark no-show"
+                                                            aria-label="Mark no-show"
+                                                            onClick={() =>
+                                                                statusMutation.mutate({ id: b.id, status: BookingStatus.NO_SHOW })
+                                                            }
+                                                        >
+                                                            <XCircle className="size-4" />
+                                                        </Button>
+                                                    </>
+                                                )}
+
+                                                {/* Decided — small undo, in case of a mis-tap */}
+                                                {(b.status === BookingStatus.BOARDED || b.status === BookingStatus.NO_SHOW) && (
+                                                    <Button
+                                                        type="button"
+                                                        size="icon"
+                                                        variant="ghost"
+                                                        className="h-7 w-7 text-muted-foreground/50 hover:text-foreground"
+                                                        disabled={isPending}
+                                                        title="Undo — mark confirmed again"
+                                                        aria-label="Undo"
+                                                        onClick={() =>
+                                                            statusMutation.mutate({ id: b.id, status: BookingStatus.CONFIRMED })
+                                                        }
+                                                    >
+                                                        <Undo2 className="size-3.5" />
+                                                    </Button>
+                                                )}
+
                                                 {b.passengerPhone && (
                                                     <Button
                                                         type="button"
