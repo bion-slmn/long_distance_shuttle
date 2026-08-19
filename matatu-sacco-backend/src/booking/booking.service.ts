@@ -183,6 +183,7 @@ export class BookingService {
       saccoId: route.saccoId,
       passengerName: dto.passengerName,
       passengerPhone: dto.passengerPhone,
+      passengerEmail: dto.passengerEmail,   // ← add this
       fare: route.fare,
       status: BookingStatus.CONFIRMED,
       paymentMethod: dto.paymentMethod,
@@ -210,6 +211,7 @@ export class BookingService {
       saccoId: route.saccoId,
       passengerName: dto.passengerName,
       passengerPhone: dto.passengerPhone,
+      passengerEmail: dto.passengerEmail,   // ← add this
       fare: route.fare,
       status: BookingStatus.AWAITING_TRIP,
       paymentMethod: dto.paymentMethod,
@@ -424,6 +426,13 @@ export class BookingService {
       `Booking ${id} cancelled${booking.paymentStatus === PaymentStatus.REFUNDED ? ' (refunded)' : ''}`,
     );
     return this.bookingRepository.save(booking);
+  }
+
+  async hasBookingForEmail(email: string): Promise<boolean> {
+    const count = await this.bookingRepository.count({
+      where: { passengerEmail: email.trim().toLowerCase() },
+    });
+    return count > 0;
   }
 
 
@@ -646,6 +655,22 @@ export class BookingService {
       changePercent: changePercent !== null ? Number(changePercent.toFixed(1)) : null,
     };
   }
+
+  // booking.service.ts — add these two methods
+  async findByEmail(email: string): Promise<Booking[]> {
+    return this.bookingRepository.find({
+      where: { passengerEmail: email.trim().toLowerCase() },
+      relations: {
+        route: true,
+        trip: {
+          vehicle: true,
+        },
+      },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+
 
 
   private subtractDays(date: Date, days: number): Date {

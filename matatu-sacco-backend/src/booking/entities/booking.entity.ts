@@ -82,6 +82,12 @@ export class Booking {
     @Column({ type: 'varchar', length: 20 })
     declare passengerPhone: string;
 
+    // Optional — only required if the passenger wants to look up their
+    // tickets later via the phone+email OTP flow. Booking itself doesn't
+    // depend on it; passengerPhone remains the required contact/reconciliation field.
+    @Column({ type: 'varchar', length: 255, nullable: true })
+    declare passengerEmail: string | null;
+
     @Column({ type: 'numeric', precision: 8, scale: 2 })
     declare fare: number;
 

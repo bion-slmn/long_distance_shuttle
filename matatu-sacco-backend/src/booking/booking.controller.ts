@@ -12,9 +12,10 @@ import {
   UseGuards,
   ForbiddenException,
   UnauthorizedException,
-  Headers,
+  BadRequestException,
 } from '@nestjs/common';
 import { BookingService } from './booking.service';
+import { OtpService } from './otp.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { UpdateBookingDto } from './dto/update-booking.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
@@ -25,16 +26,19 @@ import { CurrentUser } from 'src/decorators/current-user.decorator';
 import { UserRole } from 'src/auth/entities/user.entity';
 import { Roles } from 'src/decorators/roles.decorator';
 import { Public } from 'src/decorators/public.decorator';
+import { JwtService } from '@nestjs/jwt';
+import { TicketsAuthGuard } from 'src/guards/tickets-auth.guard';
+import { TicketEmail } from 'src/decorators/ticket-email.decorator';
 
 @Controller('bookings')
 export class BookingController {
-  constructor(private readonly bookingService: BookingService) { }
+  constructor(
+    private readonly bookingService: BookingService,
+    private readonly otpService: OtpService,
+    private readonly jwtService: JwtService,
+  ) { }
 
   // ── PUBLIC: booking creation ──────────────────────────────────────────
-  // Deliberately NOT guarded — a passenger booking a seat has no account
-  // and no JWT. createdByUserId stays optional/null for these; it's only
-  // populated when a CLERK creates a booking on a passenger's behalf
-  // (walk-in booking), which is why we still try req.user first.
   @Public()
   @Post()
   create(@Body() dto: CreateBookingDto) {
@@ -42,8 +46,6 @@ export class BookingController {
   }
 
   // ── PUBLIC: seat availability check ──────────────────────────────────
-  // A passenger needs to see open seats *before* they have any booking or
-  // account, so this has to stay open too.
   @Public()
   @Get('availability')
   getAvailability(
@@ -54,14 +56,7 @@ export class BookingController {
   }
 
   // ── STAFF ONLY below this line ────────────────────────────────────────
-  // Listing bookings, viewing a specific booking, editing status, and
-  // cancelling all expose passenger names/phones and payment state —
-  // never safe to leave open to the public.
 
-  // GET /bookings?saccoId=&routeId=&travelDate=&from=&to=&status=&tripId=&vehicleId=
-  // saccoId is derived from the authenticated user for SACCO_ADMIN/CLERK —
-  // never trusted from the query string for them. SUPER_ADMIN may pass
-  // ?saccoId= to scope to one sacco, or omit it to see all saccos.
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
@@ -98,10 +93,6 @@ export class BookingController {
   }
 
   // ── PUBLIC: minimal status check for the passenger-facing polling loop ──
-  // Deliberately returns a slim shape, not the full Booking — a passenger
-  // only needs to know if payment resolved, not to re-fetch their own phone
-  // number back. UUID alone is the "auth" here, same trust model as the
-  // booking confirmation screen itself (knowledge of the id = you made it).
   @Public()
   @Get(':id/status')
   async getStatus(@Param('id', new ParseUUIDPipe()) id: string) {
@@ -115,10 +106,46 @@ export class BookingController {
     };
   }
 
+  // ── PUBLIC: ticket lookup via email + OTP ────────────────────────────
 
-  // GET /bookings/:id
-  // Staff-only. Scoped so a SACCO_ADMIN/CLERK can't fetch another sacco's
-  // booking just by guessing/enumerating a UUID.
+  @Post('tickets/request-code')
+  @Public()
+  async requestCode(@Body('email') email: string) {
+    if (!email) throw new BadRequestException('Email is required');
+
+    const exists = await this.bookingService.hasBookingForEmail(email);
+    console.log({ exists })
+    if (exists) {
+      await this.otpService.requestCode(email);
+    }
+    // Same generic response either way — don't reveal whether an email
+    // has bookings, avoids leaking that info to someone probing emails.
+    return { message: 'If that email has bookings, a code has been sent.' };
+  }
+
+  @Post('tickets/verify-code')
+  @Public()
+  async verifyCode(@Body() body: { email: string; code: string }) {
+    const valid = await this.otpService.verifyCode(body.email, body.code);
+    if (!valid) {
+      throw new UnauthorizedException('Invalid or expired code');
+    }
+
+    // Short-lived token, scoped only to this email — not a full login session
+    const token = this.jwtService.sign(
+      { email: body.email.trim().toLowerCase(), scope: 'tickets' },
+      { expiresIn: '30m' },
+    );
+    return { access_token: token };
+  }
+
+  @Get('tickets/my-tickets')
+  @UseGuards(TicketsAuthGuard)
+  async getMyTickets(@TicketEmail() email: string) {
+    return this.bookingService.findByEmail(email);
+  }
+
+  // ── GET /bookings/:id ──────────────────────────────────────────────────
   @Get(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
@@ -130,9 +157,7 @@ export class BookingController {
     return booking;
   }
 
-  // PATCH /bookings/:id
-  // saccoId derived from user, not query — was previously trusting the
-  // caller to pass the right one.
+  // ── PATCH /bookings/:id ────────────────────────────────────────────────
   @Patch(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
@@ -145,7 +170,6 @@ export class BookingController {
     return this.bookingService.update(id, dto, isSuperAdmin ? undefined : user.saccoId);
   }
 
-  // booking.controller.ts
   @Get('stats/today-passengers')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
@@ -162,9 +186,7 @@ export class BookingController {
     return this.bookingService.getTodayPassengerStats(saccoId);
   }
 
-
-  // DELETE /bookings/:id → soft "delete" = CANCELLED
-  // Staff-only, scoped from the user rather than the query string.
+  // ── DELETE /bookings/:id → soft "delete" = CANCELLED ────────────────────
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
@@ -207,6 +229,4 @@ export class BookingController {
     }
     return this.bookingService.getRevenueTrend(days ? Number(days) : 7, saccoId);
   }
-
-
 }

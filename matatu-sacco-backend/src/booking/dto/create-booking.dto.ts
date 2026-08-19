@@ -6,6 +6,7 @@ import {
     IsOptional,
     IsEnum,
     IsDateString,
+    IsEmail,
     Matches,
 } from 'class-validator';
 import { BookingStatus, PaymentMethod } from '../entities/booking.entity';
@@ -38,6 +39,11 @@ export class CreateBookingDto {
         message: 'passengerPhone must be a valid Kenyan phone number (e.g. 0712345678).',
     })
     declare passengerPhone: string;
+
+    // Used for OTP-based "My Tickets" lookup — required so guests can retrieve
+    // their bookings later without an account.
+    @IsEmail({}, { message: 'passengerEmail must be a valid email address.' })
+    declare passengerEmail: string;
 
     @IsEnum(PaymentMethod)
     declare paymentMethod: PaymentMethod;

@@ -86,6 +86,7 @@ export interface CreateBookingPayload {
     status?: BookingStatus;
     preferredBoardingFrom?: string; // HH:mm or HH:mm:ss
     preferredBoardingTo?: string;   // HH:mm or HH:mm:ss
+    passengerEmail?: string;
 }
 
 export interface UpdateBookingPayload {
@@ -101,11 +102,11 @@ export interface GetBookingsOptions {
     saccoId?: string;
     routeId?: string;
     travelDate?: string;
-    from?: string;      // ← new
-    to?: string;        // ← new
+    from?: string;
+    to?: string;
     status?: BookingStatus;
     tripId?: string;
-    vehicleId?: string; // ← new
+    vehicleId?: string;
 }
 
 // ─── Booking Requests ──────────────────────────────────────────────────────
@@ -137,18 +138,16 @@ export async function getBookingsRequest(
     if (options.saccoId) params.set("saccoId", options.saccoId);
     if (options.routeId) params.set("routeId", options.routeId);
     if (options.travelDate) params.set("travelDate", options.travelDate);
-    if (options.from) params.set("from", options.from);       // ← new
-    if (options.to) params.set("to", options.to);             // ← new
+    if (options.from) params.set("from", options.from);
+    if (options.to) params.set("to", options.to);
     if (options.status) params.set("status", options.status);
     if (options.tripId) params.set("tripId", options.tripId);
-    if (options.vehicleId) params.set("vehicleId", options.vehicleId); // ← new
+    if (options.vehicleId) params.set("vehicleId", options.vehicleId);
 
     const query = params.toString();
     const res = await api.get(`/bookings${query ? `?${query}` : ""}`);
     return res.data;
 }
-
-
 
 export async function getBookingRequest(id: string): Promise<Booking> {
     const res = await api.get(`/bookings/${id}`);
@@ -246,5 +245,42 @@ export interface BookingStatusSummary {
 
 export async function getBookingStatusRequest(id: string): Promise<BookingStatusSummary> {
     const res = await api.get(`/bookings/${id}/status`, { skipAuthRefresh: true });
+    return res.data;
+}
+
+// ─── Ticket lookup (public, email + OTP) ──────────────────────────────────
+// Matches POST /bookings/tickets/request-code, POST /bookings/tickets/verify-code,
+// and GET /bookings/tickets/my-tickets — the passenger-facing "view my tickets"
+// flow. No staff auth involved; verify-code issues a short-lived scoped JWT
+// (30 min) that my-tickets requires via TicketsAuthGuard.
+
+export async function requestTicketCodeRequest(
+    email: string,
+): Promise<{ message: string }> {
+    const res = await api.post(
+        "/bookings/tickets/request-code",
+        { email },
+        { skipAuthRefresh: true },
+    );
+    return res.data;
+}
+
+export async function verifyTicketCodeRequest(
+    email: string,
+    code: string,
+): Promise<{ access_token: string }> {
+    const res = await api.post(
+        "/bookings/tickets/verify-code",
+        { email, code },
+        { skipAuthRefresh: true },
+    );
+    return res.data;
+}
+
+export async function getMyTicketsRequest(token: string): Promise<Booking[]> {
+    const res = await api.get("/bookings/tickets/my-tickets", {
+        headers: { Authorization: `Bearer ${token}` },
+        skipAuthRefresh: true,
+    });
     return res.data;
 }

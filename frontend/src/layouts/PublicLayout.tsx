@@ -1,6 +1,6 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { Bus, Menu, X, Phone, Mail, MapPin } from 'lucide-react';
+import { Bus, Menu, X, Phone, Mail, MapPin, Home, Ticket } from 'lucide-react';
 import { FaFacebook, FaTwitter, FaInstagram, FaYoutube } from 'react-icons/fa';
 import { useState } from 'react';
 
@@ -11,6 +11,7 @@ export function PublicLayout() {
     const navLinks = [
         { path: '/', label: 'Home' },
         { path: '/book', label: 'Book Ticket' },
+        { path: '/ticket', label: 'My Tickets' },
     ];
 
     const isActive = (path: string) => location.pathname === path;
@@ -77,24 +78,27 @@ export function PublicLayout() {
                 {/* Mobile Menu */}
                 {isMenuOpen && (
                     <div className="md:hidden border-t border-gray-200 bg-white">
-                        <div className="px-4 py-4 space-y-3">
+                        <div className="px-4 py-4 space-y-1">
                             {navLinks.map((link) => (
                                 <Link
                                     key={link.path}
                                     to={link.path}
                                     onClick={() => setIsMenuOpen(false)}
                                     className={`
-                                        block px-3 py-2 rounded-lg text-sm font-medium transition-colors
-                                        ${isActive(link.path)
+                        flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors
+                        ${isActive(link.path)
                                             ? 'bg-primary/10 text-primary'
                                             : 'text-gray-600 hover:bg-gray-50'
                                         }
-                                    `}
+                    `}
                                 >
+                                    {link.path === '/' && <Home className="h-4 w-4" />}
+                                    {link.path === '/book' && <Bus className="h-4 w-4" />}
+                                    {link.path === '/ticket' && <Ticket className="h-4 w-4" />}
                                     {link.label}
                                 </Link>
                             ))}
-                            <div className="pt-3 space-y-2 border-t border-gray-200">
+                            <div className="pt-3 mt-2 space-y-2 border-t border-gray-200">
                                 <Button variant="outline" className="w-full" >
                                     <Link to="/login" onClick={() => setIsMenuOpen(false)}>
                                         Sign In

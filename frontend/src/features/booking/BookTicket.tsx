@@ -77,6 +77,8 @@ const bookingFormSchema = z
                 "Enter a valid Kenyan phone number (e.g. 0712345678)."
             ),
         paymentMethod: z.nativeEnum(PaymentMethod),
+        passengerEmail: z.string().email("Enter a valid email.").optional().or(z.literal("")), // ← add this
+
         preferredBoardingFrom: z
             .string()
             .regex(
@@ -180,6 +182,7 @@ export default function BookTicket() {
         defaultValues: {
             passengerName: "",
             passengerPhone: "",
+            passengerEmail: "", // ← add this
             paymentMethod: PaymentMethod.MPESA,
             preferredBoardingFrom: "",
             preferredBoardingTo: "",
@@ -316,6 +319,7 @@ export default function BookTicket() {
             travelDate,
             passengerName: values.passengerName.trim(),
             passengerPhone: values.passengerPhone.trim(),
+            passengerEmail: values.passengerEmail?.trim() || undefined, // ← add this
             paymentMethod: values.paymentMethod,
             preferredBoardingFrom: values.preferredBoardingFrom || undefined,
             preferredBoardingTo: values.preferredBoardingTo || undefined,
@@ -578,6 +582,26 @@ export default function BookTicket() {
                         ) : (
                             <p className="text-xs text-muted-foreground">
                                 We'll send you a confirmation SMS here
+                            </p>
+                        )}
+                    </div>
+
+                    <div className="space-y-1.5">
+                        <Label htmlFor="passengerEmail" className="text-sm font-medium">
+                            Email <span className="text-muted-foreground font-normal">(optional)</span>
+                        </Label>
+                        <Input
+                            id="passengerEmail"
+                            type="email"
+                            placeholder="you@example.com"
+                            className="h-11"
+                            {...register("passengerEmail")}
+                        />
+                        {errors.passengerEmail ? (
+                            <p className="text-xs text-destructive">{errors.passengerEmail.message}</p>
+                        ) : (
+                            <p className="text-xs text-muted-foreground">
+                                Add this to look up your tickets later
                             </p>
                         )}
                     </div>

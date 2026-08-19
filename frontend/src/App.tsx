@@ -7,6 +7,7 @@ import { Toaster } from 'sonner'
 import ProtectedRoute from './features/auth/ProtectedRoute'
 import { DashboardLayout } from './layouts/DashboardLayout'
 import { PublicLayout } from './layouts/PublicLayout'
+import MyTickets from './components/MyTickets'
 
 // Public pages
 const HomePage = lazy(() => import('./components/page'))
@@ -56,6 +57,7 @@ function App() {
             <Route path="/book" element={<BookTicket />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path='/ticket' element={<MyTickets />} />
           </Route>
 
           {/* Protected routes with dashboard layout */}
