@@ -1,14 +1,18 @@
 // src/booking/booking.controller.spec.ts
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { BookingController } from './booking.controller';
 import { BookingService } from './booking.service';
+import { OtpService } from './otp.service';
 import { BookingStatus, PaymentStatus } from './entities/booking.entity';
 import { UserRole } from '../auth/entities/user.entity';
 
 describe('BookingController', () => {
   let controller: BookingController;
   let bookingService: Partial<Record<keyof BookingService, jest.Mock>>;
+  let otpService: Partial<Record<keyof OtpService, jest.Mock>>;
+  let jwtService: Partial<Record<keyof JwtService, jest.Mock>>;
 
   const superAdmin = { role: UserRole.SUPER_ADMIN, saccoId: null };
   const saccoAdmin = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-1' };
@@ -24,6 +28,7 @@ describe('BookingController', () => {
     mpesaReceiptNumber: 'NLJ7RT61SV',
     passengerName: 'Jane Wanjiru',
     passengerPhone: '0712345678',
+    passengerEmail: 'jane@example.com',
   };
 
   beforeEach(async () => {
@@ -40,11 +45,26 @@ describe('BookingController', () => {
       cancel: jest.fn(),
       getTodayEarnings: jest.fn(),
       getRevenueTrend: jest.fn(),
+      hasBookingForEmail: jest.fn(),
+      findByEmail: jest.fn(),
+    };
+
+    otpService = {
+      requestCode: jest.fn(),
+      verifyCode: jest.fn(),
+    };
+
+    jwtService = {
+      sign: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [BookingController],
-      providers: [{ provide: BookingService, useValue: bookingService }],
+      providers: [
+        { provide: BookingService, useValue: bookingService },
+        { provide: OtpService, useValue: otpService },
+        { provide: JwtService, useValue: jwtService },
+      ],
     }).compile();
 
     controller = module.get<BookingController>(BookingController);
@@ -172,7 +192,84 @@ describe('BookingController', () => {
       // Explicitly must NOT leak passenger PII
       expect(result).not.toHaveProperty('passengerName');
       expect(result).not.toHaveProperty('passengerPhone');
+      expect(result).not.toHaveProperty('passengerEmail');
       expect(result).not.toHaveProperty('saccoId');
+    });
+  });
+
+  // ─── requestCode (public, ticket lookup step 1) ─────────────────────
+  describe('requestCode', () => {
+    it('throws BadRequestException when email is missing', async () => {
+      await expect(controller.requestCode('' as any)).rejects.toThrow(BadRequestException);
+      expect(bookingService.hasBookingForEmail).not.toHaveBeenCalled();
+    });
+
+    it('sends a code when the email has bookings', async () => {
+      bookingService.hasBookingForEmail!.mockResolvedValue(true);
+      otpService.requestCode!.mockResolvedValue(undefined);
+
+      const result = await controller.requestCode('jane@example.com');
+
+      expect(bookingService.hasBookingForEmail).toHaveBeenCalledWith('jane@example.com');
+      expect(otpService.requestCode).toHaveBeenCalledWith('jane@example.com');
+      expect(result).toEqual({ message: 'If that email has bookings, a code has been sent.' });
+    });
+
+    it('does NOT send a code when the email has no bookings, but returns the same generic message', async () => {
+      bookingService.hasBookingForEmail!.mockResolvedValue(false);
+
+      const result = await controller.requestCode('unknown@example.com');
+
+      expect(otpService.requestCode).not.toHaveBeenCalled();
+      // Same response regardless — prevents leaking which emails exist
+      expect(result).toEqual({ message: 'If that email has bookings, a code has been sent.' });
+    });
+  });
+
+  // ─── verifyCode (public, ticket lookup step 2) ──────────────────────
+  describe('verifyCode', () => {
+    it('throws UnauthorizedException when the code is invalid', async () => {
+      otpService.verifyCode!.mockResolvedValue(false);
+
+      await expect(
+        controller.verifyCode({ email: 'jane@example.com', code: '000000' }),
+      ).rejects.toThrow(UnauthorizedException);
+
+      expect(jwtService.sign).not.toHaveBeenCalled();
+    });
+
+    it('issues a short-lived, ticket-scoped token on success', async () => {
+      otpService.verifyCode!.mockResolvedValue(true);
+      jwtService.sign!.mockReturnValue('signed.jwt.token');
+
+      const result = await controller.verifyCode({ email: 'Jane@Example.com', code: '123456' });
+
+      expect(otpService.verifyCode).toHaveBeenCalledWith('Jane@Example.com', '123456');
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        { email: 'jane@example.com', scope: 'tickets' },
+        { expiresIn: '30m' },
+      );
+      expect(result).toEqual({ access_token: 'signed.jwt.token' });
+    });
+  });
+
+  // ─── getMyTickets (guarded by TicketsAuthGuard) ─────────────────────
+  describe('getMyTickets', () => {
+    it('returns bookings for the email extracted from the ticket token', async () => {
+      bookingService.findByEmail!.mockResolvedValue([baseBooking]);
+
+      const result = await controller.getMyTickets('jane@example.com');
+
+      expect(bookingService.findByEmail).toHaveBeenCalledWith('jane@example.com');
+      expect(result).toEqual([baseBooking]);
+    });
+
+    it('returns an empty array when the email has no bookings', async () => {
+      bookingService.findByEmail!.mockResolvedValue([]);
+
+      const result = await controller.getMyTickets('nobody@example.com');
+
+      expect(result).toEqual([]);
     });
   });
 
@@ -261,7 +358,6 @@ describe('BookingController', () => {
       expect(bookingService.getTodayPassengerStats).not.toHaveBeenCalled();
     });
   });
-
 
   // ─── cancel ─────────────────────────────────────────────────────────
   describe('cancel', () => {
