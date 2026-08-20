@@ -139,6 +139,13 @@ export class RouteService {
     return route;
   }
 
+  async findOneWithSacco(id: string): Promise<Route | null> {
+    return this.routeRepository.findOne({
+        where: { id },
+        relations: { sacco: true },
+    });
+}
+
   // ── Update ────────────────────────────────────────────────────────────────
 
   async update(id: string, dto: UpdateRouteDto, saccoId?: string): Promise<Route> {

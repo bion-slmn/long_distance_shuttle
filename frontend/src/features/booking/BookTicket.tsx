@@ -1,5 +1,5 @@
 // src/components/BookTicket.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -43,6 +43,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { getPaymentStatusForBookingRequest, reconcilePaymentRequest } from "@/api/paymentApi";
+import { downloadReceiptPdf } from "@/api/receiptApi";
 
 function todayString(): string {
     return new Date().toISOString().slice(0, 10);
@@ -166,7 +167,7 @@ export default function BookTicket() {
     const [step, setStep] = useState<Step>("search");
     const [confirmedBooking, setConfirmedBooking] = useState<Booking | null>(null);
     const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
-
+    const receiptDownloadedRef = useRef(false);
     const queryClient = useQueryClient();
 
     const {
@@ -304,6 +305,17 @@ export default function BookTicket() {
         },
     });
 
+    useEffect(() => {
+        const isPaid = confirmedBooking?.paymentStatus === "PAID" || paymentSucceeded;
+        if (isPaid && confirmedBooking && !receiptDownloadedRef.current) {
+            receiptDownloadedRef.current = true;
+            downloadReceiptPdf(confirmedBooking.id).catch((err) => {
+                console.error("Receipt download failed:", err);
+                receiptDownloadedRef.current = false; // allow retry via the manual button
+            });
+        }
+    }, [confirmedBooking?.paymentStatus, paymentSucceeded, confirmedBooking]);
+
     const availability = availabilityQuery.data;
 
     function chooseRoute(route: RouteSearchResult) {
@@ -335,6 +347,7 @@ export default function BookTicket() {
         reset();
         bookingMutation.reset();
         setPollStartedAt(null);
+        receiptDownloadedRef.current = false; // ← add this
     }
 
     function backToSearch() {
@@ -378,37 +391,115 @@ export default function BookTicket() {
                     </p>
                 </div>
 
-                <div className="mt-6 space-y-3">
-                    <div className="flex items-center justify-between bg-muted/30 rounded-lg px-4 py-3">
-                        <div className="flex items-center gap-2">
-                            <MapPin className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm font-medium">
-                                {selectedRoute.origin} → {selectedRoute.destination}
-                            </span>
+                {/* ── Receipt ── */}
+                {isPaid ? (
+                    <div className="mt-6 rounded-xl border border-border overflow-hidden">
+                        {/* Receipt header strip */}
+                        <div className="bg-emerald-50 border-b border-emerald-100 px-4 py-3 text-center">
+                            <p className="text-xs font-medium text-emerald-700 uppercase tracking-wide">
+                                Receipt
+                            </p>
+                            <p className="text-sm font-semibold text-emerald-900 mt-0.5">
+                                {selectedRoute.saccoName}
+                            </p>
                         </div>
-                        <Badge variant="secondary" className="font-mono">
-                            #{confirmedBooking.id.slice(0, 6).toUpperCase()}
-                        </Badge>
-                    </div>
 
-                    <div className="grid grid-cols-2 gap-2">
-                        <div className="bg-muted/30 rounded-lg px-4 py-3">
-                            <p className="text-xs text-muted-foreground">Passenger</p>
-                            <p className="text-sm font-medium truncate">{confirmedBooking.passengerName}</p>
+                        <div className="px-4 py-4 space-y-3">
+                            {/* Route + ref */}
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <MapPin className="h-4 w-4 text-muted-foreground" />
+                                    <span className="text-sm font-medium">
+                                        {selectedRoute.origin} → {selectedRoute.destination}
+                                    </span>
+                                </div>
+                                <Badge variant="secondary" className="font-mono">
+                                    #{confirmedBooking.id.slice(0, 6).toUpperCase()}
+                                </Badge>
+                            </div>
+
+                            <div className="h-px bg-border" style={{ borderTop: "1px dashed var(--border)" }} />
+
+                            {/* Line items */}
+                            <dl className="space-y-2 text-sm">
+                                <div className="flex justify-between">
+                                    <dt className="text-muted-foreground">Passenger</dt>
+                                    <dd className="font-medium">{confirmedBooking.passengerName}</dd>
+                                </div>
+                                <div className="flex justify-between">
+                                    <dt className="text-muted-foreground">Phone</dt>
+                                    <dd className="font-medium">{confirmedBooking.passengerPhone}</dd>
+                                </div>
+                                <div className="flex justify-between">
+                                    <dt className="text-muted-foreground">Travel date</dt>
+                                    <dd className="font-medium">{travelDate}</dd>
+                                </div>
+                                {confirmedBooking.seatNumber && (
+                                    <div className="flex justify-between">
+                                        <dt className="text-muted-foreground">Seat</dt>
+                                        <dd className="font-medium">{confirmedBooking.seatNumber}</dd>
+                                    </div>
+                                )}
+                                <div className="flex justify-between">
+                                    <dt className="text-muted-foreground">Payment method</dt>
+                                    <dd className="font-medium">{confirmedBooking.paymentMethod}</dd>
+                                </div>
+                                {confirmedBooking.mpesaReceiptNumber && (
+                                    <div className="flex justify-between">
+                                        <dt className="text-muted-foreground">M-Pesa Ref</dt>
+                                        <dd className="font-mono text-xs font-medium">
+                                            {confirmedBooking.mpesaReceiptNumber}
+                                        </dd>
+                                    </div>
+                                )}
+                                <div className="flex justify-between">
+                                    <dt className="text-muted-foreground">Status</dt>
+                                    <dd className="font-medium">{confirmedBooking.status}</dd>
+                                </div>
+                            </dl>
+
+                            <div className="h-px" style={{ borderTop: "1px dashed var(--border)" }} />
+
+                            {/* Total */}
+                            <div className="flex items-center justify-between pt-1">
+                                <span className="text-sm font-semibold">Total Paid</span>
+                                <span className="text-lg font-bold">KES {confirmedBooking.fare}</span>
+                            </div>
                         </div>
-                        <div className="bg-muted/30 rounded-lg px-4 py-3">
-                            <p className="text-xs text-muted-foreground">Phone</p>
-                            <p className="text-sm font-medium">{confirmedBooking.passengerPhone}</p>
+                    </div>
+                ) : (
+                    <div className="mt-6 space-y-3">
+                        <div className="flex items-center justify-between bg-muted/30 rounded-lg px-4 py-3">
+                            <div className="flex items-center gap-2">
+                                <MapPin className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm font-medium">
+                                    {selectedRoute.origin} → {selectedRoute.destination}
+                                </span>
+                            </div>
+                            <Badge variant="secondary" className="font-mono">
+                                #{confirmedBooking.id.slice(0, 6).toUpperCase()}
+                            </Badge>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                            <div className="bg-muted/30 rounded-lg px-4 py-3">
+                                <p className="text-xs text-muted-foreground">Passenger</p>
+                                <p className="text-sm font-medium truncate">{confirmedBooking.passengerName}</p>
+                            </div>
+                            <div className="bg-muted/30 rounded-lg px-4 py-3">
+                                <p className="text-xs text-muted-foreground">Phone</p>
+                                <p className="text-sm font-medium">{confirmedBooking.passengerPhone}</p>
+                            </div>
+                        </div>
+
+                        <div className="bg-muted/30 rounded-lg px-4 py-3 flex items-center justify-between">
+                            <span className="text-sm text-muted-foreground">Fare</span>
+                            <span className="text-lg font-semibold">KES {confirmedBooking.fare}</span>
                         </div>
                     </div>
+                )}
 
-                    <div className="bg-muted/30 rounded-lg px-4 py-3 flex items-center justify-between">
-                        <span className="text-sm text-muted-foreground">
-                            {isPaid ? "Fare paid" : "Fare"}
-                        </span>
-                        <span className="text-lg font-semibold">KES {confirmedBooking.fare}</span>
-                    </div>
-
+                <div className="mt-3 space-y-3">
                     <div className="bg-primary/5 rounded-lg px-4 py-3 border border-primary/10">
                         <p className="text-sm text-center leading-relaxed">
                             {isFailed
@@ -422,7 +513,7 @@ export default function BookTicket() {
 
                     {(isFailed || paymentTimedOut) && (
                         <Button
-                            className="w-full mt-2"
+                            className="w-full"
                             onClick={() => {
                                 setConfirmedBooking(null);
                                 setStep("details");
@@ -433,7 +524,16 @@ export default function BookTicket() {
                         </Button>
                     )}
 
-                    <Button variant="outline" className="w-full mt-2" onClick={startOver}>
+                    {isPaid && (
+                        <Button
+                            className="w-full"
+                            onClick={() => downloadReceiptPdf(confirmedBooking.id).catch(console.error)}
+                        >
+                            Download Receipt
+                        </Button>
+                    )}
+
+                    <Button variant="outline" className="w-full" onClick={startOver}>
                         Book another seat
                     </Button>
                 </div>
