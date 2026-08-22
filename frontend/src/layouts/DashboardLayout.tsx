@@ -36,6 +36,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Separator } from "@/components/ui/separator"
 import { useAuth } from "@/features/auth/AuthContext"
 import { useSaccoName } from "@/hooks/useSaccoName"
+import { MobileBottomNav } from "./MobileBottomNav"
 
 interface NavItem {
     label: string
@@ -255,7 +256,6 @@ export function DashboardLayout() {
                     <SidebarTrigger />
                     <Separator orientation="vertical" className="h-4" />
 
-                    {/* Logo — always visible, including on mobile when the sidebar is closed */}
                     <Link to="/dashboard" className="flex items-center gap-1.5 shrink-0">
                         <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary">
                             <Bus className="size-3.5 text-primary-foreground" />
@@ -276,9 +276,11 @@ export function DashboardLayout() {
                     </div>
                 </header>
 
-                <main className="flex-1 p-4 md:p-6 overflow-x-hidden">
+                <main className="flex-1 p-4 md:p-6 pb-20 md:pb-6 overflow-x-hidden">
                     <Outlet />
                 </main>
+
+                <MobileBottomNav />
             </SidebarInset>
         </SidebarProvider>
     )
