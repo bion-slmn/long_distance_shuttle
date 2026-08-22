@@ -10,6 +10,7 @@ import { PaymentEventsListener } from './listeners/payment-events.listener';
 import { OtpService } from './otp.service';
 import { RedisModule } from 'src/redis/redis.module'; // adjust path
 import { EmailModule } from 'src/email/email.module'; // adjust path
+import { SaccoModule } from 'src/sacco/sacco.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { EmailModule } from 'src/email/email.module'; // adjust path
     PaymentModule,
     RedisModule,
     EmailModule,
+    SaccoModule
   ],
   controllers: [BookingController],
   providers: [BookingService, PaymentEventsListener, OtpService],

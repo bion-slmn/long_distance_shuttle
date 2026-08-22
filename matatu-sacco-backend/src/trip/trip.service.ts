@@ -166,6 +166,43 @@ export class TripService {
     return await this.repo(manager).save(trip);
   }
 
+  async getPassengerCount(tripId: string, manager?: EntityManager): Promise<number> {
+    const repo = this.repo(manager);
+    const result = await repo.manager
+      .createQueryBuilder()
+      .select('COUNT(booking.id)', 'count')
+      .from('bookings', 'booking')
+      .where('booking."tripId" = :tripId', { tripId })
+      .andWhere('booking.status IN (:...statuses)', {
+        statuses: ['CONFIRMED', 'BOARDED'], // use your BookingStatus enum
+      })
+      .getRawOne<{ count: string }>();
+
+    return parseInt(result?.count ?? '0', 10);
+  }
+
+  async getPassengerCountsByTripIds(
+    tripIds: string[],
+    manager?: EntityManager,
+  ): Promise<Map<string, number>> {
+    if (tripIds.length === 0) return new Map();
+
+    const repo = this.repo(manager);
+    const rows = await repo.manager
+      .createQueryBuilder()
+      .select('booking."tripId"', 'tripId')
+      .addSelect('COUNT(booking.id)', 'count')
+      .from('bookings', 'booking')
+      .where('booking."tripId" IN (:...tripIds)', { tripIds })
+      .andWhere('booking.status IN (:...statuses)', {
+        statuses: ['CONFIRMED', 'BOARDED'],
+      })
+      .groupBy('booking."tripId"')
+      .getRawMany<{ tripId: string; count: string }>();
+
+    return new Map(rows.map((r) => [r.tripId, parseInt(r.count, 10)]));
+  }
+
   // ── Find all (paginated, filterable) ─────────────────────────────────────
   async findAll(options: FindAllTripsOptions = {}): Promise<PaginatedTrips> {
     const {
@@ -214,13 +251,14 @@ export class TripService {
 
     const [data, total] = await qb.getManyAndCount();
 
-    return {
-      data,
-      total,
-      page: currentPage,
-      limit: take,
-      totalPages: Math.ceil(total / take) || 0,
-    };
+    const tripIds = data.map((t) => t.id);
+    const counts = await this.getPassengerCountsByTripIds(tripIds);
+
+    data.forEach((trip) => {
+      trip.passengerCount = counts.get(trip.id) ?? 0;
+    });
+
+    return { data, total, page: currentPage, limit: take, totalPages: Math.ceil(total / take) || 0 };
   }
 
   // ── Find one ──────────────────────────────────────────────────────────────

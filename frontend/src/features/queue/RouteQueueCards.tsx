@@ -49,13 +49,13 @@ import {
     type QueueEntry,
 } from "@/api/routeApi"
 import {
-    createBookingRequest,
-    getBookingsRequest,
     PaymentMethod,
     BookingStatus,
     type PaymentMethod as PaymentMethodType,
     type Booking,
     updateBookingRequest,
+    BookingSource,
+    createBookingByClerkRequest,
 } from "@/api/bookingApi"
 import { QueueClockInDialog } from "./QueueClockInDialog"
 import { useElapsedTime } from "@/hooks/useElapsedTime"
@@ -223,15 +223,16 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
     const bookingMutation = useMutation({
         mutationFn: (payload: BookingFormValues) => {
             // One booking = one passenger/seat on this API, so a multi-seat
-            // request fires one createBookingRequest per seat. The backend
+            // request fires one createBookingByClerkRequest per seat. The backend
             // assigns each to the currently-open trip and computes its own fare.
             const requests = Array.from({ length: payload.seats }, () =>
-                createBookingRequest({
+                createBookingByClerkRequest({
                     routeId: route.id,
                     travelDate: selectedDate,
                     passengerName: payload.passengerName || "Walk-in",
                     passengerPhone: payload.passengerPhone,
                     paymentMethod: payload.paymentMethod,
+                    source: BookingSource.CLERK, // ignored server-side, kept only to satisfy the payload type
                 })
             )
             return Promise.all(requests)

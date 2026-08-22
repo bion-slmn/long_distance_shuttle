@@ -10,6 +10,7 @@ import {
     type RouteSearchResult,
 } from "../../api/routeApi";
 import {
+    BookingSource,
     createBookingRequest,
     getBookingAvailabilityRequest,
     getBookingRequest,
@@ -32,8 +33,8 @@ import {
     Clock,
     Users,
     ChevronRight,
-    Calendar,
     MapPin,
+    Lock,
 } from "lucide-react";
 import {
     Select,
@@ -44,9 +45,121 @@ import {
 } from "@/components/ui/select";
 import { getPaymentStatusForBookingRequest, reconcilePaymentRequest } from "@/api/paymentApi";
 import { downloadReceiptPdf } from "@/api/receiptApi";
+import { format, parse } from "date-fns";
+import { Calendar as CalendarIcon } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
 
 function todayString(): string {
     return new Date().toISOString().slice(0, 10);
+}
+
+// ─── Date Picker (shadcn Popover + Calendar) ───────────────────────────
+function DatePicker({
+    value,
+    onChange,
+    min,
+    max,
+}: {
+    value: string; // 'YYYY-MM-DD'
+    onChange: (value: string) => void;
+    min: string;
+    max: string;
+}) {
+    const selected = parse(value, "yyyy-MM-dd", new Date());
+    const minDate = parse(min, "yyyy-MM-dd", new Date());
+    const maxDate = parse(max, "yyyy-MM-dd", new Date());
+
+    return (
+        <Popover>
+            <PopoverTrigger>
+                <Button
+                    variant="outline"
+                    className="h-11 w-full justify-start text-left font-normal"
+                >
+                    <CalendarIcon className="mr-2 h-4 w-4 text-muted-foreground" />
+                    {format(selected, "EEE, MMM d")}
+                </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0" align="start">
+                <Calendar
+                    mode="single"
+                    selected={selected}
+                    defaultMonth={selected}
+                    onSelect={(date) => date && onChange(format(date, "yyyy-MM-dd"))}
+                    disabled={(date) => date < minDate || date > maxDate}
+                    autoFocus
+                />
+            </PopoverContent>
+        </Popover>
+    );
+}
+
+// ─── Time Picker (shadcn Select, in hour/half-hour slots) ──────────────
+function generateTimeSlots(min = "00:00", max = "23:30", stepMinutes = 30): string[] {
+    const [startH, startM] = min.split(":").map(Number);
+    const [endH, endM] = max.split(":").map(Number);
+    const slots: string[] = [];
+    for (let cursor = startH * 60 + startM; cursor <= endH * 60 + endM; cursor += stepMinutes) {
+        const h = String(Math.floor(cursor / 60)).padStart(2, "0");
+        const m = String(cursor % 60).padStart(2, "0");
+        slots.push(`${h}:${m}`);
+    }
+    return slots;
+}
+
+function formatTimeLabel(time: string): string {
+    const [h, m] = time.split(":").map(Number);
+    const period = h >= 12 ? "PM" : "AM";
+    const hour12 = h % 12 === 0 ? 12 : h % 12;
+    return `${hour12}:${String(m).padStart(2, "0")} ${period}`;
+}
+
+function TimeSelect({
+    value,
+    onChange,
+    min,
+    max,
+    placeholder,
+}: {
+    value?: string;                                   // was: string
+    onChange: (value: string) => void;
+    min?: string;
+    max?: string;
+    placeholder: string;
+}) {
+    const slots = generateTimeSlots(min, max);
+    return (
+        <Select
+            value={value || undefined}
+            onValueChange={(val) => onChange(val ?? "")}   // was: onValueChange={onChange}
+        >
+            <SelectTrigger className="h-11">
+                <SelectValue placeholder={placeholder} />
+            </SelectTrigger>
+            <SelectContent className="max-h-64">
+                {slots.map((slot) => (
+                    <SelectItem key={slot} value={slot}>
+                        {formatTimeLabel(slot)}
+                    </SelectItem>
+                ))}
+            </SelectContent>
+        </Select>
+    );
+}
+
+// Public portal bookings are only allowed for today or tomorrow — mirrors
+// BookingService.validatePreBookingDateRange on the backend.
+function tomorrowString(): string {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().slice(0, 10);
+}
+
+// Strips a possible ':ss' suffix from a settings time value ('HH:mm:ss' ->
+// 'HH:mm') so it matches the format <input type="time"> expects.
+function toHHmm(value: string): string {
+    return value.slice(0, 5);
 }
 
 function passengerMessage(booking: Booking): string {
@@ -65,7 +178,7 @@ function passengerMessage(booking: Booking): string {
 type Step = "search" | "details" | "confirmed";
 
 // ─── Zod schema — mirrors CreateBookingDto ─────────────────────────────
-const bookingFormSchema = z
+export const bookingFormSchema = z
     .object({
         passengerName: z
             .string()
@@ -78,7 +191,7 @@ const bookingFormSchema = z
                 "Enter a valid Kenyan phone number (e.g. 0712345678)."
             ),
         paymentMethod: z.nativeEnum(PaymentMethod),
-        passengerEmail: z.string().email("Enter a valid email.").optional().or(z.literal("")), // ← add this
+        passengerEmail: z.string().email("Enter a valid email.").optional().or(z.literal("")),
 
         preferredBoardingFrom: z
             .string()
@@ -170,6 +283,7 @@ export default function BookTicket() {
     const receiptDownloadedRef = useRef(false);
     const queryClient = useQueryClient();
 
+
     const {
         control,
         register,
@@ -183,7 +297,7 @@ export default function BookTicket() {
         defaultValues: {
             passengerName: "",
             passengerPhone: "",
-            passengerEmail: "", // ← add this
+            passengerEmail: "",
             paymentMethod: PaymentMethod.MPESA,
             preferredBoardingFrom: "",
             preferredBoardingTo: "",
@@ -317,6 +431,20 @@ export default function BookTicket() {
     }, [confirmedBooking?.paymentStatus, paymentSucceeded, confirmedBooking]);
 
     const availability = availabilityQuery.data;
+    // Pre-booking settings for the selected route's sacco — comes straight
+    // off getAvailability now, so no second request is needed.
+    const preBooking = availability?.preBooking;
+    const isPreBookingClosed = !!preBooking && !preBooking.enabled;
+    const isCapReached = !!preBooking?.capReached;
+    // Native <input type="time"> min/max, derived from the sacco's
+    // configured pre-booking window. Falls back to no constraint until
+    // availability has loaded.
+    const boardingWindowMin = preBooking ? toHHmm(preBooking.morningStart) : undefined;
+    const boardingWindowMax = preBooking ? toHHmm(preBooking.morningEnd) : undefined;
+    // Prefer the backend's own date bounds once loaded — falls back to local
+    // today/tomorrow before a route is selected (availability isn't fetched yet).
+    const minTravelDate = preBooking?.minTravelDate ?? todayString();
+    const maxTravelDate = preBooking?.maxTravelDate ?? tomorrowString();
 
     function chooseRoute(route: RouteSearchResult) {
         setSelectedRoute(route);
@@ -331,8 +459,9 @@ export default function BookTicket() {
             travelDate,
             passengerName: values.passengerName.trim(),
             passengerPhone: values.passengerPhone.trim(),
-            passengerEmail: values.passengerEmail?.trim() || undefined, // ← add this
+            passengerEmail: values.passengerEmail?.trim() || undefined,
             paymentMethod: values.paymentMethod,
+            source: BookingSource.PUBLIC_PORTAL,
             preferredBoardingFrom: values.preferredBoardingFrom || undefined,
             preferredBoardingTo: values.preferredBoardingTo || undefined,
         });
@@ -347,12 +476,25 @@ export default function BookTicket() {
         reset();
         bookingMutation.reset();
         setPollStartedAt(null);
-        receiptDownloadedRef.current = false; // ← add this
+        receiptDownloadedRef.current = false;
     }
 
     function backToSearch() {
         setStep("search");
         setSelectedRoute(null);
+    }
+
+    // Clamp the travel date to [today, tomorrow] — covers the case where a
+    // user leaves the tab open overnight and "today" quietly becomes stale,
+    // or manually types a date outside the allowed range.
+    function handleTravelDateChange(value: string) {
+        if (value < minTravelDate) {
+            setTravelDate(minTravelDate);
+        } else if (value > maxTravelDate) {
+            setTravelDate(maxTravelDate);
+        } else {
+            setTravelDate(value);
+        }
     }
 
     // ─── Confirmed Screen ──────────────────────────────────────────────
@@ -547,6 +689,9 @@ export default function BookTicket() {
         const seatsLeft = availability?.seatsAvailable ?? 0;
         const isFull = hasAvailability && seatsLeft === 0;
         const isWaitingList = !hasAvailability && availability?.awaitingTripCount !== undefined;
+        // Blocks submission when the sacco has pre-booking turned off, or
+        // the public pre-booking cap for this route/date has been hit.
+        const isPreBookingBlocked = isPreBookingClosed || isCapReached;
 
         return (
             <div className="mx-auto w-full max-w-md px-4 py-6">
@@ -573,7 +718,7 @@ export default function BookTicket() {
                         </div>
                     </div>
                     <Badge variant="outline" className="shrink-0">
-                        <Calendar className="h-3 w-3 mr-1" />
+                        <CalendarIcon className="h-3 w-3 mr-1" />
                         {travelDate}
                     </Badge>
                 </div>
@@ -582,8 +727,26 @@ export default function BookTicket() {
                     <Skeleton className="h-16 w-full mt-4" />
                 ) : (
                     availability && (
-                        <div className="mt-4">
-                            {isWaitingList ? (
+                        <div className="mt-4 space-y-2">
+                            {isPreBookingBlocked ? (
+                                <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+                                    <div className="flex items-start gap-3">
+                                        <Lock className="h-5 w-5 text-slate-500 shrink-0 mt-0.5" />
+                                        <div>
+                                            <p className="text-sm font-medium text-slate-900">
+                                                {isPreBookingClosed
+                                                    ? "Online pre-booking is closed"
+                                                    : "Pre-booking is full for this date"}
+                                            </p>
+                                            <p className="text-xs text-slate-600 mt-0.5">
+                                                {isPreBookingClosed
+                                                    ? "This sacco isn't accepting online bookings right now — please book in person."
+                                                    : "All online seats for this route and date are taken. Try another date or book in person."}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : isWaitingList ? (
                                 <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3">
                                     <div className="flex items-start gap-3">
                                         <Clock className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
@@ -633,6 +796,16 @@ export default function BookTicket() {
                                         </div>
                                     </div>
                                 </div>
+                            )}
+
+                            {/* Pre-booking capacity note — only shown once settings have loaded
+                                and pre-booking is actually open, so it doesn't duplicate the
+                                blocked-state banner above. */}
+                            {preBooking && !isPreBookingBlocked && (
+                                <p className="text-xs text-muted-foreground px-1">
+                                    {preBooking.seatsRemaining} of {preBooking.maxPreBookableSeats} online
+                                    pre-booking seat{preBooking.maxPreBookableSeats === 1 ? "" : "s"} left today
+                                </p>
                             )}
                         </div>
                     )
@@ -758,19 +931,19 @@ export default function BookTicket() {
                         </p>
                     </div>
 
-                    {/* Travel time window - FIXED: Time fields closer together */}
+                    {/* Travel time window — constrained to the sacco's pre-booking hours */}
                     <div className="space-y-2">
                         <div>
                             <Label className="text-sm font-medium">
                                 When would you like to travel?
                             </Label>
                             <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                                Choose a time range that works for you. We'll assign you
-                                to a shuttle boarding within this period.
+                                {boardingWindowMin && boardingWindowMax
+                                    ? `Choose a time between ${boardingWindowMin} and ${boardingWindowMax}. We'll assign you to a shuttle boarding within this period.`
+                                    : "Choose a time range that works for you. We'll assign you to a shuttle boarding within this period."}
                             </p>
                         </div>
 
-                        {/* Time fields in a single row with closer spacing */}
                         <div className="flex items-center gap-2">
                             <div className="flex-1 space-y-1">
                                 <Label
@@ -783,40 +956,12 @@ export default function BookTicket() {
                                     name="preferredBoardingFrom"
                                     control={control}
                                     render={({ field }) => (
-                                        <Input
-                                            id="preferredBoardingFrom"
-                                            type="text"
-                                            placeholder="08:00"
-                                            className="h-11"
+                                        <TimeSelect
                                             value={field.value}
-                                            onChange={(e) => {
-                                                // Allow manual text input with basic formatting
-                                                let value = e.target.value.replace(/[^0-9:]/g, '');
-                                                // Auto-insert colon after 2 digits
-                                                if (value.length === 2 && !value.includes(':')) {
-                                                    value = value + ':';
-                                                }
-                                                // Limit to 5 characters (HH:MM)
-                                                if (value.length <= 5) {
-                                                    field.onChange(value);
-                                                }
-                                            }}
-                                            onBlur={() => {
-                                                // Validate format on blur
-                                                const val = field.value;
-                                                if (val && !/^([01]\d|2[0-3]):[0-5]\d$/.test(val)) {
-                                                    // Try to format it
-                                                    const cleaned = val.replace(/[^0-9]/g, '');
-                                                    if (cleaned.length >= 2) {
-                                                        const hours = cleaned.slice(0, 2);
-                                                        const minutes = cleaned.slice(2, 4).padEnd(2, '0');
-                                                        const formatted = `${hours}:${minutes}`;
-                                                        if (/^([01]\d|2[0-3]):[0-5]\d$/.test(formatted)) {
-                                                            field.onChange(formatted);
-                                                        }
-                                                    }
-                                                }
-                                            }}
+                                            onChange={field.onChange}
+                                            min={boardingWindowMin}
+                                            max={boardingWindowMax}
+                                            placeholder={boardingWindowMin ?? "08:00"}
                                         />
                                     )}
                                 />
@@ -835,35 +980,12 @@ export default function BookTicket() {
                                     name="preferredBoardingTo"
                                     control={control}
                                     render={({ field }) => (
-                                        <Input
-                                            id="preferredBoardingTo"
-                                            type="text"
-                                            placeholder="17:30"
-                                            className="h-11"
+                                        <TimeSelect
                                             value={field.value}
-                                            onChange={(e) => {
-                                                let value = e.target.value.replace(/[^0-9:]/g, '');
-                                                if (value.length === 2 && !value.includes(':')) {
-                                                    value = value + ':';
-                                                }
-                                                if (value.length <= 5) {
-                                                    field.onChange(value);
-                                                }
-                                            }}
-                                            onBlur={() => {
-                                                const val = field.value;
-                                                if (val && !/^([01]\d|2[0-3]):[0-5]\d$/.test(val)) {
-                                                    const cleaned = val.replace(/[^0-9]/g, '');
-                                                    if (cleaned.length >= 2) {
-                                                        const hours = cleaned.slice(0, 2);
-                                                        const minutes = cleaned.slice(2, 4).padEnd(2, '0');
-                                                        const formatted = `${hours}:${minutes}`;
-                                                        if (/^([01]\d|2[0-3]):[0-5]\d$/.test(formatted)) {
-                                                            field.onChange(formatted);
-                                                        }
-                                                    }
-                                                }
-                                            }}
+                                            onChange={field.onChange}
+                                            min={boardingWindowMin}
+                                            max={boardingWindowMax}
+                                            placeholder={boardingWindowMax ?? "17:30"}
                                         />
                                     )}
                                 />
@@ -897,7 +1019,7 @@ export default function BookTicket() {
                     <Button
                         type="submit"
                         className="w-full h-11 text-base font-medium"
-                        disabled={bookingMutation.isPending || isFull || !isValid}
+                        disabled={bookingMutation.isPending || isFull || isPreBookingBlocked || !isValid}
                     >
                         {bookingMutation.isPending ? (
                             <>
@@ -906,6 +1028,8 @@ export default function BookTicket() {
                                     ? "Processing M-Pesa..."
                                     : "Booking..."}
                             </>
+                        ) : isPreBookingBlocked ? (
+                            isPreBookingClosed ? "Pre-booking closed" : "Fully booked"
                         ) : isFull ? (
                             "Join waiting list"
                         ) : (
@@ -997,66 +1121,17 @@ export default function BookTicket() {
 
                 <div className="space-y-1.5">
                     <Label className="text-sm font-medium">Travel date</Label>
-                    <Input
-                        type="date"
+                    <DatePicker
                         value={travelDate}
-                        min={todayString()}
-                        onChange={(e) => setTravelDate(e.target.value)}
-                        className="h-11"
+                        onChange={handleTravelDateChange}
+                        min={minTravelDate}
+                        max={maxTravelDate}
                     />
+                    <p className="text-xs text-muted-foreground">
+                        Online booking covers today and tomorrow only
+                    </p>
                 </div>
 
-                {/* ── When would you like to travel? ── */}
-                <div className="space-y-2">
-                    <div>
-                        <Label className="text-sm font-medium">
-                            Preferred boarding time (optional)
-                        </Label>
-                        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                            Choose a time range that works for you. We'll assign you
-                            to a shuttle boarding within this period.
-                        </p>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                        <div className="space-y-1">
-                            <Label
-                                htmlFor="preferredBoardingFrom"
-                                className="text-xs text-muted-foreground"
-                            >
-                                From
-                            </Label>
-                            <Input
-                                id="preferredBoardingFrom"
-                                type="time"
-                                className="h-11"
-                                {...register("preferredBoardingFrom")}
-                            />
-                        </div>
-
-                        <div className="space-y-1">
-                            <Label
-                                htmlFor="preferredBoardingTo"
-                                className="text-xs text-muted-foreground"
-                            >
-                                Until
-                            </Label>
-                            <Input
-                                id="preferredBoardingTo"
-                                type="time"
-                                className="h-11"
-                                {...register("preferredBoardingTo")}
-                            />
-                        </div>
-                    </div>
-
-                    {(errors.preferredBoardingFrom || errors.preferredBoardingTo) && (
-                        <p className="text-xs text-destructive">
-                            {errors.preferredBoardingTo?.message ??
-                                errors.preferredBoardingFrom?.message}
-                        </p>
-                    )}
-                </div>
 
                 {hasSearched && searchQuery.isLoading && (
                     <div className="space-y-2">

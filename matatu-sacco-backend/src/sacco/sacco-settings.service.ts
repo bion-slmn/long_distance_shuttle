@@ -1,5 +1,5 @@
 // src/sacco/sacco-settings.service.ts
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { SaccoSettings } from './entities/sacco-settings.entity';
@@ -9,10 +9,18 @@ import { UpdateSaccoSettingsDto } from './dto/update-sacco-settings.dto';
 
 
 // ─── Service ──────────────────────────────────────────────────────────────
-// Manages per-sacco operational settings (commission, booking toggles) and
-// M-Pesa Daraja credentials. Secrets are encrypted at rest and are never
-// included in normal reads — only decrypted internally when actually
-// needed to call Daraja (see getDecryptedMpesaCredentials).
+// Manages per-sacco operational settings (commission, booking toggles,
+// pre-booking limits) and M-Pesa Daraja credentials. Secrets are encrypted
+// at rest and are never included in normal reads — only decrypted
+// internally when actually needed to call Daraja (see
+// getDecryptedMpesaCredentials).
+//
+// Pre-booking limits (preBookingEnabled, preBookingMorningStart/End,
+// preBookingMaxMorningVehicles, preBookingMaxSeatsPerTrip) are fixed MVP
+// defaults for now — set once in createDefaults() and NOT editable via
+// update(). They'll become editable in a later iteration once there's a
+// real settings UI for them; until then, update() intentionally ignores
+// these fields even if a caller sends them.
 
 @Injectable()
 export class SaccoSettingsService {
@@ -37,6 +45,12 @@ export class SaccoSettingsService {
             acceptsMpesa: false, // stays false until configureMpesa() succeeds
             acceptsCash: true,
             mpesaConfigured: false,
+            // ── Pre-booking limits — fixed MVP defaults, not editable yet ──
+            preBookingEnabled: true,
+            preBookingMorningStart: '05:00:00',
+            preBookingMorningEnd: '10:00:00',
+            preBookingMaxMorningVehicles: 4,
+            preBookingMaxSeatsPerTrip: 4,
         });
 
         const saved = await repo.save(settings);
@@ -54,10 +68,18 @@ export class SaccoSettingsService {
     }
 
     // ── Update general operational settings ─────────────────────────────────
+    // MVP: only commissionRate, isAcceptingBookings, acceptsCash are
+    // editable. Pre-booking limits are intentionally NOT handled here —
+    // see the class-level comment above.
     async update(saccoId: string, dto: UpdateSaccoSettingsDto): Promise<SaccoSettings> {
         const settings = await this.findOne(saccoId);
 
-        if (dto.commissionRate !== undefined) settings.commissionRate = dto.commissionRate;
+        if (dto.commissionRate !== undefined) {
+            if (dto.commissionRate < 0 || dto.commissionRate > 100) {
+                throw new BadRequestException('commissionRate must be between 0 and 100.');
+            }
+            settings.commissionRate = dto.commissionRate;
+        }
         if (dto.isAcceptingBookings !== undefined) settings.isAcceptingBookings = dto.isAcceptingBookings;
         if (dto.acceptsCash !== undefined) settings.acceptsCash = dto.acceptsCash;
 

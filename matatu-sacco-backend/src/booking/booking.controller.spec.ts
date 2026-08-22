@@ -1,61 +1,48 @@
-// src/booking/booking.controller.spec.ts
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException, UnauthorizedException, BadRequestException } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+import { BadRequestException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { BookingController } from './booking.controller';
 import { BookingService } from './booking.service';
 import { OtpService } from './otp.service';
-import { BookingStatus, PaymentStatus } from './entities/booking.entity';
-import { UserRole } from '../auth/entities/user.entity';
+import { JwtService } from '@nestjs/jwt';
+import { BookingSource, BookingStatus, PaymentStatus } from './entities/booking.entity';
+import { UserRole } from 'src/auth/entities/user.entity';
 
 describe('BookingController', () => {
   let controller: BookingController;
-  let bookingService: Partial<Record<keyof BookingService, jest.Mock>>;
-  let otpService: Partial<Record<keyof OtpService, jest.Mock>>;
-  let jwtService: Partial<Record<keyof JwtService, jest.Mock>>;
+  let bookingService: jest.Mocked<Partial<BookingService>>;
+  let otpService: jest.Mocked<Partial<OtpService>>;
+  let jwtService: jest.Mocked<Partial<JwtService>>;
 
-  const superAdmin = { role: UserRole.SUPER_ADMIN, saccoId: null };
-  const saccoAdmin = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-1' };
-  const saccoAdminNoSacco = { role: UserRole.SACCO_ADMIN, saccoId: null };
-  const clerk = { role: UserRole.CLERK, saccoId: 'sacco-1' };
+  const SACCO_A = 'sacco-a';
+  const SACCO_B = 'sacco-b';
 
-  const baseBooking = {
-    id: 'booking-1',
-    saccoId: 'sacco-1',
-    status: BookingStatus.CONFIRMED,
-    paymentStatus: PaymentStatus.PAID,
-    seatNumber: 4,
-    mpesaReceiptNumber: 'NLJ7RT61SV',
-    passengerName: 'Jane Wanjiru',
-    passengerPhone: '0712345678',
-    passengerEmail: 'jane@example.com',
-  };
+  const superAdmin = { id: 'user-1', role: UserRole.SUPER_ADMIN, saccoId: null };
+  const saccoAdmin = { id: 'user-2', role: UserRole.SACCO_ADMIN, saccoId: SACCO_A };
+  const clerk = { id: 'user-3', role: UserRole.CLERK, saccoId: SACCO_A };
 
   beforeEach(async () => {
     bookingService = {
-      create: jest.fn(),
-      getAvailability: jest.fn(),
-      findAll: jest.fn(),
-      getUniquePassengerStats: jest.fn(),
+      create: jest.fn().mockResolvedValue({ id: 'booking-1' }),
+      getAvailability: jest.fn().mockResolvedValue({ routeId: 'route-1' }),
+      findAll: jest.fn().mockResolvedValue([]),
+      getUniquePassengerStats: jest.fn().mockResolvedValue({ thisWeekUnique: 5 }),
       findOne: jest.fn(),
-      update: jest.fn(),
-      getTodayPassengerStats: jest.fn(),
-      confirmPayment: jest.fn(),
-      markPaymentFailed: jest.fn(),
-      cancel: jest.fn(),
-      getTodayEarnings: jest.fn(),
-      getRevenueTrend: jest.fn(),
+      update: jest.fn().mockResolvedValue({ id: 'booking-1', status: BookingStatus.BOARDED }),
+      cancel: jest.fn().mockResolvedValue({ id: 'booking-1', status: BookingStatus.CANCELLED }),
       hasBookingForEmail: jest.fn(),
-      findByEmail: jest.fn(),
+      findByEmail: jest.fn().mockResolvedValue([{ id: 'booking-1' }]),
+      getTodayPassengerStats: jest.fn().mockResolvedValue({ today: 10 }),
+      getTodayEarnings: jest.fn().mockResolvedValue({ grossRevenue: 1000 }),
+      getRevenueTrend: jest.fn().mockResolvedValue([{ date: '2026-08-20', revenue: 500 }]),
     };
 
     otpService = {
-      requestCode: jest.fn(),
+      requestCode: jest.fn().mockResolvedValue(undefined),
       verifyCode: jest.fn(),
     };
 
     jwtService = {
-      sign: jest.fn(),
+      sign: jest.fn().mockReturnValue('signed.jwt.token'),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -70,85 +57,130 @@ describe('BookingController', () => {
     controller = module.get<BookingController>(BookingController);
   });
 
-  afterEach(() => {
-    jest.clearAllMocks();
-  });
-
-  // ─── create (public) ───────────────────────────────────────────────
-  describe('create', () => {
-    it('delegates the dto directly to bookingService.create', () => {
+  // ── POST /bookings — public portal ───────────────────────────────────────
+  describe('create (public)', () => {
+    it('always tags the booking as PUBLIC_PORTAL, regardless of what the caller sends', () => {
       const dto = { routeId: 'route-1' };
-      bookingService.create!.mockReturnValue({ id: 'booking-1' });
 
-      const result = controller.create(dto as any);
+      controller.create(dto as any);
 
-      expect(bookingService.create).toHaveBeenCalledWith(dto);
+      expect(bookingService.create).toHaveBeenCalledWith(dto, BookingSource.PUBLIC_PORTAL);
+    });
+
+    it('never lets the request body inject createdByUserId or source', () => {
+      // CreateBookingDto has no `source` field, so nothing in the body can
+      // reach past this — this test locks in that createdByUserId isn't
+      // silently forwarded either on the public route.
+      const dto = { routeId: 'route-1', createdByUserId: 'someone-elses-id' };
+
+      controller.create(dto as any);
+
+      expect(bookingService.create).toHaveBeenCalledWith(dto, BookingSource.PUBLIC_PORTAL);
+      // Specifically: the second positional arg is always PUBLIC_PORTAL,
+      // never derived from anything in the body.
+      const [, sourceArg] = (bookingService.create as jest.Mock).mock.calls[0];
+      expect(sourceArg).toBe(BookingSource.PUBLIC_PORTAL);
+    });
+
+    it('returns whatever bookingService.create resolves', async () => {
+      const result = await controller.create({ routeId: 'route-1' } as any);
       expect(result).toEqual({ id: 'booking-1' });
     });
   });
 
-  // ─── getAvailability (public) ──────────────────────────────────────
+  // ── POST /bookings/clerk — staff booking creation ────────────────────────
+  describe('createByClerk', () => {
+    it('tags the booking CLERK and stamps createdByUserId from the authenticated user', () => {
+      const dto = { routeId: 'route-1', passengerName: 'Jane' };
+
+      controller.createByClerk(dto as any, clerk);
+
+      expect(bookingService.create).toHaveBeenCalledWith(
+        { ...dto, createdByUserId: clerk.id },
+        BookingSource.CLERK,
+      );
+    });
+
+    it('overwrites any createdByUserId already present in the body with the real caller', () => {
+      const dto = { routeId: 'route-1', createdByUserId: 'spoofed-id' };
+
+      controller.createByClerk(dto as any, clerk);
+
+      expect(bookingService.create).toHaveBeenCalledWith(
+        expect.objectContaining({ createdByUserId: clerk.id }),
+        BookingSource.CLERK,
+      );
+    });
+  });
+
+  // ── GET /bookings/availability — public ──────────────────────────────────
   describe('getAvailability', () => {
-    it('passes routeId and optional travelDate through', () => {
-      bookingService.getAvailability!.mockReturnValue({ hasOpenTrip: true });
-
-      controller.getAvailability('route-1', '2026-08-17');
-
-      expect(bookingService.getAvailability).toHaveBeenCalledWith('route-1', '2026-08-17');
+    it('forwards routeId and travelDate straight through', () => {
+      controller.getAvailability('route-1', '2026-08-25');
+      expect(bookingService.getAvailability).toHaveBeenCalledWith('route-1', '2026-08-25');
     });
 
     it('works with travelDate omitted', () => {
-      bookingService.getAvailability!.mockReturnValue({ hasOpenTrip: false });
-
       controller.getAvailability('route-1', undefined);
-
       expect(bookingService.getAvailability).toHaveBeenCalledWith('route-1', undefined);
     });
   });
 
-  // ─── findAll ───────────────────────────────────────────────────────
-  describe('findAll', () => {
-    it('SUPER_ADMIN: uses the provided saccoId query param', () => {
-      bookingService.findAll!.mockReturnValue([]);
-
-      controller.findAll(superAdmin, 'sacco-9', 'route-1', '2026-08-17');
+  // ── GET /bookings — staff list, sacco-scoped ─────────────────────────────
+  describe('findAll — sacco scoping', () => {
+    it('lets a super admin filter by any saccoId query param', () => {
+      controller.findAll(superAdmin, SACCO_B, 'route-1');
 
       expect(bookingService.findAll).toHaveBeenCalledWith(
-        expect.objectContaining({ saccoId: 'sacco-9', routeId: 'route-1', travelDate: '2026-08-17' }),
+        expect.objectContaining({ saccoId: SACCO_B, routeId: 'route-1' }),
       );
     });
 
-    it('SACCO_ADMIN/CLERK: ignores query saccoId, scopes to their own saccoId', () => {
-      bookingService.findAll!.mockReturnValue([]);
-
-      controller.findAll(saccoAdmin, 'sacco-other');
+    it('lets a super admin see all saccos when no saccoId param is given', () => {
+      controller.findAll(superAdmin, undefined);
 
       expect(bookingService.findAll).toHaveBeenCalledWith(
-        expect.objectContaining({ saccoId: 'sacco-1' }),
+        expect.objectContaining({ saccoId: undefined }),
       );
     });
 
-    it('passes through all optional filters', () => {
-      bookingService.findAll!.mockReturnValue([]);
+    it('SECURITY: ignores a non-super-admin caller\'s saccoId query param and forces their own', () => {
+      // sacco_admin from SACCO_A tries to peek at SACCO_B via the query
+      // string — this must be silently overridden, not honored.
+      controller.findAll(saccoAdmin, SACCO_B);
 
+      expect(bookingService.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: SACCO_A }),
+      );
+    });
+
+    it('SECURITY: same enforcement for a clerk', () => {
+      controller.findAll(clerk, SACCO_B);
+
+      expect(bookingService.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: SACCO_A }),
+      );
+    });
+
+    it('passes all remaining filters through untouched', () => {
       controller.findAll(
         superAdmin,
-        'sacco-1',
+        SACCO_A,
         'route-1',
-        '2026-08-17',
-        '2026-08-01',
-        '2026-08-31',
+        '2026-08-25',
+        '2026-08-20',
+        '2026-08-25',
         BookingStatus.CONFIRMED,
         'trip-1',
         'vehicle-1',
       );
 
       expect(bookingService.findAll).toHaveBeenCalledWith({
-        saccoId: 'sacco-1',
+        saccoId: SACCO_A,
         routeId: 'route-1',
-        travelDate: '2026-08-17',
-        from: '2026-08-01',
-        to: '2026-08-31',
+        travelDate: '2026-08-25',
+        from: '2026-08-20',
+        to: '2026-08-25',
         status: BookingStatus.CONFIRMED,
         tripId: 'trip-1',
         vehicleId: 'vehicle-1',
@@ -156,91 +188,100 @@ describe('BookingController', () => {
     });
   });
 
-  // ─── getUniquePassengerStats ───────────────────────────────────────
-  describe('getUniquePassengerStats', () => {
-    it('SUPER_ADMIN: passes undefined saccoId (platform-wide)', () => {
-      bookingService.getUniquePassengerStats!.mockReturnValue({});
-
+  // ── GET /bookings/stats/unique-passengers ────────────────────────────────
+  describe('getUniquePassengerStats — sacco scoping', () => {
+    it('passes undefined (platform-wide) for a super admin', () => {
       controller.getUniquePassengerStats(superAdmin);
-
       expect(bookingService.getUniquePassengerStats).toHaveBeenCalledWith(undefined);
     });
 
-    it('SACCO_ADMIN: scopes to their own saccoId', () => {
-      bookingService.getUniquePassengerStats!.mockReturnValue({});
-
+    it('scopes to the caller\'s own saccoId for a sacco admin', () => {
       controller.getUniquePassengerStats(saccoAdmin);
-
-      expect(bookingService.getUniquePassengerStats).toHaveBeenCalledWith('sacco-1');
+      expect(bookingService.getUniquePassengerStats).toHaveBeenCalledWith(SACCO_A);
     });
   });
 
-  // ─── getStatus (public) ────────────────────────────────────────────
+  // ── GET /bookings/:id/status — public polling endpoint ───────────────────
   describe('getStatus', () => {
-    it('returns only the slim public-safe shape, not the full booking', async () => {
-      bookingService.findOne!.mockResolvedValue(baseBooking);
+    it('returns ONLY the allowlisted fields, never the full booking record', async () => {
+      bookingService.findOne = jest.fn().mockResolvedValue({
+        id: 'booking-1',
+        status: BookingStatus.CONFIRMED,
+        paymentStatus: PaymentStatus.PAID,
+        seatNumber: 7,
+        mpesaReceiptNumber: 'ABC123',
+        // sensitive / irrelevant-to-the-client fields that must NOT leak:
+        passengerName: 'Jane Doe',
+        passengerPhone: '254700000000',
+        passengerEmail: 'jane@example.com',
+        fare: 500,
+        saccoId: SACCO_A,
+      });
 
       const result = await controller.getStatus('booking-1');
 
       expect(result).toEqual({
-        id: baseBooking.id,
-        status: baseBooking.status,
-        paymentStatus: baseBooking.paymentStatus,
-        seatNumber: baseBooking.seatNumber,
-        mpesaReceiptNumber: baseBooking.mpesaReceiptNumber,
+        id: 'booking-1',
+        status: BookingStatus.CONFIRMED,
+        paymentStatus: PaymentStatus.PAID,
+        seatNumber: 7,
+        mpesaReceiptNumber: 'ABC123',
       });
-      // Explicitly must NOT leak passenger PII
-      expect(result).not.toHaveProperty('passengerName');
       expect(result).not.toHaveProperty('passengerPhone');
       expect(result).not.toHaveProperty('passengerEmail');
-      expect(result).not.toHaveProperty('saccoId');
+      expect(result).not.toHaveProperty('fare');
+    });
+
+    it('propagates NotFoundException from the service for an unknown id', async () => {
+      const err = new Error('not found');
+      bookingService.findOne = jest.fn().mockRejectedValue(err);
+
+      await expect(controller.getStatus('nope')).rejects.toThrow(err);
     });
   });
 
-  // ─── requestCode (public, ticket lookup step 1) ─────────────────────
+  // ── POST /bookings/tickets/request-code ──────────────────────────────────
   describe('requestCode', () => {
-    it('throws BadRequestException when email is missing', async () => {
+    it('rejects with BadRequestException when email is missing', async () => {
+      await expect(controller.requestCode(undefined as any)).rejects.toThrow(BadRequestException);
       await expect(controller.requestCode('' as any)).rejects.toThrow(BadRequestException);
-      expect(bookingService.hasBookingForEmail).not.toHaveBeenCalled();
     });
 
     it('sends a code when the email has bookings', async () => {
-      bookingService.hasBookingForEmail!.mockResolvedValue(true);
-      otpService.requestCode!.mockResolvedValue(undefined);
+      bookingService.hasBookingForEmail = jest.fn().mockResolvedValue(true);
 
-      const result = await controller.requestCode('jane@example.com');
+      await controller.requestCode('jane@example.com');
 
-      expect(bookingService.hasBookingForEmail).toHaveBeenCalledWith('jane@example.com');
       expect(otpService.requestCode).toHaveBeenCalledWith('jane@example.com');
-      expect(result).toEqual({ message: 'If that email has bookings, a code has been sent.' });
     });
 
-    it('does NOT send a code when the email has no bookings, but returns the same generic message', async () => {
-      bookingService.hasBookingForEmail!.mockResolvedValue(false);
+    it('does NOT send a code when the email has no bookings', async () => {
+      bookingService.hasBookingForEmail = jest.fn().mockResolvedValue(false);
 
-      const result = await controller.requestCode('unknown@example.com');
+      await controller.requestCode('nobody@example.com');
 
       expect(otpService.requestCode).not.toHaveBeenCalled();
-      // Same response regardless — prevents leaking which emails exist
-      expect(result).toEqual({ message: 'If that email has bookings, a code has been sent.' });
+    });
+
+    it('SECURITY: returns the identical generic message whether or not the email has bookings', async () => {
+      bookingService.hasBookingForEmail = jest.fn().mockResolvedValue(true);
+      const withBookings = await controller.requestCode('jane@example.com');
+
+      bookingService.hasBookingForEmail = jest.fn().mockResolvedValue(false);
+      const withoutBookings = await controller.requestCode('nobody@example.com');
+
+      // Response must not leak whether the email exists in the system —
+      // an attacker probing emails should learn nothing from the response
+      // shape or content.
+      expect(withBookings).toEqual(withoutBookings);
+      expect(withBookings).toEqual({ message: 'If that email has bookings, a code has been sent.' });
     });
   });
 
-  // ─── verifyCode (public, ticket lookup step 2) ──────────────────────
+  // ── POST /bookings/tickets/verify-code ───────────────────────────────────
   describe('verifyCode', () => {
-    it('throws UnauthorizedException when the code is invalid', async () => {
-      otpService.verifyCode!.mockResolvedValue(false);
-
-      await expect(
-        controller.verifyCode({ email: 'jane@example.com', code: '000000' }),
-      ).rejects.toThrow(UnauthorizedException);
-
-      expect(jwtService.sign).not.toHaveBeenCalled();
-    });
-
-    it('issues a short-lived, ticket-scoped token on success', async () => {
-      otpService.verifyCode!.mockResolvedValue(true);
-      jwtService.sign!.mockReturnValue('signed.jwt.token');
+    it('issues a short-lived, email-scoped access token on a valid code', async () => {
+      otpService.verifyCode = jest.fn().mockResolvedValue(true);
 
       const result = await controller.verifyCode({ email: 'Jane@Example.com', code: '123456' });
 
@@ -251,66 +292,73 @@ describe('BookingController', () => {
       );
       expect(result).toEqual({ access_token: 'signed.jwt.token' });
     });
+
+    it('normalizes the email into the token claim (trimmed, lowercased) regardless of input casing/whitespace', async () => {
+      otpService.verifyCode = jest.fn().mockResolvedValue(true);
+
+      await controller.verifyCode({ email: '  Jane@EXAMPLE.com  ', code: '123456' });
+
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({ email: 'jane@example.com' }),
+        expect.anything(),
+      );
+    });
+
+    it('rejects with UnauthorizedException on an invalid or expired code', async () => {
+      otpService.verifyCode = jest.fn().mockResolvedValue(false);
+
+      await expect(
+        controller.verifyCode({ email: 'jane@example.com', code: 'wrong' }),
+      ).rejects.toThrow(UnauthorizedException);
+
+      expect(jwtService.sign).not.toHaveBeenCalled();
+    });
   });
 
-  // ─── getMyTickets (guarded by TicketsAuthGuard) ─────────────────────
+  // ── GET /bookings/tickets/my-tickets ─────────────────────────────────────
   describe('getMyTickets', () => {
-    it('returns bookings for the email extracted from the ticket token', async () => {
-      bookingService.findByEmail!.mockResolvedValue([baseBooking]);
-
+    it('looks up bookings by the email carried on the ticket-scoped token', async () => {
       const result = await controller.getMyTickets('jane@example.com');
 
       expect(bookingService.findByEmail).toHaveBeenCalledWith('jane@example.com');
-      expect(result).toEqual([baseBooking]);
-    });
-
-    it('returns an empty array when the email has no bookings', async () => {
-      bookingService.findByEmail!.mockResolvedValue([]);
-
-      const result = await controller.getMyTickets('nobody@example.com');
-
-      expect(result).toEqual([]);
+      expect(result).toEqual([{ id: 'booking-1' }]);
     });
   });
 
-  // ─── findOne (staff) ───────────────────────────────────────────────
-  describe('findOne', () => {
-    it('returns the booking for SUPER_ADMIN regardless of sacco', async () => {
-      bookingService.findOne!.mockResolvedValue(baseBooking);
+  // ── GET /bookings/:id — staff, cross-sacco access control ────────────────
+  describe('findOne — access control', () => {
+    it('lets a super admin view a booking from any sacco', async () => {
+      bookingService.findOne = jest.fn().mockResolvedValue({ id: 'booking-1', saccoId: SACCO_B });
 
       const result = await controller.findOne('booking-1', superAdmin);
 
-      expect(result).toEqual(baseBooking);
+      expect(result).toEqual({ id: 'booking-1', saccoId: SACCO_B });
     });
 
-    it('returns the booking when SACCO_ADMIN owns it', async () => {
-      bookingService.findOne!.mockResolvedValue(baseBooking);
+    it('lets a sacco admin view a booking that belongs to their own sacco', async () => {
+      bookingService.findOne = jest.fn().mockResolvedValue({ id: 'booking-1', saccoId: SACCO_A });
 
       const result = await controller.findOne('booking-1', saccoAdmin);
 
-      expect(result).toEqual(baseBooking);
+      expect(result).toEqual({ id: 'booking-1', saccoId: SACCO_A });
     });
 
-    it('throws ForbiddenException when a different sacco requests it', async () => {
-      bookingService.findOne!.mockResolvedValue(baseBooking);
+    it('SECURITY: rejects a sacco admin viewing a booking from a different sacco', async () => {
+      bookingService.findOne = jest.fn().mockResolvedValue({ id: 'booking-1', saccoId: SACCO_B });
 
-      await expect(
-        controller.findOne('booking-1', { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-2' }),
-      ).rejects.toThrow(ForbiddenException);
+      await expect(controller.findOne('booking-1', saccoAdmin)).rejects.toThrow(ForbiddenException);
     });
 
-    it('propagates NotFoundException from the service', async () => {
-      bookingService.findOne!.mockRejectedValue(new Error('not found'));
+    it('SECURITY: rejects a clerk viewing a booking from a different sacco', async () => {
+      bookingService.findOne = jest.fn().mockResolvedValue({ id: 'booking-1', saccoId: SACCO_B });
 
-      await expect(controller.findOne('missing', superAdmin)).rejects.toThrow();
+      await expect(controller.findOne('booking-1', clerk)).rejects.toThrow(ForbiddenException);
     });
   });
 
-  // ─── update ────────────────────────────────────────────────────────
-  describe('update', () => {
-    it('SUPER_ADMIN: passes undefined saccoId (no scoping)', () => {
-      bookingService.update!.mockReturnValue(baseBooking);
-
+  // ── PATCH /bookings/:id ───────────────────────────────────────────────────
+  describe('update — sacco scoping', () => {
+    it('passes saccoId = undefined for a super admin (service applies no extra scoping)', () => {
       controller.update('booking-1', { status: BookingStatus.BOARDED } as any, superAdmin);
 
       expect(bookingService.update).toHaveBeenCalledWith(
@@ -320,119 +368,114 @@ describe('BookingController', () => {
       );
     });
 
-    it('SACCO_ADMIN/CLERK: scopes update to their own saccoId', () => {
-      bookingService.update!.mockReturnValue(baseBooking);
+    it('scopes the update to the caller\'s own saccoId for a sacco admin', () => {
+      controller.update('booking-1', { status: BookingStatus.BOARDED } as any, saccoAdmin);
 
+      expect(bookingService.update).toHaveBeenCalledWith(
+        'booking-1',
+        { status: BookingStatus.BOARDED },
+        SACCO_A,
+      );
+    });
+
+    it('scopes the update to the caller\'s own saccoId for a clerk', () => {
       controller.update('booking-1', { status: BookingStatus.BOARDED } as any, clerk);
 
       expect(bookingService.update).toHaveBeenCalledWith(
         'booking-1',
         { status: BookingStatus.BOARDED },
-        'sacco-1',
+        SACCO_A,
       );
     });
   });
 
-  // ─── getTodayPassengerStats ────────────────────────────────────────
-  describe('getTodayPassengerStats', () => {
-    it('SUPER_ADMIN: uses provided saccoId query param (may be undefined)', () => {
-      bookingService.getTodayPassengerStats!.mockReturnValue({});
-
-      controller.getTodayPassengerStats('sacco-9', superAdmin);
-
-      expect(bookingService.getTodayPassengerStats).toHaveBeenCalledWith('sacco-9');
+  // ── DELETE /bookings/:id ──────────────────────────────────────────────────
+  describe('cancel — sacco scoping', () => {
+    it('passes saccoId = undefined for a super admin', () => {
+      controller.cancel('booking-1', superAdmin);
+      expect(bookingService.cancel).toHaveBeenCalledWith('booking-1', undefined);
     });
 
-    it('SACCO_ADMIN: overrides query param with their own saccoId', () => {
-      bookingService.getTodayPassengerStats!.mockReturnValue({});
+    it('scopes cancellation to the caller\'s own saccoId for a sacco admin', () => {
+      controller.cancel('booking-1', saccoAdmin);
+      expect(bookingService.cancel).toHaveBeenCalledWith('booking-1', SACCO_A);
+    });
+  });
 
-      controller.getTodayPassengerStats('sacco-other', saccoAdmin);
+  // ── GET /bookings/stats/today-passengers ─────────────────────────────────
+  describe('getTodayPassengerStats — sacco scoping', () => {
+    it('lets a super admin pass any saccoId query param through, including none', () => {
+      controller.getTodayPassengerStats(SACCO_B, superAdmin);
+      expect(bookingService.getTodayPassengerStats).toHaveBeenCalledWith(SACCO_B);
 
-      expect(bookingService.getTodayPassengerStats).toHaveBeenCalledWith('sacco-1');
+      controller.getTodayPassengerStats(undefined, superAdmin);
+      expect(bookingService.getTodayPassengerStats).toHaveBeenCalledWith(undefined);
     });
 
-    it('SACCO_ADMIN with no assigned sacco: throws ForbiddenException', () => {
-      expect(() => controller.getTodayPassengerStats(undefined, saccoAdminNoSacco)).toThrow(
+    it('SECURITY: forces a sacco admin\'s own saccoId, ignoring a mismatched query param', () => {
+      controller.getTodayPassengerStats(SACCO_B, saccoAdmin);
+      expect(bookingService.getTodayPassengerStats).toHaveBeenCalledWith(SACCO_A);
+    });
+
+    it('throws ForbiddenException if a sacco admin has no saccoId assigned', () => {
+      const orphanAdmin = { id: 'user-4', role: UserRole.SACCO_ADMIN, saccoId: null };
+
+      expect(() => controller.getTodayPassengerStats(undefined, orphanAdmin)).toThrow(
         ForbiddenException,
       );
       expect(bookingService.getTodayPassengerStats).not.toHaveBeenCalled();
     });
   });
 
-  // ─── cancel ─────────────────────────────────────────────────────────
-  describe('cancel', () => {
-    it('SUPER_ADMIN: passes undefined saccoId', () => {
-      bookingService.cancel!.mockReturnValue({ ...baseBooking, status: BookingStatus.CANCELLED });
-
-      controller.cancel('booking-1', superAdmin);
-
-      expect(bookingService.cancel).toHaveBeenCalledWith('booking-1', undefined);
+  // ── GET /bookings/earnings/today ─────────────────────────────────────────
+  describe('getTodayEarnings — sacco scoping', () => {
+    it('lets a super admin pass any saccoId query param through', () => {
+      controller.getTodayEarnings(SACCO_B, superAdmin);
+      expect(bookingService.getTodayEarnings).toHaveBeenCalledWith(SACCO_B);
     });
 
-    it('SACCO_ADMIN/CLERK: scopes to their own saccoId', () => {
-      bookingService.cancel!.mockReturnValue({ ...baseBooking, status: BookingStatus.CANCELLED });
-
-      controller.cancel('booking-1', clerk);
-
-      expect(bookingService.cancel).toHaveBeenCalledWith('booking-1', 'sacco-1');
-    });
-  });
-
-  // ─── getTodayEarnings ──────────────────────────────────────────────
-  describe('getTodayEarnings', () => {
-    it('SUPER_ADMIN: uses provided saccoId query param', () => {
-      bookingService.getTodayEarnings!.mockReturnValue({});
-
-      controller.getTodayEarnings('sacco-9', superAdmin);
-
-      expect(bookingService.getTodayEarnings).toHaveBeenCalledWith('sacco-9');
+    it('SECURITY: forces a sacco admin\'s own saccoId, ignoring a mismatched query param', () => {
+      controller.getTodayEarnings(SACCO_B, saccoAdmin);
+      expect(bookingService.getTodayEarnings).toHaveBeenCalledWith(SACCO_A);
     });
 
-    it('SACCO_ADMIN: overrides with own saccoId', () => {
-      bookingService.getTodayEarnings!.mockReturnValue({});
+    it('throws ForbiddenException if a sacco admin has no saccoId assigned', () => {
+      const orphanAdmin = { id: 'user-4', role: UserRole.SACCO_ADMIN, saccoId: null };
 
-      controller.getTodayEarnings(undefined, saccoAdmin);
-
-      expect(bookingService.getTodayEarnings).toHaveBeenCalledWith('sacco-1');
-    });
-
-    it('SACCO_ADMIN with no sacco: throws ForbiddenException', () => {
-      expect(() => controller.getTodayEarnings(undefined, saccoAdminNoSacco)).toThrow(
-        ForbiddenException,
-      );
+      expect(() => controller.getTodayEarnings(undefined, orphanAdmin)).toThrow(ForbiddenException);
+      expect(bookingService.getTodayEarnings).not.toHaveBeenCalled();
     });
   });
 
-  // ─── getRevenueTrend ───────────────────────────────────────────────
-  describe('getRevenueTrend', () => {
-    it('defaults days to 7 when not provided', () => {
-      bookingService.getRevenueTrend!.mockReturnValue([]);
-
-      controller.getRevenueTrend(undefined, undefined, superAdmin);
-
-      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(7, undefined);
+  // ── GET /bookings/earnings/trend ─────────────────────────────────────────
+  describe('getRevenueTrend — days parsing and sacco scoping', () => {
+    it('defaults to 7 days when no days query param is given', () => {
+      controller.getRevenueTrend(undefined, SACCO_A, superAdmin);
+      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(7, SACCO_A);
     });
 
-    it('converts the days query string to a number', () => {
-      bookingService.getRevenueTrend!.mockReturnValue([]);
-
-      controller.getRevenueTrend('14', 'sacco-9', superAdmin);
-
-      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(14, 'sacco-9');
+    it('parses a numeric days query param', () => {
+      controller.getRevenueTrend('30', SACCO_A, superAdmin);
+      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(30, SACCO_A);
     });
 
-    it('SACCO_ADMIN: overrides saccoId with their own', () => {
-      bookingService.getRevenueTrend!.mockReturnValue([]);
-
-      controller.getRevenueTrend('30', 'sacco-other', saccoAdmin);
-
-      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(30, 'sacco-1');
+    it('lets a super admin pass any saccoId query param through', () => {
+      controller.getRevenueTrend('14', SACCO_B, superAdmin);
+      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(14, SACCO_B);
     });
 
-    it('SACCO_ADMIN with no sacco: throws ForbiddenException', () => {
-      expect(() => controller.getRevenueTrend('7', undefined, saccoAdminNoSacco)).toThrow(
+    it('SECURITY: forces a sacco admin\'s own saccoId, ignoring a mismatched query param', () => {
+      controller.getRevenueTrend('14', SACCO_B, saccoAdmin);
+      expect(bookingService.getRevenueTrend).toHaveBeenCalledWith(14, SACCO_A);
+    });
+
+    it('throws ForbiddenException if a sacco admin has no saccoId assigned', () => {
+      const orphanAdmin = { id: 'user-4', role: UserRole.SACCO_ADMIN, saccoId: null };
+
+      expect(() => controller.getRevenueTrend('7', undefined, orphanAdmin)).toThrow(
         ForbiddenException,
       );
+      expect(bookingService.getRevenueTrend).not.toHaveBeenCalled();
     });
   });
 });

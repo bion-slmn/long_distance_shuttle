@@ -26,6 +26,11 @@ export enum PaymentMethod {
     MPESA = 'MPESA',
 }
 
+export enum BookingSource {
+    CLERK = 'CLERK',           // recorded in-person by a sacco clerk
+    PUBLIC_PORTAL = 'PUBLIC_PORTAL', // self-service by passenger
+}
+
 export enum PaymentStatus {
     PENDING = 'PENDING',
     PAID = 'PAID',
@@ -111,6 +116,9 @@ export class Booking {
     // matters when there's a fare dispute or reconciliation mismatch.
     @Column({ type: 'uuid', nullable: true })
     declare createdByUserId: string | null;
+
+    @Column({ type: 'enum', enum: BookingSource })
+    declare source: BookingSource;
 
     @Column({ type: 'time', nullable: true })
     declare preferredBoardingFrom: string | null;

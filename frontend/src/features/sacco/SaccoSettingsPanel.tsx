@@ -264,6 +264,37 @@ export function SaccoSettingsPanel() {
                         </div>
                     </CardContent>
                 </Card>
+                {/* Pre-booking limits (read-only for now) */}
+                <Card>
+                    <CardHeader className="pb-4 text-left">
+                        <CardTitle className="text-sm font-medium">Pre-booking limits</CardTitle>
+                        <CardDescription className="text-xs">
+                            Online booking rules for this sacco. Not yet editable — contact support to adjust.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3 text-sm">
+                        <div className="flex items-center justify-between text-left">
+                            <span className="text-muted-foreground">Online pre-booking</span>
+                            <Badge variant="outline" className={settings.preBookingEnabled ? "border-emerald-500/30 text-emerald-600" : "text-muted-foreground"}>
+                                {settings.preBookingEnabled ? "Enabled" : "Disabled"}
+                            </Badge>
+                        </div>
+                        <div className="flex items-center justify-between text-left">
+                            <span className="text-muted-foreground">Booking window</span>
+                            <span className="font-mono text-xs">
+                                {settings.preBookingMorningStart.slice(0, 5)} – {settings.preBookingMorningEnd.slice(0, 5)}
+                            </span>
+                        </div>
+                        <div className="flex items-center justify-between text-left">
+                            <span className="text-muted-foreground">Max vehicles/morning</span>
+                            <span>{settings.preBookingMaxMorningVehicles}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-left">
+                            <span className="text-muted-foreground">Max seats/trip</span>
+                            <span>{settings.preBookingMaxSeatsPerTrip}</span>
+                        </div>
+                    </CardContent>
+                </Card>
             </RoleGuard>
 
             <ConfigureMpesaDialog
@@ -382,6 +413,10 @@ function ReadOnlySettingsCard({ settings }: { settings: any }) {
                 <div className="flex items-center justify-between text-left">
                     <span className="text-muted-foreground">M-Pesa</span>
                     <span>{settings.mpesaConfigured ? "Configured" : "Not configured"}</span>
+                </div>
+                <div className="flex items-center justify-between text-left">
+                    <span className="text-muted-foreground">Online pre-booking</span>
+                    <span>{settings.preBookingEnabled ? "Enabled" : "Disabled"}</span>
                 </div>
             </CardContent>
         </Card>

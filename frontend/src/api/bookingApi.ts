@@ -65,6 +65,20 @@ export interface Booking {
 }
 
 // Seat-count-only availability for a route/date — no seat map.
+export interface BookingAvailabilityPreBooking {
+    enabled: boolean;
+    morningStart: string;
+    morningEnd: string;
+    maxMorningVehicles: number;
+    maxSeatsPerTrip: number;
+    maxPreBookableSeats: number;
+    preBookedSeats: number;
+    seatsRemaining: number;
+    capReached: boolean;
+    minTravelDate: string;
+    maxTravelDate: string;
+}
+
 export interface BookingAvailability {
     routeId: string;
     travelDate: string;
@@ -73,7 +87,15 @@ export interface BookingAvailability {
     seatsBooked: number;
     seatsAvailable: number | null;
     awaitingTripCount: number; // pre-bookings queued for the next vehicle
+    preBooking: BookingAvailabilityPreBooking;
 }
+
+export const BookingSource = {
+    CLERK: 'CLERK',           // recorded in-person by a sacco clerk
+    PUBLIC_PORTAL: 'PUBLIC_PORTAL', // self-service by passenger
+} as const;
+
+export type BookingSource = typeof BookingSource[keyof typeof BookingSource];
 
 export interface CreateBookingPayload {
     bookingId?: string; // include on retry for idempotency
@@ -82,6 +104,7 @@ export interface CreateBookingPayload {
     passengerName: string;
     passengerPhone: string;
     paymentMethod: PaymentMethod;
+    source: BookingSource;
     createdByUserId?: string;
     status?: BookingStatus;
     preferredBoardingFrom?: string; // HH:mm or HH:mm:ss
@@ -151,6 +174,13 @@ export async function getBookingsRequest(
 
 export async function getBookingRequest(id: string): Promise<Booking> {
     const res = await api.get(`/bookings/${id}`);
+    return res.data;
+}
+
+export async function createBookingByClerkRequest(
+    payload: CreateBookingPayload,
+): Promise<Booking> {
+    const res = await api.post("/bookings/clerk", payload);
     return res.data;
 }
 

@@ -19,7 +19,7 @@ import { OtpService } from './otp.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { UpdateBookingDto } from './dto/update-booking.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
-import { BookingStatus } from './entities/booking.entity';
+import { BookingSource, BookingStatus } from './entities/booking.entity';
 import { JwtAuthGuard } from 'src/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/guards/roles.guard';
 import { CurrentUser } from 'src/decorators/current-user.decorator';
@@ -39,10 +39,22 @@ export class BookingController {
   ) { }
 
   // ── PUBLIC: booking creation ──────────────────────────────────────────
+  // ── PUBLIC: booking creation ──────────────────────────────────────────
   @Public()
   @Post()
   create(@Body() dto: CreateBookingDto) {
-    return this.bookingService.create(dto);
+    return this.bookingService.create(dto, BookingSource.PUBLIC_PORTAL);
+  }
+
+  // ── CLERK/STAFF: booking creation ──────────────────────────────────────
+  @Post('clerk')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
+  createByClerk(@Body() dto: CreateBookingDto, @CurrentUser() user: any) {
+    return this.bookingService.create(
+      { ...dto, createdByUserId: user.id },
+      BookingSource.CLERK,
+    );
   }
 
   // ── PUBLIC: seat availability check ──────────────────────────────────

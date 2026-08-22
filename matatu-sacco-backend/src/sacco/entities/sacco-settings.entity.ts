@@ -31,6 +31,21 @@ export class SaccoSettings {
   @Column({ default: true })
   declare acceptsCash: boolean;
 
+  @Column({ default: true })
+  declare preBookingEnabled: boolean; // master switch — SACCO can turn online booking off entirely
+
+  @Column({ type: 'time', default: '05:00:00' })
+  declare preBookingMorningStart: string; // 'HH:mm:ss'
+
+  @Column({ type: 'time', default: '10:00:00' })
+  declare preBookingMorningEnd: string;
+
+  @Column({ type: 'int', default: 4 })
+  declare preBookingMaxMorningVehicles: number;
+
+  @Column({ type: 'int', default: 4 })
+  declare preBookingMaxSeatsPerTrip: number;
+
   // ── M-Pesa Daraja credentials, per sacco ──
   @Column({ nullable: true })
   declare mpesaShortcode: string; // their till/paybill number

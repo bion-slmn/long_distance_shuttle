@@ -215,6 +215,15 @@ export interface SaccoSettings {
     acceptsCash: boolean;
     mpesaShortcode?: string;
     mpesaConfigured: boolean;
+    // ── Pre-booking limits — fixed MVP defaults, read-only for now ──
+    // Not yet editable via updateSaccoSettingsRequest; included here so
+    // the frontend can display current limits once needed (e.g. a
+    // "Booking limits" info panel), even before an edit form exists.
+    preBookingEnabled: boolean;
+    preBookingMorningStart: string; // 'HH:mm:ss'
+    preBookingMorningEnd: string;   // 'HH:mm:ss'
+    preBookingMaxMorningVehicles: number;
+    preBookingMaxSeatsPerTrip: number;
     createdAt: string;
     updatedAt: string;
     // Note: mpesaConsumerKey, mpesaConsumerSecretEncrypted, and
@@ -225,7 +234,12 @@ export interface UpdateSaccoSettingsDto {
     commissionRate?: number;
     isAcceptingBookings?: boolean;
     acceptsCash?: boolean;
+    // Pre-booking limits are intentionally NOT included here — the backend
+    // doesn't accept them via PATCH yet (see SaccoSettingsService.update()).
+    // Add them here once that becomes editable.
 }
+
+
 
 export interface ConfigureMpesaDto {
     shortcode: string;

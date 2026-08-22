@@ -9,7 +9,7 @@ import {
     IsEmail,
     Matches,
 } from 'class-validator';
-import { BookingStatus, PaymentMethod } from '../entities/booking.entity';
+import { BookingSource, BookingStatus, PaymentMethod } from '../entities/booking.entity';
 
 export class CreateBookingDto {
 
@@ -57,6 +57,12 @@ export class CreateBookingDto {
     @IsOptional()
     @IsEnum(BookingStatus)
     status?: BookingStatus;
+
+
+    @IsOptional()
+    @IsEnum(BookingSource)
+    declare source?: BookingSource;
+
 
     @IsOptional()
     @Matches(/^\d{2}:\d{2}(:\d{2})?$/, { message: 'preferredBoardingFrom must be HH:mm or HH:mm:ss' })

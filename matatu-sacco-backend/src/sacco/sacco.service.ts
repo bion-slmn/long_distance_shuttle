@@ -505,4 +505,5 @@ export class SaccoService {
         return Number((((current - previous) / previous) * 100).toFixed(2));
     }
 
+
 }

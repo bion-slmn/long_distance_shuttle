@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
-import { Booking, BookingStatus, PaymentMethod, PaymentStatus } from './entities/booking.entity';
+import { Booking, BookingSource, BookingStatus, PaymentMethod, PaymentStatus } from './entities/booking.entity';
 import { Trip, TripStatus } from '../trip/entities/trip.entity';
 import { Route } from '../route/entities/route.entity';
 import { CreateBookingDto } from './dto/create-booking.dto';
@@ -21,6 +21,8 @@ import {
   PaymentStatus as PaymentEntityStatus,
   PaymentReferenceType,
 } from '../payment/entities/payment.entity';
+import { SaccoSettingsService } from 'src/sacco/sacco-settings.service';
+import { SaccoSettings } from 'src/sacco/entities/sacco-settings.entity';
 
 export interface UniquePassengerStats {
   saccoId: string | null;
@@ -39,6 +41,46 @@ export interface TodayPassengerStats {
   changePercent: number | null;
 }
 
+// Shared context passed through the booking-creation pipeline. Defined once
+// so trySeatOnTrip / createAwaitingTripBooking / createBookingInTransaction
+// all agree on the same shape — this is what the earlier "Object literal may
+// only specify known properties" errors were caused by (mismatched inline
+// object types across the three methods).
+interface BookingCreationContext {
+  dto: CreateBookingDto;
+  route: Route;
+  travelDate: string;
+  paymentStatus: PaymentStatus;
+  source: BookingSource;
+}
+
+// Shape returned by getAvailability — includes the sacco's pre-booking
+// settings so the frontend can render limits/copy (e.g. "pre-booking closes
+// at 10:00", "3 seats left of 16 pre-bookable today") without a second
+// round trip to the sacco-settings endpoint.
+export interface AvailabilityResult {
+  routeId: string;
+  travelDate: string;
+  hasOpenTrip: boolean;
+  seatsTotal: number | null;
+  seatsBooked: number;
+  seatsAvailable: number | null;
+  awaitingTripCount: number; // pre-bookings queued for the next vehicle
+  preBooking: {
+    enabled: boolean;
+    morningStart: string;      // 'HH:mm:ss'
+    morningEnd: string;        // 'HH:mm:ss'
+    maxMorningVehicles: number;
+    maxSeatsPerTrip: number;
+    maxPreBookableSeats: number; // maxMorningVehicles * maxSeatsPerTrip
+    preBookedSeats: number;      // current PUBLIC_PORTAL count against the cap
+    seatsRemaining: number;      // maxPreBookableSeats - preBookedSeats, floored at 0
+    capReached: boolean;
+    minTravelDate: string;       // today — earliest date the public portal can book
+    maxTravelDate: string;       // tomorrow — latest date the public portal can book
+  };
+}
+
 @Injectable()
 export class BookingService {
   private readonly logger = new Logger(BookingService.name);
@@ -52,23 +94,54 @@ export class BookingService {
 
     @InjectRepository(Route)
     private readonly routeRepository: Repository<Route>,
-    private readonly paymentService: PaymentService
+    private readonly paymentService: PaymentService,
+    private readonly saccoSettingsService: SaccoSettingsService,
   ) { }
 
   private toDateString(date: Date): string {
     return date.toISOString().slice(0, 10);
   }
 
+  private addDays(date: Date, days: number): Date {
+    const result = new Date(date);
+    result.setDate(result.getDate() + days);
+    return result;
+  }
 
-  async create(dto: CreateBookingDto): Promise<Booking> {
+  private subtractDays(date: Date, days: number): Date {
+    const result = new Date(date);
+    result.setDate(result.getDate() - days);
+    return result;
+  }
+
+  // ─── Create ───────────────────────────────────────────────────────────
+  // `source` is NEVER read from the request body (see CreateBookingDto —
+  // it has no `source` field). It's passed in by the controller based on
+  // which endpoint received the request, so a public-portal caller can't
+  // spoof BookingSource.CLERK to dodge the pre-booking constraints below.
+  async create(
+    dto: CreateBookingDto,
+    source: BookingSource = BookingSource.CLERK,
+  ): Promise<Booking> {
     const route = await this.getRouteOrThrow(dto.routeId);
     this.validatePreferredWindow(dto.preferredBoardingFrom, dto.preferredBoardingTo);
 
     const travelDate = dto.travelDate ?? this.toDateString(new Date());
     const paymentStatus = this.initialPaymentStatus(dto.paymentMethod);
 
+    if (source === BookingSource.PUBLIC_PORTAL) {
+      const settings = await this.saccoSettingsService.findOne(route.saccoId);
+      await this.validatePublicPreBooking(
+        dto.routeId,
+        travelDate,
+        settings,
+        dto.preferredBoardingFrom,
+        dto.preferredBoardingTo,
+      );
+    }
+
     const savedBooking = await this.bookingRepository.manager.transaction((manager) =>
-      this.createBookingInTransaction(manager, { dto, route, travelDate, paymentStatus }),
+      this.createBookingInTransaction(manager, { dto, route, travelDate, paymentStatus, source }),
     );
 
     if (dto.paymentMethod === PaymentMethod.MPESA) {
@@ -78,6 +151,74 @@ export class BookingService {
     return savedBooking;
   }
 
+  // ─── Public-portal pre-booking constraints ───────────────────────────────
+  private async validatePublicPreBooking(
+    routeId: string,
+    travelDate: string,
+    settings: SaccoSettings,
+    preferredBoardingFrom?: string,
+    preferredBoardingTo?: string,
+  ): Promise<void> {
+    if (!settings.preBookingEnabled) {
+      throw new BadRequestException('Pre-booking is currently disabled for this sacco.');
+    }
+
+    this.validatePreBookingTimeWindow(settings, preferredBoardingFrom, preferredBoardingTo);
+    this.validatePreBookingDateRange(travelDate);
+
+    const capReached = await this.isPreBookingCapReached(routeId, travelDate, settings);
+    if (capReached) {
+      throw new BadRequestException('Pre-booking cap reached for this route/date.');
+    }
+  }
+
+  // Pre-booking isn't restricted by *when the booking is made* — a passenger
+  // can pre-book tonight for a 5am departure tomorrow. What's restricted is
+  // *when they want to board*: the sacco only queues pre-booked vehicles
+  // within a morning window (e.g. 05:00–10:00), so the passenger's requested
+  // boarding window must fall entirely inside it.
+  private validatePreBookingTimeWindow(
+    settings: SaccoSettings,
+    preferredBoardingFrom?: string | null,
+    preferredBoardingTo?: string | null,
+  ): void {
+    if (!preferredBoardingFrom || !preferredBoardingTo) {
+      throw new BadRequestException(
+        'preferredBoardingFrom and preferredBoardingTo are required for pre-booking.',
+      );
+    }
+
+    const from = this.normalizeTimeOfDay(preferredBoardingFrom);
+    const to = this.normalizeTimeOfDay(preferredBoardingTo);
+    const { preBookingMorningStart: windowStart, preBookingMorningEnd: windowEnd } = settings;
+
+    if (from < windowStart || to > windowEnd) {
+      throw new BadRequestException(
+        `Preferred boarding time must be within the sacco's pre-booking window ` +
+        `(${windowStart.slice(0, 5)}–${windowEnd.slice(0, 5)}).`,
+      );
+    }
+  }
+
+  // CreateBookingDto's @Matches allows 'HH:mm' or 'HH:mm:ss'; SaccoSettings
+  // always stores 'HH:mm:ss'. Pad before comparing lexically — '05:00' 
+  // '05:00:00' is true as a plain string comparison even though they're the
+  // same instant, which would wrongly reject an exact boundary match.
+  private normalizeTimeOfDay(time: string): string {
+    return time.length === 5 ? `${time}:00` : time;
+  }
+
+  // Public portal bookings only allowed for today or tomorrow. Clerk
+  // bookings (source !== PUBLIC_PORTAL) never call this and aren't
+  // restricted by it.
+  private validatePreBookingDateRange(travelDate: string): void {
+    const today = this.toDateString(new Date());
+    const tomorrow = this.toDateString(this.addDays(new Date(), 1));
+
+    if (travelDate < today || travelDate > tomorrow) {
+      throw new BadRequestException('Bookings can only be made for today or tomorrow.');
+    }
+  }
 
   private async getRouteOrThrow(routeId: string): Promise<Route> {
     const route = await this.routeRepository.findOne({ where: { id: routeId } });
@@ -95,17 +236,17 @@ export class BookingService {
     return method === PaymentMethod.CASH ? PaymentStatus.PAID : PaymentStatus.PENDING;
   }
 
-  // The transaction body — still one function, but now it's ONLY DB logic,
-  // no validation, no payment initiation mixed in.
+  // The transaction body — pure DB logic, no validation, no payment
+  // initiation mixed in.
   private async createBookingInTransaction(
     manager: EntityManager,
-    ctx: { dto: CreateBookingDto; route: Route; travelDate: string; paymentStatus: PaymentStatus },
+    ctx: BookingCreationContext,
   ): Promise<Booking> {
-    const { dto, route, travelDate, paymentStatus } = ctx;
+    const { dto, route, travelDate, paymentStatus, source } = ctx;
 
     const openTrip = await this.findLockedOpenTrip(manager, dto.routeId, travelDate);
     const windowOk = this.isWithinPreferredWindow(
-      openTrip ? this.timeOfDay(openTrip.createdAt) : null,
+      openTrip ? this.timeOfDay(new Date()) : null,
       dto.preferredBoardingFrom ?? null,
       dto.preferredBoardingTo ?? null,
     );
@@ -113,11 +254,11 @@ export class BookingService {
     let saved: Booking | null = null;
 
     if (openTrip && windowOk) {
-      saved = await this.trySeatOnTrip(manager, openTrip, { dto, route, travelDate, paymentStatus });
+      saved = await this.trySeatOnTrip(manager, openTrip, { dto, route, travelDate, paymentStatus, source });
     }
 
     if (!saved) {
-      saved = await this.createAwaitingTripBooking(manager, { dto, route, travelDate, paymentStatus });
+      saved = await this.createAwaitingTripBooking(manager, { dto, route, travelDate, paymentStatus, source });
     }
 
     if (dto.paymentMethod === PaymentMethod.CASH) {
@@ -144,6 +285,7 @@ export class BookingService {
       }),
     );
   }
+
   private async findLockedOpenTrip(
     manager: EntityManager,
     routeId: string,
@@ -161,9 +303,9 @@ export class BookingService {
   private async trySeatOnTrip(
     manager: EntityManager,
     trip: Trip,
-    ctx: { dto: CreateBookingDto; route: Route; travelDate: string; paymentStatus: PaymentStatus },
+    ctx: BookingCreationContext,
   ): Promise<Booking | null> {
-    const { dto, route, travelDate, paymentStatus } = ctx;
+    const { dto, route, travelDate, paymentStatus, source } = ctx;
 
     const seatedCount = await manager
       .createQueryBuilder(Booking, 'b')
@@ -183,9 +325,10 @@ export class BookingService {
       saccoId: route.saccoId,
       passengerName: dto.passengerName,
       passengerPhone: dto.passengerPhone,
-      passengerEmail: dto.passengerEmail,   // ← add this
+      passengerEmail: dto.passengerEmail,
       fare: route.fare,
       status: BookingStatus.CONFIRMED,
+      source,
       paymentMethod: dto.paymentMethod,
       paymentStatus,
       createdByUserId: dto.createdByUserId ?? null,
@@ -199,9 +342,9 @@ export class BookingService {
 
   private async createAwaitingTripBooking(
     manager: EntityManager,
-    ctx: { dto: CreateBookingDto; route: Route; travelDate: string; paymentStatus: PaymentStatus },
+    ctx: BookingCreationContext,
   ): Promise<Booking> {
-    const { dto, route, travelDate, paymentStatus } = ctx;
+    const { dto, route, travelDate, paymentStatus, source } = ctx;
 
     const booking = manager.create(Booking, {
       routeId: dto.routeId,
@@ -211,9 +354,10 @@ export class BookingService {
       saccoId: route.saccoId,
       passengerName: dto.passengerName,
       passengerPhone: dto.passengerPhone,
-      passengerEmail: dto.passengerEmail,   // ← add this
+      passengerEmail: dto.passengerEmail,
       fare: route.fare,
       status: BookingStatus.AWAITING_TRIP,
+      source,
       paymentMethod: dto.paymentMethod,
       paymentStatus,
       createdByUserId: dto.createdByUserId ?? null,
@@ -240,6 +384,7 @@ export class BookingService {
       this.logger.error(`Failed to initiate M-Pesa for booking ${booking.id}: ${err.message}`);
     }
   }
+
   private timeOfDay(date: Date): string {
     return date.toTimeString().slice(0, 8); // 'HH:mm:ss' in server-local time
   }
@@ -250,6 +395,11 @@ export class BookingService {
   // transaction/manager as trip creation so a crash can't strand bookings
   // in a half-assigned state.
   async assignPendingBookingsToTrip(trip: Trip, manager: EntityManager): Promise<void> {
+    this.logger.log(
+      `assignPendingBookingsToTrip called for trip ${trip.id} ` +
+      `(route ${trip.routeId}, travelDate ${trip.travelDate}, capacity ${trip.vehicleCapacity})`,
+    );
+
     const alreadySeated = await manager
       .createQueryBuilder(Booking, 'b')
       .where('b.tripId = :tripId', { tripId: trip.id })
@@ -258,8 +408,13 @@ export class BookingService {
       })
       .getCount();
 
+    this.logger.log(`Trip ${trip.id}: ${alreadySeated} seat(s) already filled before assignment`);
+
     let seat = alreadySeated;
-    if (seat >= trip.vehicleCapacity) return;
+    if (seat >= trip.vehicleCapacity) {
+      this.logger.log(`Trip ${trip.id} is already full (${seat}/${trip.vehicleCapacity}) — skipping assignment`);
+      return;
+    }
 
     const pending = await manager
       .createQueryBuilder(Booking, 'b')
@@ -271,21 +426,44 @@ export class BookingService {
       .setLock('pessimistic_write')
       .getMany();
 
+    this.logger.log(
+      `Trip ${trip.id}: found ${pending.length} AWAITING_TRIP + PAID booking(s) ` +
+      `for route ${trip.routeId} on ${trip.travelDate}`,
+    );
+
+    if (pending.length === 0) {
+      this.logger.log(`Trip ${trip.id}: no pending bookings to assign, nothing to do`);
+      return;
+    }
+
     let assigned = 0;
     let skippedOutsideWindow = 0;
 
     for (const booking of pending) {
-      if (seat >= trip.vehicleCapacity) break;
+      if (seat >= trip.vehicleCapacity) {
+        this.logger.log(
+          `Trip ${trip.id}: capacity reached (${seat}/${trip.vehicleCapacity}) — ` +
+          `stopping, ${pending.length - assigned - skippedOutsideWindow} booking(s) left unprocessed`,
+        );
+        break;
+      }
 
+      const tripTimeOfDay = this.timeOfDay(new Date());
       const windowOk = this.isWithinPreferredWindow(
-        this.timeOfDay(trip.createdAt),
+        tripTimeOfDay,
         booking.preferredBoardingFrom,
         booking.preferredBoardingTo,
       );
 
+      this.logger.log(
+        `Booking ${booking.id}: preferredWindow=[${booking.preferredBoardingFrom ?? "none"}-${booking.preferredBoardingTo ?? "none"}], ` +
+        `tripTime=${tripTimeOfDay}, withinWindow=${windowOk}`,
+      );
+
       if (!windowOk) {
         skippedOutsideWindow++;
-        continue; // stays AWAITING_TRIP, eligible for a later trip that fits their window
+        this.logger.log(`Booking ${booking.id}: SKIPPED (outside preferred window), stays AWAITING_TRIP`);
+        continue;
       }
 
       seat++;
@@ -294,14 +472,16 @@ export class BookingService {
       booking.seatNumber = seat;
       booking.status = BookingStatus.CONFIRMED;
       await manager.save(Booking, booking);
-    }
 
-    if (assigned > 0 || skippedOutsideWindow > 0) {
       this.logger.log(
-        `Assigned ${assigned} pending booking(s) to trip ${trip.id} (${seat}/${trip.vehicleCapacity} seats filled)` +
-        (skippedOutsideWindow > 0 ? `, ${skippedOutsideWindow} skipped (outside preferred window)` : ''),
+        `Booking ${booking.id}: ASSIGNED to trip ${trip.id}, seat ${seat}, status -> CONFIRMED`,
       );
     }
+
+    this.logger.log(
+      `Trip ${trip.id}: assignment complete — assigned ${assigned}, skipped (window) ${skippedOutsideWindow}, ` +
+      `${seat}/${trip.vehicleCapacity} seats filled`,
+    );
   }
 
   // ─── Payment confirmation (M-Pesa callback or cash reconciliation) ───────
@@ -328,7 +508,6 @@ export class BookingService {
     // assignPendingBookingsToTrip the next time a trip opens on this route/date.
   }
 
-
   async markPaymentFailed(id: string): Promise<Booking> {
     const booking = await this.findOne(id);
     booking.paymentStatus = PaymentStatus.FAILED;
@@ -338,14 +517,12 @@ export class BookingService {
   }
 
   // ─── Find ────────────────────────────────────────────────────────────────
-  // src/booking/booking.service.ts
-
   async findAll(filters?: {
     saccoId?: string;
     routeId?: string;
     travelDate?: string;   // exact-day filter, kept for backward compatibility
-    from?: string;         // ← new — range start (inclusive)
-    to?: string;           // ← new — range end (inclusive)
+    from?: string;         // range start (inclusive)
+    to?: string;           // range end (inclusive)
     status?: BookingStatus;
     tripId?: string;
     vehicleId?: string;
@@ -435,15 +612,17 @@ export class BookingService {
     return count > 0;
   }
 
-
-  // add to booking.service.ts
-  async getAvailability(routeId: string, travelDate?: string) {
+  // ─── Availability — now also returns pre-booking settings so the
+  // frontend can render limits/copy directly off this one call. ───────────
+  async getAvailability(routeId: string, travelDate?: string): Promise<AvailabilityResult> {
     const date = travelDate ?? this.toDateString(new Date());
 
     const route = await this.routeRepository.findOne({ where: { id: routeId } });
     if (!route) {
       throw new NotFoundException(`Route "${routeId}" not found.`);
     }
+
+    const settings = await this.saccoSettingsService.findOne(route.saccoId);
 
     const openTrip = await this.tripRepository.findOne({
       where: { routeId, travelDate: date, status: TripStatus.BOARDING },
@@ -466,6 +645,20 @@ export class BookingService {
       .andWhere('b.status = :status', { status: BookingStatus.AWAITING_TRIP })
       .getCount();
 
+    const maxPreBookableSeats = settings.preBookingMaxMorningVehicles * settings.preBookingMaxSeatsPerTrip;
+    const preBookedSeats = await this.bookingRepository
+      .createQueryBuilder('b')
+      .where('b.routeId = :routeId', { routeId })
+      .andWhere('b.travelDate = :date', { date })
+      .andWhere('b.status IN (:...statuses)', {
+        statuses: [BookingStatus.AWAITING_TRIP, BookingStatus.CONFIRMED, BookingStatus.BOARDED],
+      })
+      .andWhere('b.source = :source', { source: BookingSource.PUBLIC_PORTAL })
+      .getCount();
+
+    const minTravelDate = this.toDateString(new Date());
+    const maxTravelDate = this.toDateString(this.addDays(new Date(), 1));
+
     return {
       routeId,
       travelDate: date,
@@ -474,7 +667,42 @@ export class BookingService {
       seatsBooked: seatedCount,
       seatsAvailable: openTrip ? openTrip.vehicleCapacity - seatedCount : null,
       awaitingTripCount: awaitingCount, // pre-bookings queued for the next vehicle
+      preBooking: {
+        enabled: settings.preBookingEnabled,
+        morningStart: settings.preBookingMorningStart,
+        morningEnd: settings.preBookingMorningEnd,
+        maxMorningVehicles: settings.preBookingMaxMorningVehicles,
+        maxSeatsPerTrip: settings.preBookingMaxSeatsPerTrip,
+        maxPreBookableSeats,
+        preBookedSeats,
+        seatsRemaining: Math.max(maxPreBookableSeats - preBookedSeats, 0),
+        capReached: preBookedSeats >= maxPreBookableSeats,
+        minTravelDate,
+        maxTravelDate,
+      },
     };
+  }
+
+  // Only counts PUBLIC_PORTAL bookings against the cap — clerk-recorded
+  // bookings never count toward or are blocked by this limit.
+  private async isPreBookingCapReached(
+    routeId: string,
+    date: string,
+    settings: SaccoSettings,
+  ): Promise<boolean> {
+    const maxPreBookableSeats = settings.preBookingMaxMorningVehicles * settings.preBookingMaxSeatsPerTrip;
+
+    const preBookedCount = await this.bookingRepository
+      .createQueryBuilder('b')
+      .where('b.routeId = :routeId', { routeId })
+      .andWhere('b.travelDate = :date', { date })
+      .andWhere('b.status IN (:...statuses)', {
+        statuses: [BookingStatus.AWAITING_TRIP, BookingStatus.CONFIRMED, BookingStatus.BOARDED],
+      })
+      .andWhere('b.source = :source', { source: BookingSource.PUBLIC_PORTAL })
+      .getCount();
+
+    return preBookedCount >= maxPreBookableSeats;
   }
 
   // ─── Revenue Trend (for dashboard chart) ────────────────────────────────
@@ -517,7 +745,7 @@ export class BookingService {
 
     const revenueByDate = new Map<string, number>(
       rows.map((r) => [
-        this.normalizeTravelDate(r.travelDate), // ← force back to 'YYYY-MM-DD' string
+        this.normalizeTravelDate(r.travelDate), // force back to 'YYYY-MM-DD' string
         Number(r.grossRevenue),
       ]),
     );
@@ -589,8 +817,6 @@ export class BookingService {
     };
   }
 
-
-
   // ─── Unique Passenger Stats (adoption signal, not staff accounts) ───────
   // Since passengers book as guests (passengerPhone, no userId), "new users"
   // doesn't mean anything here — this counts distinct phone numbers instead,
@@ -656,7 +882,6 @@ export class BookingService {
     };
   }
 
-  // booking.service.ts — add these two methods
   async findByEmail(email: string): Promise<Booking[]> {
     return this.bookingRepository.find({
       where: { passengerEmail: email.trim().toLowerCase() },
@@ -668,15 +893,6 @@ export class BookingService {
       },
       order: { createdAt: 'DESC' },
     });
-  }
-
-
-
-
-  private subtractDays(date: Date, days: number): Date {
-    const result = new Date(date);
-    result.setDate(result.getDate() - days);
-    return result;
   }
 
   // ─── Today's Passenger Count (for dashboard KPI card) ───────────────────

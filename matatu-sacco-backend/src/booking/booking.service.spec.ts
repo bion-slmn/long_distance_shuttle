@@ -1,110 +1,119 @@
-// src/booking/booking.service.spec.ts
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import {
-  NotFoundException,
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
-} from '@nestjs/common';
-import { EntityManager, Repository } from 'typeorm';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { BookingService } from './booking.service';
-import { Booking, BookingStatus, PaymentMethod, PaymentStatus } from './entities/booking.entity';
-import { Trip, TripStatus } from '../trip/entities/trip.entity';
+import {
+  Booking,
+  BookingSource,
+  BookingStatus,
+  PaymentMethod,
+  PaymentStatus,
+} from './entities/booking.entity';
+import { Trip } from '../trip/entities/trip.entity';
 import { Route } from '../route/entities/route.entity';
 import { PaymentService } from '../payment/payment.service';
-import {
-  Payment,
-  PaymentMethod as PaymentEntityMethod,
-  PaymentStatus as PaymentEntityStatus,
-  PaymentReferenceType,
-} from '../payment/entities/payment.entity';
+import { SaccoSettingsService } from '../sacco/sacco-settings.service';
 
-type MockRepo<T = any> = Partial<Record<keyof Repository<T>, jest.Mock>>;
-
-const createMockRepo = (): MockRepo<any> => ({
-  findOne: jest.fn(),
-  save: jest.fn(),
-  create: jest.fn((x) => x),
-  createQueryBuilder: jest.fn(),
-  manager: undefined,
-});
-
-// Minimal chainable query builder mock — configure the terminal method
-// (getOne/getCount/getMany/getRawOne/getRawMany) per test.
-function mockQueryBuilder(overrides: Partial<Record<string, any>> = {}) {
-  const qb: any = {
-    where: jest.fn().mockReturnThis(),
-    andWhere: jest.fn().mockReturnThis(),
-    leftJoinAndSelect: jest.fn().mockReturnThis(),
-    orderBy: jest.fn().mockReturnThis(),
-    groupBy: jest.fn().mockReturnThis(),
-    select: jest.fn().mockReturnThis(),
-    addSelect: jest.fn().mockReturnThis(),
-    setLock: jest.fn().mockReturnThis(),
-    getOne: jest.fn().mockResolvedValue(null),
-    getCount: jest.fn().mockResolvedValue(0),
-    getMany: jest.fn().mockResolvedValue([]),
-    getRawOne: jest.fn().mockResolvedValue(null),
-    getRawMany: jest.fn().mockResolvedValue([]),
-    ...overrides,
-  };
+// ─── Chainable TypeORM QueryBuilder mock ─────────────────────────────────
+// Every chain method (`where`, `andWhere`, ...) returns the same object so
+// calls can be composed exactly like the real QueryBuilder. Terminal
+// methods (`getOne`, `getCount`, ...) are plain jest.fn()s you configure
+// per-test with `.mockResolvedValue(...)`.
+function createMockQueryBuilder() {
+  const qb: any = {};
+  const chainMethods = [
+    'where',
+    'andWhere',
+    'orderBy',
+    'setLock',
+    'leftJoinAndSelect',
+    'select',
+    'addSelect',
+    'groupBy',
+  ];
+  chainMethods.forEach((m) => (qb[m] = jest.fn().mockReturnValue(qb)));
+  qb.getOne = jest.fn();
+  qb.getCount = jest.fn();
+  qb.getMany = jest.fn();
+  qb.getRawMany = jest.fn().mockResolvedValue([]);
+  qb.getRawOne = jest.fn();
   return qb;
 }
 
-describe('BookingService', () => {
+describe('BookingService — pre-booking (public portal)', () => {
   let service: BookingService;
-  let bookingRepository: MockRepo<Booking>;
-  let tripRepository: MockRepo<Trip>;
-  let routeRepository: MockRepo<Route>;
-  let paymentService: Partial<Record<keyof PaymentService, jest.Mock>>;
+  let bookingRepository: any;
+  let tripRepository: any;
+  let routeRepository: any;
+  let paymentService: any;
+  let saccoSettingsService: any;
+  let managerMock: any;
 
-  const route: Route = {
-    id: 'route-1',
-    saccoId: 'sacco-1',
+  const ROUTE_ID = 'route-1';
+  const SACCO_ID = 'sacco-1';
+
+  const baseRoute: Partial<Route> = {
+    id: ROUTE_ID,
+    saccoId: SACCO_ID,
     fare: 500,
-    origin: 'Nairobi',
-    destination: 'Kisumu',
-  } as Route;
+  } as any;
 
-  const baseDto = {
-    routeId: 'route-1',
-    travelDate: '2026-08-17',
-    passengerName: 'Jane Wanjiru',
-    passengerPhone: '0712345678',
-    paymentMethod: PaymentMethod.CASH,
+  // 2 vehicles * 14 seats/trip = 28-seat pre-booking cap
+  // Window kept wide open (00:00:00–23:59:59) by default so tests that
+  // aren't about the time window itself don't become flaky depending on
+  // what time the suite happens to run. The dedicated window describe
+  // block below overrides this per-test to exercise the boundary.
+  const baseSettings = {
+    saccoId: SACCO_ID,
+    preBookingEnabled: true,
+    preBookingMorningStart: '00:00:00',
+    preBookingMorningEnd: '23:59:59',
+    preBookingMaxMorningVehicles: 2,
+    preBookingMaxSeatsPerTrip: 14,
   };
 
-  // Mocked transaction manager — captures the query builders it's asked to build
-  let mockManager: any;
-  let managerQueryBuilders: any[];
+  // preferredBoardingFrom/To are now required for PUBLIC_PORTAL bookings, so
+  // every test needs a default — comfortably inside baseSettings' wide-open
+  // 00:00:00–23:59:59 window. Tests specifically about the window override
+  // these explicitly.
+  const baseDto = {
+    routeId: ROUTE_ID,
+    passengerName: 'Jane Doe',
+    passengerPhone: '254700000000',
+    passengerEmail: 'jane@example.com',
+    paymentMethod: PaymentMethod.CASH,
+    preferredBoardingFrom: '06:00',
+    preferredBoardingTo: '07:00',
+  };
+
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const shiftedStr = (days: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
 
   beforeEach(async () => {
-    bookingRepository = createMockRepo();
-    tripRepository = createMockRepo();
-    routeRepository = createMockRepo();
-    paymentService = {
-      initiateMpesaPayment: jest.fn(),
-      recordCashPayment: jest.fn(),
-    };
-
-    managerQueryBuilders = [];
-    mockManager = {
-      createQueryBuilder: jest.fn(() => {
-        const qb = mockQueryBuilder();
-        managerQueryBuilders.push(qb);
-        return qb;
-      }),
+    managerMock = {
+      createQueryBuilder: jest.fn(),
       create: jest.fn((_entity, data) => data),
-      save: jest.fn(async (_entity, data) => ({ id: 'booking-generated-id', ...data })),
-      getRepository: jest.fn(() => ({
-        save: jest.fn(async (data) => ({ id: 'payment-generated-id', ...data })),
-      })),
+      save: jest.fn((_entity, data) => Promise.resolve({ id: 'booking-1', ...data })),
+      getRepository: jest.fn(() => ({ save: jest.fn().mockResolvedValue({}) })),
     };
 
-    (bookingRepository as any).manager = {
-      transaction: jest.fn(async (cb: (manager: EntityManager) => Promise<any>) => cb(mockManager)),
+    bookingRepository = {
+      createQueryBuilder: jest.fn(),
+      findOne: jest.fn(),
+      save: jest.fn(),
+      manager: {
+        transaction: jest.fn((cb: any) => cb(managerMock)),
+      },
     };
+
+    tripRepository = { findOne: jest.fn() };
+    routeRepository = { findOne: jest.fn().mockResolvedValue(baseRoute) };
+    paymentService = { initiateMpesaPayment: jest.fn().mockResolvedValue(undefined) };
+    saccoSettingsService = { findOne: jest.fn().mockResolvedValue({ ...baseSettings }) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -113,648 +122,479 @@ describe('BookingService', () => {
         { provide: getRepositoryToken(Trip), useValue: tripRepository },
         { provide: getRepositoryToken(Route), useValue: routeRepository },
         { provide: PaymentService, useValue: paymentService },
+        { provide: SaccoSettingsService, useValue: saccoSettingsService },
       ],
     }).compile();
 
     service = module.get<BookingService>(BookingService);
   });
 
-  afterEach(() => {
-    jest.clearAllMocks();
-  });
+  // Wires up "no open BOARDING trip" so create() falls through to
+  // createAwaitingTripBooking — the realistic pre-booking outcome, since a
+  // pre-booking by definition targets a route/date with no vehicle yet.
+  function mockNoOpenTrip() {
+    const tripQb = createMockQueryBuilder();
+    tripQb.getOne.mockResolvedValue(null);
+    managerMock.createQueryBuilder.mockReturnValueOnce(tripQb);
+  }
 
-  // ─── create() ──────────────────────────────────────────────────────
-  describe('create', () => {
-    it('throws NotFoundException if the route does not exist', async () => {
-      routeRepository.findOne!.mockResolvedValue(null);
+  function mockCapCount(count: number) {
+    const capQb = createMockQueryBuilder();
+    capQb.getCount.mockResolvedValue(count);
+    bookingRepository.createQueryBuilder.mockReturnValueOnce(capQb);
+  }
 
-      await expect(service.create(baseDto as any)).rejects.toThrow(NotFoundException);
-    });
-
-    it('throws BadRequestException when preferredBoardingFrom is after preferredBoardingTo', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
+  // ── 1. Sacco-level enable/disable toggle ────────────────────────────────
+  describe('preBookingEnabled toggle', () => {
+    it('rejects with a clear message when the sacco has disabled pre-booking', async () => {
+      saccoSettingsService.findOne.mockResolvedValue({ ...baseSettings, preBookingEnabled: false });
 
       await expect(
-        service.create({
-          ...baseDto,
-          preferredBoardingFrom: '17:00',
-          preferredBoardingTo: '08:00',
-        } as any),
+        service.create({ ...baseDto, travelDate: todayStr() } as any, BookingSource.PUBLIC_PORTAL),
+      ).rejects.toThrow('Pre-booking is currently disabled for this sacco.');
+    });
+
+    it('fails fast — never opens a DB transaction when pre-booking is disabled', async () => {
+      saccoSettingsService.findOne.mockResolvedValue({ ...baseSettings, preBookingEnabled: false });
+
+      await expect(
+        service.create({ ...baseDto, travelDate: todayStr() } as any, BookingSource.PUBLIC_PORTAL),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(bookingRepository.manager.transaction).not.toHaveBeenCalled();
+    });
+
+    it('does NOT consult sacco settings at all for clerk-created bookings', async () => {
+      mockNoOpenTrip();
+
+      await service.create({ ...baseDto, travelDate: todayStr() } as any, BookingSource.CLERK);
+
+      expect(saccoSettingsService.findOne).not.toHaveBeenCalled();
+      expect(bookingRepository.manager.transaction).toHaveBeenCalled();
+    });
+  });
+
+  // ── 2. Allowed date window (today / tomorrow only) ──────────────────────
+  describe('date range restriction', () => {
+    it('allows a public-portal pre-booking for today', async () => {
+      mockCapCount(0);
+      mockNoOpenTrip();
+
+      const result = await service.create(
+        { ...baseDto, travelDate: todayStr() } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+      expect(result.source).toBe(BookingSource.PUBLIC_PORTAL);
+    });
+
+    it('allows a public-portal pre-booking for tomorrow', async () => {
+      mockCapCount(0);
+      mockNoOpenTrip();
+
+      const result = await service.create(
+        { ...baseDto, travelDate: shiftedStr(1) } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+    });
+
+    it('rejects a pre-booking for the day after tomorrow', async () => {
+      await expect(
+        service.create({ ...baseDto, travelDate: shiftedStr(2) } as any, BookingSource.PUBLIC_PORTAL),
+      ).rejects.toThrow('Bookings can only be made for today or tomorrow.');
+    });
+
+    it('rejects a pre-booking for a past date', async () => {
+      await expect(
+        service.create({ ...baseDto, travelDate: shiftedStr(-1) } as any, BookingSource.PUBLIC_PORTAL),
+      ).rejects.toThrow('Bookings can only be made for today or tomorrow.');
+    });
+
+    it('does NOT restrict clerk bookings to today/tomorrow', async () => {
+      mockNoOpenTrip();
+
+      const result = await service.create(
+        { ...baseDto, travelDate: shiftedStr(5) } as any,
+        BookingSource.CLERK,
+      );
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+    });
+  });
+
+  // ── 3. Seat cap (maxMorningVehicles * maxSeatsPerTrip) ──────────────────
+  describe('pre-booking cap enforcement', () => {
+    it('rejects once the cap is reached (28 = 2 vehicles * 14 seats)', async () => {
+      mockCapCount(28);
+
+      await expect(
+        service.create({ ...baseDto, travelDate: todayStr() } as any, BookingSource.PUBLIC_PORTAL),
+      ).rejects.toThrow('Pre-booking cap reached for this route/date.');
+
+      expect(bookingRepository.manager.transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects defensively even if the count somehow exceeds the cap', async () => {
+      mockCapCount(30);
+
+      await expect(
+        service.create({ ...baseDto, travelDate: todayStr() } as any, BookingSource.PUBLIC_PORTAL),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('creates an AWAITING_TRIP booking when no BOARDING trip exists for the route/date', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
-      // findLockedOpenTrip -> getOne resolves null (managerQueryBuilders[0])
-      mockManager.createQueryBuilder.mockImplementationOnce(() => {
-        const qb = mockQueryBuilder({ getOne: jest.fn().mockResolvedValue(null) });
-        managerQueryBuilders.push(qb);
-        return qb;
-      });
+    it('allows a booking for the very last available seat', async () => {
+      mockCapCount(27); // 1 seat left of 28
+      mockNoOpenTrip();
 
-      const result = await service.create(baseDto as any);
+      const result = await service.create(
+        { ...baseDto, travelDate: todayStr() } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
 
       expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
-      expect(result.tripId).toBeNull();
-      expect(result.seatNumber).toBeNull();
     });
 
-    it('seats the passenger directly when a BOARDING trip has capacity and window matches', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
-
-      const openTrip: Trip = {
-        id: 'trip-1',
-        routeId: 'route-1',
-        travelDate: '2026-08-17',
-        status: TripStatus.BOARDING,
-        vehicleCapacity: 14,
-        createdAt: new Date('2026-08-17T08:00:00'),
-      } as Trip;
-
-      // 1st qb: findLockedOpenTrip -> getOne
-      mockManager.createQueryBuilder
-        .mockImplementationOnce(() => {
-          const qb = mockQueryBuilder({ getOne: jest.fn().mockResolvedValue(openTrip) });
-          managerQueryBuilders.push(qb);
-          return qb;
-        })
-        // 2nd qb: trySeatOnTrip's seatedCount -> getCount
-        .mockImplementationOnce(() => {
-          const qb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(3) });
-          managerQueryBuilders.push(qb);
-          return qb;
-        });
-
-      const result = await service.create(baseDto as any);
-
-      expect(result.status).toBe(BookingStatus.CONFIRMED);
-      expect(result.tripId).toBe('trip-1');
-      expect(result.seatNumber).toBe(4);
-    });
-
-    it('falls back to AWAITING_TRIP when the open trip is already full', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
-
-      const openTrip: Trip = {
-        id: 'trip-1',
-        routeId: 'route-1',
-        travelDate: '2026-08-17',
-        status: TripStatus.BOARDING,
-        vehicleCapacity: 14,
-        createdAt: new Date('2026-08-17T08:00:00'),
-      } as Trip;
-
-      mockManager.createQueryBuilder
-        .mockImplementationOnce(() => {
-          const qb = mockQueryBuilder({ getOne: jest.fn().mockResolvedValue(openTrip) });
-          managerQueryBuilders.push(qb);
-          return qb;
-        })
-        .mockImplementationOnce(() => {
-          const qb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(14) }); // full
-          managerQueryBuilders.push(qb);
-          return qb;
-        });
-
-      const result = await service.create(baseDto as any);
-
-      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
-      expect(result.tripId).toBeNull();
-    });
-
-    it('falls back to AWAITING_TRIP when the trip boarding time is outside the preferred window', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
-
-      const openTrip: Trip = {
-        id: 'trip-1',
-        routeId: 'route-1',
-        travelDate: '2026-08-17',
-        status: TripStatus.BOARDING,
-        vehicleCapacity: 14,
-        createdAt: new Date('2026-08-17T20:00:00'), // 8pm boarding
-      } as Trip;
-
-      mockManager.createQueryBuilder.mockImplementationOnce(() => {
-        const qb = mockQueryBuilder({ getOne: jest.fn().mockResolvedValue(openTrip) });
-        managerQueryBuilders.push(qb);
-        return qb;
+    it('derives the cap from preBookingMaxMorningVehicles * preBookingMaxSeatsPerTrip', async () => {
+      saccoSettingsService.findOne.mockResolvedValue({
+        ...baseSettings,
+        preBookingMaxMorningVehicles: 1,
+        preBookingMaxSeatsPerTrip: 5,
       });
+      mockCapCount(5); // exactly at the smaller 1*5 cap
 
-      const result = await service.create({
-        ...baseDto,
-        preferredBoardingFrom: '08:00',
-        preferredBoardingTo: '10:00',
-      } as any);
-
-      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
-      // Only 1 query builder call (findLockedOpenTrip) — trySeatOnTrip is skipped entirely
-      expect(mockManager.createQueryBuilder).toHaveBeenCalledTimes(1);
+      await expect(
+        service.create({ ...baseDto, travelDate: todayStr() } as any, BookingSource.PUBLIC_PORTAL),
+      ).rejects.toThrow('Pre-booking cap reached for this route/date.');
     });
 
-    it('records a cash payment inside the transaction for CASH bookings', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
-      mockManager.createQueryBuilder.mockImplementationOnce(() => {
-        const qb = mockQueryBuilder({ getOne: jest.fn().mockResolvedValue(null) });
-        managerQueryBuilders.push(qb);
-        return qb;
-      });
+    it('scopes the cap query to AWAITING_TRIP/CONFIRMED/BOARDED + PUBLIC_PORTAL only', async () => {
+      const capQb = createMockQueryBuilder();
+      capQb.getCount.mockResolvedValue(0);
+      bookingRepository.createQueryBuilder.mockReturnValueOnce(capQb);
+      mockNoOpenTrip();
 
-      const paymentRepoSave = jest.fn(async (data) => data);
-      mockManager.getRepository.mockReturnValue({ save: paymentRepoSave });
+      await service.create({ ...baseDto, travelDate: todayStr() } as any, BookingSource.PUBLIC_PORTAL);
 
-      await service.create({ ...baseDto, paymentMethod: PaymentMethod.CASH } as any);
-
-      expect(mockManager.getRepository).toHaveBeenCalledWith(Payment);
-      expect(paymentRepoSave).toHaveBeenCalledWith(
+      expect(capQb.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('b.status IN'),
         expect.objectContaining({
-          referenceType: PaymentReferenceType.BOOKING,
-          saccoId: route.saccoId,
-          amount: route.fare,
-          method: PaymentEntityMethod.CASH,
-          status: PaymentEntityStatus.SUCCESS,
+          statuses: [BookingStatus.AWAITING_TRIP, BookingStatus.CONFIRMED, BookingStatus.BOARDED],
         }),
       );
-    });
-
-    it('does NOT record a cash payment for MPESA bookings, and triggers STK push instead', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
-      mockManager.createQueryBuilder.mockImplementationOnce(() => {
-        const qb = mockQueryBuilder({ getOne: jest.fn().mockResolvedValue(null) });
-        managerQueryBuilders.push(qb);
-        return qb;
-      });
-      paymentService.initiateMpesaPayment!.mockResolvedValue({
-        paymentId: 'payment-1',
-        checkoutRequestId: 'ws_CO_1',
-      });
-
-      const result = await service.create({ ...baseDto, paymentMethod: PaymentMethod.MPESA } as any);
-
-      expect(mockManager.getRepository).not.toHaveBeenCalled();
-      expect(paymentService.initiateMpesaPayment).toHaveBeenCalledWith(
-        expect.objectContaining({
-          referenceType: PaymentReferenceType.BOOKING,
-          referenceId: result.id,
-          saccoId: route.saccoId,
-          amount: route.fare,
-          payerPhone: baseDto.passengerPhone,
-        }),
+      expect(capQb.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('b.source'),
+        expect.objectContaining({ source: BookingSource.PUBLIC_PORTAL }),
       );
     });
 
-    it('marks the booking payment-failed if the M-Pesa STK push throws', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
-      mockManager.createQueryBuilder.mockImplementationOnce(() => {
-        const qb = mockQueryBuilder({ getOne: jest.fn().mockResolvedValue(null) });
-        managerQueryBuilders.push(qb);
-        return qb;
-      });
-      paymentService.initiateMpesaPayment!.mockRejectedValue(new Error('Daraja timeout'));
+    it('does NOT apply the pre-booking cap to clerk bookings', async () => {
+      mockNoOpenTrip();
 
-      const existingBooking = {
-        id: 'booking-generated-id',
-        paymentStatus: PaymentStatus.PENDING,
-        status: BookingStatus.AWAITING_TRIP,
-      };
-      bookingRepository.findOne!.mockResolvedValue(existingBooking);
-      bookingRepository.save!.mockImplementation(async (b) => b);
+      await service.create({ ...baseDto, travelDate: todayStr() } as any, BookingSource.CLERK);
 
-      await service.create({ ...baseDto, paymentMethod: PaymentMethod.MPESA } as any);
-
-      expect(bookingRepository.findOne).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { id: 'booking-generated-id' } }),
-      );
-      expect(bookingRepository.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          paymentStatus: PaymentStatus.FAILED,
-          status: BookingStatus.CANCELLED,
-        }),
-      );
+      expect(bookingRepository.createQueryBuilder).not.toHaveBeenCalled();
     });
   });
 
-  // ─── markPaymentFailed ─────────────────────────────────────────────
-  describe('markPaymentFailed', () => {
-    it('sets paymentStatus FAILED and status CANCELLED', async () => {
-      const booking = {
-        id: 'booking-1',
-        paymentStatus: PaymentStatus.PENDING,
-        status: BookingStatus.AWAITING_TRIP,
-      };
-      bookingRepository.findOne!.mockResolvedValue(booking);
-      bookingRepository.save!.mockImplementation(async (b) => b);
+  // ── 4. Preferred boarding window vs sacco's pre-booking hours ───────────
+  // IMPORTANT: this is NOT about the clock at the moment of booking — a
+  // passenger can legitimately pre-book at 9pm tonight for a 5am departure
+  // tomorrow. It's about whether their *requested boarding time*
+  // (preferredBoardingFrom/To) falls inside the sacco's allowed pre-booking
+  // hours (preBookingMorningStart/End).
+  describe('preferredBoardingFrom/To vs preBookingMorningStart/End', () => {
+    const windowSettings = {
+      ...baseSettings,
+      preBookingMorningStart: '05:00:00',
+      preBookingMorningEnd: '10:00:00',
+    };
 
-      const result = await service.markPaymentFailed('booking-1');
+    it('allows booking tonight for a 5am departure tomorrow, regardless of current time', async () => {
+      saccoSettingsService.findOne.mockResolvedValue(windowSettings);
+      mockCapCount(0);
+      mockNoOpenTrip();
 
-      expect(result.paymentStatus).toBe(PaymentStatus.FAILED);
-      expect(result.status).toBe(BookingStatus.CANCELLED);
+      const result = await service.create(
+        {
+          ...baseDto,
+          travelDate: shiftedStr(1), // tomorrow
+          preferredBoardingFrom: '05:00',
+          preferredBoardingTo: '06:00',
+        } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
     });
 
-    it('throws NotFoundException if the booking does not exist', async () => {
-      bookingRepository.findOne!.mockResolvedValue(null);
+    it('rejects a preferred window that starts before the sacco opens pre-booking', async () => {
+      saccoSettingsService.findOne.mockResolvedValue(windowSettings);
 
-      await expect(service.markPaymentFailed('missing')).rejects.toThrow(NotFoundException);
+      await expect(
+        service.create(
+          {
+            ...baseDto,
+            travelDate: todayStr(),
+            preferredBoardingFrom: '04:30',
+            preferredBoardingTo: '06:00',
+          } as any,
+          BookingSource.PUBLIC_PORTAL,
+        ),
+      ).rejects.toThrow(/Preferred boarding time must be within the sacco's pre-booking window/);
+    });
+
+    it('rejects a preferred window that ends after the sacco closes pre-booking', async () => {
+      saccoSettingsService.findOne.mockResolvedValue(windowSettings);
+
+      await expect(
+        service.create(
+          {
+            ...baseDto,
+            travelDate: todayStr(),
+            preferredBoardingFrom: '09:00',
+            preferredBoardingTo: '10:30',
+          } as any,
+          BookingSource.PUBLIC_PORTAL,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('allows a preferred window that exactly matches the sacco boundaries', async () => {
+      saccoSettingsService.findOne.mockResolvedValue(windowSettings);
+      mockCapCount(0);
+      mockNoOpenTrip();
+
+      const result = await service.create(
+        {
+          ...baseDto,
+          travelDate: todayStr(),
+          preferredBoardingFrom: '05:00',
+          preferredBoardingTo: '10:00',
+        } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+    });
+
+    it('normalizes HH:mm to HH:mm:ss before comparing (no false rejection at the boundary)', async () => {
+      saccoSettingsService.findOne.mockResolvedValue(windowSettings);
+      mockCapCount(0);
+      mockNoOpenTrip();
+
+      // '05:00' vs settings' '05:00:00' — a naive string compare would treat
+      // '05:00' as "less than" '05:00:00' and wrongly reject this.
+      const result = await service.create(
+        {
+          ...baseDto,
+          travelDate: todayStr(),
+          preferredBoardingFrom: '05:00',
+          preferredBoardingTo: '07:00:00',
+        } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+    });
+
+    it('requires a preferred boarding window for public-portal pre-bookings', async () => {
+      saccoSettingsService.findOne.mockResolvedValue(windowSettings);
+
+      await expect(
+        service.create(
+          {
+            ...baseDto,
+            travelDate: todayStr(),
+            preferredBoardingFrom: undefined,
+            preferredBoardingTo: undefined,
+          } as any,
+          BookingSource.PUBLIC_PORTAL,
+        ),
+      ).rejects.toThrow('preferredBoardingFrom and preferredBoardingTo are required for pre-booking.');
+
+      expect(bookingRepository.createQueryBuilder).not.toHaveBeenCalled();
+      expect(bookingRepository.manager.transaction).not.toHaveBeenCalled();
+    });
+
+    it('requires BOTH ends of the window — rejects when only one of the two is given', async () => {
+      saccoSettingsService.findOne.mockResolvedValue(windowSettings);
+
+      await expect(
+        service.create(
+          {
+            ...baseDto,
+            travelDate: todayStr(),
+            preferredBoardingFrom: '05:00',
+            preferredBoardingTo: undefined,
+          } as any,
+          BookingSource.PUBLIC_PORTAL,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('checks the preferred window before hitting the DB for the seat cap', async () => {
+      saccoSettingsService.findOne.mockResolvedValue(windowSettings);
+
+      await expect(
+        service.create(
+          {
+            ...baseDto,
+            travelDate: todayStr(),
+            preferredBoardingFrom: '11:00',
+            preferredBoardingTo: '12:00',
+          } as any,
+          BookingSource.PUBLIC_PORTAL,
+        ),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(bookingRepository.createQueryBuilder).not.toHaveBeenCalled();
+      expect(bookingRepository.manager.transaction).not.toHaveBeenCalled();
+    });
+
+    it('does NOT restrict clerk bookings to the sacco pre-booking window', async () => {
+      saccoSettingsService.findOne.mockResolvedValue(windowSettings);
+      mockNoOpenTrip();
+
+      const result = await service.create(
+        {
+          ...baseDto,
+          travelDate: todayStr(),
+          preferredBoardingFrom: '18:00',
+          preferredBoardingTo: '19:00',
+        } as any,
+        BookingSource.CLERK,
+      );
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
     });
   });
 
-  // ─── confirmPayment ────────────────────────────────────────────────
-  describe('confirmPayment', () => {
-    it('marks PAID and stores the mpesa receipt number', async () => {
-      const booking = { id: 'booking-1', paymentStatus: PaymentStatus.PENDING };
-      bookingRepository.findOne!.mockResolvedValue(booking);
-      bookingRepository.save!.mockImplementation(async (b) => b);
+  // ── 5. getAvailability() pre-booking summary block ──────────────────────
+  describe('getAvailability — pre-booking summary', () => {
+    beforeEach(() => {
+      tripRepository.findOne.mockResolvedValue(null); // no open BOARDING trip
+    });
 
-      const result = await service.confirmPayment('booking-1', {
-        mpesaReceiptNumber: 'NLJ7RT61SV',
-      });
+    it('computes maxPreBookableSeats, seatsRemaining and capReached correctly', async () => {
+      const awaitingQb = createMockQueryBuilder();
+      awaitingQb.getCount.mockResolvedValue(3);
+      const preBookedQb = createMockQueryBuilder();
+      preBookedQb.getCount.mockResolvedValue(10);
+
+      bookingRepository.createQueryBuilder
+        .mockReturnValueOnce(awaitingQb)
+        .mockReturnValueOnce(preBookedQb);
+
+      const result = await service.getAvailability(ROUTE_ID, todayStr());
+
+      expect(result.preBooking.maxPreBookableSeats).toBe(28);
+      expect(result.preBooking.preBookedSeats).toBe(10);
+      expect(result.preBooking.seatsRemaining).toBe(18);
+      expect(result.preBooking.capReached).toBe(false);
+    });
+
+    it('floors seatsRemaining at 0 and flags capReached when over-subscribed', async () => {
+      const awaitingQb = createMockQueryBuilder();
+      awaitingQb.getCount.mockResolvedValue(0);
+      const preBookedQb = createMockQueryBuilder();
+      preBookedQb.getCount.mockResolvedValue(31); // over the cap of 28
+
+      bookingRepository.createQueryBuilder
+        .mockReturnValueOnce(awaitingQb)
+        .mockReturnValueOnce(preBookedQb);
+
+      const result = await service.getAvailability(ROUTE_ID, todayStr());
+
+      expect(result.preBooking.seatsRemaining).toBe(0);
+      expect(result.preBooking.capReached).toBe(true);
+    });
+
+    it('reflects preBookingEnabled = false straight from settings', async () => {
+      saccoSettingsService.findOne.mockResolvedValue({ ...baseSettings, preBookingEnabled: false });
+      const qb = createMockQueryBuilder();
+      qb.getCount.mockResolvedValue(0);
+      bookingRepository.createQueryBuilder.mockReturnValue(qb);
+
+      const result = await service.getAvailability(ROUTE_ID, todayStr());
+
+      expect(result.preBooking.enabled).toBe(false);
+    });
+
+    it('throws NotFoundException for an unknown route', async () => {
+      routeRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.getAvailability('nope', todayStr())).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  // ── 6. Payment method interplay with pre-bookings ────────────────────────
+  describe('payment handling for pre-bookings', () => {
+    it('CASH pre-bookings are stored PAID immediately and a Payment row is recorded in-transaction', async () => {
+      mockCapCount(0);
+      mockNoOpenTrip();
+
+      const paymentRepoSave = jest.fn().mockResolvedValue({});
+      managerMock.getRepository.mockReturnValue({ save: paymentRepoSave });
+
+      const result = await service.create(
+        { ...baseDto, travelDate: todayStr(), paymentMethod: PaymentMethod.CASH } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
 
       expect(result.paymentStatus).toBe(PaymentStatus.PAID);
-      expect(result.mpesaReceiptNumber).toBe('NLJ7RT61SV');
+      expect(paymentRepoSave).toHaveBeenCalled();
     });
 
-    it('does not overwrite existing receipt/checkoutId fields when not provided', async () => {
-      const booking = {
-        id: 'booking-1',
-        paymentStatus: PaymentStatus.PENDING,
-        mpesaReceiptNumber: 'EXISTING',
-      };
-      bookingRepository.findOne!.mockResolvedValue(booking);
-      bookingRepository.save!.mockImplementation(async (b) => b);
+    it('MPESA pre-bookings start PENDING and trigger the STK push after save', async () => {
+      mockCapCount(0);
+      mockNoOpenTrip();
 
-      const result = await service.confirmPayment('booking-1', {});
+      const result = await service.create(
+        { ...baseDto, travelDate: todayStr(), paymentMethod: PaymentMethod.MPESA } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
 
-      expect(result.mpesaReceiptNumber).toBe('EXISTING');
-    });
-  });
-
-  // ─── update ────────────────────────────────────────────────────────
-  describe('update', () => {
-    it('throws ForbiddenException when saccoId does not match', async () => {
-      bookingRepository.findOne!.mockResolvedValue({ id: 'b1', saccoId: 'sacco-1' });
-
-      await expect(
-        service.update('b1', { status: BookingStatus.BOARDED } as any, 'sacco-2'),
-      ).rejects.toThrow(ForbiddenException);
-    });
-
-    it('throws BadRequestException boarding a non-CONFIRMED booking', async () => {
-      bookingRepository.findOne!.mockResolvedValue({
-        id: 'b1',
-        saccoId: 'sacco-1',
-        status: BookingStatus.AWAITING_TRIP,
-        paymentStatus: PaymentStatus.PAID,
-      });
-
-      await expect(
-        service.update('b1', { status: BookingStatus.BOARDED } as any, 'sacco-1'),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it('throws ConflictException boarding an unpaid CONFIRMED booking', async () => {
-      bookingRepository.findOne!.mockResolvedValue({
-        id: 'b1',
-        saccoId: 'sacco-1',
-        status: BookingStatus.CONFIRMED,
-        paymentStatus: PaymentStatus.PENDING,
-      });
-
-      await expect(
-        service.update('b1', { status: BookingStatus.BOARDED } as any, 'sacco-1'),
-      ).rejects.toThrow(ConflictException);
-    });
-
-    it('boards a paid, confirmed booking successfully', async () => {
-      const booking = {
-        id: 'b1',
-        saccoId: 'sacco-1',
-        status: BookingStatus.CONFIRMED,
-        paymentStatus: PaymentStatus.PAID,
-        seatNumber: 4,
-        tripId: 'trip-1',
-      };
-      bookingRepository.findOne!.mockResolvedValue(booking);
-      bookingRepository.save!.mockImplementation(async (b) => b);
-
-      const result = await service.update('b1', { status: BookingStatus.BOARDED } as any, 'sacco-1');
-
-      expect(result.status).toBe(BookingStatus.BOARDED);
-    });
-  });
-
-  // ─── cancel ────────────────────────────────────────────────────────
-  describe('cancel', () => {
-    it('throws ForbiddenException when saccoId does not match', async () => {
-      bookingRepository.findOne!.mockResolvedValue({ id: 'b1', saccoId: 'sacco-1' });
-
-      await expect(service.cancel('b1', 'sacco-2')).rejects.toThrow(ForbiddenException);
-    });
-
-    it('throws BadRequestException cancelling a BOARDED booking', async () => {
-      bookingRepository.findOne!.mockResolvedValue({
-        id: 'b1',
-        saccoId: 'sacco-1',
-        status: BookingStatus.BOARDED,
-      });
-
-      await expect(service.cancel('b1', 'sacco-1')).rejects.toThrow(BadRequestException);
-    });
-
-    it('cancels an unpaid booking without touching paymentStatus', async () => {
-      const booking = {
-        id: 'b1',
-        saccoId: 'sacco-1',
-        status: BookingStatus.AWAITING_TRIP,
-        paymentStatus: PaymentStatus.PENDING,
-      };
-      bookingRepository.findOne!.mockResolvedValue(booking);
-      bookingRepository.save!.mockImplementation(async (b) => b);
-
-      const result = await service.cancel('b1', 'sacco-1');
-
-      expect(result.status).toBe(BookingStatus.CANCELLED);
       expect(result.paymentStatus).toBe(PaymentStatus.PENDING);
-    });
-
-    it('refunds a paid booking on cancel', async () => {
-      const booking = {
-        id: 'b1',
-        saccoId: 'sacco-1',
-        status: BookingStatus.CONFIRMED,
-        paymentStatus: PaymentStatus.PAID,
-      };
-      bookingRepository.findOne!.mockResolvedValue(booking);
-      bookingRepository.save!.mockImplementation(async (b) => b);
-
-      const result = await service.cancel('b1', 'sacco-1');
-
-      expect(result.status).toBe(BookingStatus.CANCELLED);
-      expect(result.paymentStatus).toBe(PaymentStatus.REFUNDED);
-    });
-  });
-
-  // ─── findOne ───────────────────────────────────────────────────────
-  describe('findOne', () => {
-    it('throws NotFoundException when missing', async () => {
-      bookingRepository.findOne!.mockResolvedValue(null);
-      await expect(service.findOne('missing')).rejects.toThrow(NotFoundException);
-    });
-
-    it('returns the booking with route/trip relations', async () => {
-      const booking = { id: 'b1' };
-      bookingRepository.findOne!.mockResolvedValue(booking);
-
-      const result = await service.findOne('b1');
-
-      expect(bookingRepository.findOne).toHaveBeenCalledWith({
-        where: { id: 'b1' },
-        relations: { route: true, trip: true },
-      });
-      expect(result).toEqual(booking);
-    });
-  });
-
-  // ─── getAvailability ───────────────────────────────────────────────
-  describe('getAvailability', () => {
-    it('throws NotFoundException for an unknown route', async () => {
-      routeRepository.findOne!.mockResolvedValue(null);
-
-      await expect(service.getAvailability('route-x', '2026-08-17')).rejects.toThrow(
-        NotFoundException,
+      expect(paymentService.initiateMpesaPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: SACCO_ID, amount: baseRoute.fare }),
       );
     });
 
-    it('returns seat counts when a BOARDING trip is open', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
-      tripRepository.findOne!.mockResolvedValue({ id: 'trip-1', vehicleCapacity: 14 });
-
-      const seatedQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(9) });
-      const awaitingQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(2) });
-      bookingRepository.createQueryBuilder!
-        .mockReturnValueOnce(seatedQb)
-        .mockReturnValueOnce(awaitingQb);
-
-      const result = await service.getAvailability('route-1', '2026-08-17');
-
-      expect(result).toEqual({
-        routeId: 'route-1',
-        travelDate: '2026-08-17',
-        hasOpenTrip: true,
-        seatsTotal: 14,
-        seatsBooked: 9,
-        seatsAvailable: 5,
-        awaitingTripCount: 2,
+    it('marks the pre-booking CANCELLED if the M-Pesa STK push initiation throws', async () => {
+      mockCapCount(0);
+      mockNoOpenTrip();
+      paymentService.initiateMpesaPayment.mockRejectedValue(new Error('Daraja timeout'));
+      bookingRepository.findOne.mockResolvedValue({
+        id: 'booking-1',
+        paymentStatus: PaymentStatus.PENDING,
+        status: BookingStatus.AWAITING_TRIP,
       });
-    });
+      bookingRepository.save.mockImplementation((b: any) => Promise.resolve(b));
 
-    it('returns null seat fields when no trip is open', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
-      tripRepository.findOne!.mockResolvedValue(null);
+      await service.create(
+        { ...baseDto, travelDate: todayStr(), paymentMethod: PaymentMethod.MPESA } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
 
-      const awaitingQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(5) });
-      bookingRepository.createQueryBuilder!.mockReturnValueOnce(awaitingQb);
-
-      const result = await service.getAvailability('route-1', '2026-08-17');
-
-      expect(result.hasOpenTrip).toBe(false);
-      expect(result.seatsTotal).toBeNull();
-      expect(result.seatsAvailable).toBeNull();
-      expect(result.awaitingTripCount).toBe(5);
-    });
-
-    it('defaults travelDate to today when omitted', async () => {
-      routeRepository.findOne!.mockResolvedValue(route);
-      tripRepository.findOne!.mockResolvedValue(null);
-      bookingRepository.createQueryBuilder!.mockReturnValue(mockQueryBuilder());
-
-      const result = await service.getAvailability('route-1');
-
-      expect(result.travelDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(bookingRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentStatus: PaymentStatus.FAILED, status: BookingStatus.CANCELLED }),
+      );
     });
   });
 
-  // ─── assignPendingBookingsToTrip ───────────────────────────────────
-  describe('assignPendingBookingsToTrip', () => {
-    const trip: Trip = {
-      id: 'trip-1',
-      routeId: 'route-1',
-      travelDate: '2026-08-17',
-      vehicleCapacity: 3,
-      createdAt: new Date('2026-08-17T09:00:00'),
-    } as Trip;
+  // ── 7. Route validation happens before any sacco-settings lookup ────────
+  describe('unknown route', () => {
+    it('rejects with NotFoundException before ever checking sacco pre-booking settings', async () => {
+      routeRepository.findOne.mockResolvedValue(null);
 
-    it('does nothing if the trip is already at capacity', async () => {
-      mockManager.createQueryBuilder.mockImplementationOnce(() => {
-        const qb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(3) }); // == capacity
-        return qb;
-      });
+      await expect(
+        service.create({ ...baseDto, travelDate: todayStr() } as any, BookingSource.PUBLIC_PORTAL),
+      ).rejects.toThrow(NotFoundException);
 
-      await service.assignPendingBookingsToTrip(trip, mockManager);
-
-      expect(mockManager.createQueryBuilder).toHaveBeenCalledTimes(1); // only alreadySeated check
-    });
-
-    it('assigns pending PAID bookings up to capacity, in FIFO order, skipping outside-window ones', async () => {
-      const pendingBookings = [
-        { id: 'p1', preferredBoardingFrom: null, preferredBoardingTo: null },
-        { id: 'p2', preferredBoardingFrom: '20:00', preferredBoardingTo: '22:00' }, // outside 9am trip
-        { id: 'p3', preferredBoardingFrom: null, preferredBoardingTo: null },
-      ];
-
-      mockManager.createQueryBuilder
-        .mockImplementationOnce(() => mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) })) // alreadySeated
-        .mockImplementationOnce(() =>
-          mockQueryBuilder({ getMany: jest.fn().mockResolvedValue(pendingBookings) }),
-        );
-
-      await service.assignPendingBookingsToTrip(trip, mockManager);
-
-      expect(mockManager.save).toHaveBeenCalledTimes(2); // p1 and p3 assigned, p2 skipped
-      expect(pendingBookings[0].status).toBe(BookingStatus.CONFIRMED);
-      expect((pendingBookings[0] as any).seatNumber).toBe(1);
-      expect((pendingBookings[2] as any).seatNumber).toBe(2);
-      expect((pendingBookings[1] as any).status).toBeUndefined(); // untouched
-    });
-
-    it('stops assigning once capacity is reached mid-list', async () => {
-      const trip2Cap = { ...trip, vehicleCapacity: 1 };
-      const pendingBookings = [
-        { id: 'p1', preferredBoardingFrom: null, preferredBoardingTo: null },
-        { id: 'p2', preferredBoardingFrom: null, preferredBoardingTo: null },
-      ];
-
-      mockManager.createQueryBuilder
-        .mockImplementationOnce(() => mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) }))
-        .mockImplementationOnce(() =>
-          mockQueryBuilder({ getMany: jest.fn().mockResolvedValue(pendingBookings) }),
-        );
-
-      await service.assignPendingBookingsToTrip(trip2Cap as Trip, mockManager);
-
-      expect(mockManager.save).toHaveBeenCalledTimes(1);
-      expect((pendingBookings[0] as any).status).toBe(BookingStatus.CONFIRMED);
-      expect((pendingBookings[1] as any).status).toBeUndefined();
-    });
-  });
-
-  // ─── getRevenueTrend ───────────────────────────────────────────────
-  describe('getRevenueTrend', () => {
-    it('throws BadRequestException for days < 1', async () => {
-      await expect(service.getRevenueTrend(0)).rejects.toThrow(BadRequestException);
-    });
-
-    it('fills gap days with 0 revenue and computes commission', async () => {
-      const qb = mockQueryBuilder({
-        getRawMany: jest.fn().mockResolvedValue([{ travelDate: '2026-08-16', grossRevenue: '1000' }]),
-      });
-      bookingRepository.createQueryBuilder!.mockReturnValue(qb);
-
-      // Freeze "today" isn't trivial without jest fake timers; instead just
-      // check structural properties rather than exact dates.
-      const trend = await service.getRevenueTrend(2);
-
-      expect(trend).toHaveLength(2);
-      expect(trend.every((t) => typeof t.revenue === 'number')).toBe(true);
-      expect(trend.every((t) => t.commission === t.revenue * 0.1)).toBe(true);
-    });
-
-    it('scopes to saccoId when provided', async () => {
-      const qb = mockQueryBuilder();
-      bookingRepository.createQueryBuilder!.mockReturnValue(qb);
-
-      await service.getRevenueTrend(3, 'sacco-1');
-
-      expect(qb.andWhere).toHaveBeenCalledWith('b.saccoId = :saccoId', { saccoId: 'sacco-1' });
-    });
-  });
-
-  // ─── getTodayEarnings ──────────────────────────────────────────────
-  describe('getTodayEarnings', () => {
-    it('returns 0 revenue/commission when there is no data', async () => {
-      const qb = mockQueryBuilder({ getRawOne: jest.fn().mockResolvedValue(null) });
-      bookingRepository.createQueryBuilder!.mockReturnValue(qb);
-
-      const result = await service.getTodayEarnings();
-
-      expect(result.grossRevenue).toBe(0);
-      expect(result.commission).toBe(0);
-    });
-
-    it('computes commission at 10% of gross revenue', async () => {
-      const qb = mockQueryBuilder({ getRawOne: jest.fn().mockResolvedValue({ grossRevenue: '2000' }) });
-      bookingRepository.createQueryBuilder!.mockReturnValue(qb);
-
-      const result = await service.getTodayEarnings();
-
-      expect(result.grossRevenue).toBe(2000);
-      expect(result.commission).toBe(200);
-    });
-  });
-
-  // ─── getUniquePassengerStats ───────────────────────────────────────
-  describe('getUniquePassengerStats', () => {
-    it('computes new vs returning passengers correctly', async () => {
-      // Order of calls in the implementation: thisWeek, lastWeek, priorPhones
-      const thisWeekQb = mockQueryBuilder({
-        getRawMany: jest
-          .fn()
-          .mockResolvedValue([{ passengerPhone: '0700000001' }, { passengerPhone: '0700000002' }]),
-      });
-      const lastWeekQb = mockQueryBuilder({
-        getRawMany: jest.fn().mockResolvedValue([{ passengerPhone: '0700000003' }]),
-      });
-      const priorQb = mockQueryBuilder({
-        getRawMany: jest.fn().mockResolvedValue([{ passengerPhone: '0700000001' }]), // 0700000001 booked before
-      });
-
-      bookingRepository.createQueryBuilder!
-        .mockReturnValueOnce(thisWeekQb)
-        .mockReturnValueOnce(lastWeekQb)
-        .mockReturnValueOnce(priorQb);
-
-      const result = await service.getUniquePassengerStats();
-
-      expect(result.thisWeekUnique).toBe(2);
-      expect(result.lastWeekUnique).toBe(1);
-      expect(result.newThisWeek).toBe(1); // only 0700000002 is new
-      expect(result.returningThisWeek).toBe(1);
-      expect(result.changePercent).toBe(100); // (2-1)/1 * 100
-    });
-
-    it('returns null changePercent when lastWeekUnique is 0', async () => {
-      bookingRepository.createQueryBuilder!
-        .mockReturnValueOnce(mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }))
-        .mockReturnValueOnce(mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }))
-        .mockReturnValueOnce(mockQueryBuilder({ getRawMany: jest.fn().mockResolvedValue([]) }));
-
-      const result = await service.getUniquePassengerStats();
-
-      expect(result.changePercent).toBeNull();
-    });
-  });
-
-  // ─── getTodayPassengerStats ────────────────────────────────────────
-  describe('getTodayPassengerStats', () => {
-    it('computes changeCount and changePercent vs yesterday', async () => {
-      const todayQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(10) });
-      const yesterdayQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(8) });
-      bookingRepository.createQueryBuilder!.mockReturnValueOnce(todayQb).mockReturnValueOnce(yesterdayQb);
-
-      const result = await service.getTodayPassengerStats();
-
-      expect(result.today).toBe(10);
-      expect(result.yesterday).toBe(8);
-      expect(result.changeCount).toBe(2);
-      expect(result.changePercent).toBe(25);
-    });
-
-    it('returns null changePercent when yesterday is 0', async () => {
-      const todayQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(5) });
-      const yesterdayQb = mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) });
-      bookingRepository.createQueryBuilder!.mockReturnValueOnce(todayQb).mockReturnValueOnce(yesterdayQb);
-
-      const result = await service.getTodayPassengerStats();
-
-      expect(result.changePercent).toBeNull();
+      expect(saccoSettingsService.findOne).not.toHaveBeenCalled();
     });
   });
 });
