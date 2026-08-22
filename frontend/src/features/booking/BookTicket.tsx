@@ -26,6 +26,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
     ArrowLeft,
+    ArrowRight,
+    Check,
     CheckCircle2,
     Smartphone,
     Banknote,
@@ -35,6 +37,12 @@ import {
     ChevronRight,
     MapPin,
     Lock,
+    User,
+    Phone,
+    Mail,
+    QrCode,
+    Download,
+    Search,
 } from "lucide-react";
 import {
     Select,
@@ -81,14 +89,16 @@ function DatePicker({
         <Popover>
             <PopoverTrigger>
                 <Button
+                    type="button"
                     variant="outline"
-                    className="h-11 w-full justify-start text-left font-normal"
+                    size="icon"
+                    className="h-11 w-11 shrink-0"
+                    aria-label="Choose a custom date"
                 >
-                    <CalendarIcon className="mr-2 h-4 w-4 text-muted-foreground" />
-                    {format(selected, "EEE, MMM d")}
+                    <CalendarIcon className="h-4 w-4 text-muted-foreground" />
                 </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-auto p-0" align="start">
+            <PopoverContent className="w-auto p-0" align="end">
                 <Calendar
                     mode="single"
                     selected={selected}
@@ -239,39 +249,63 @@ function StepProgress({ currentStep }: { currentStep: Step }) {
     const currentIndex = steps.findIndex((s) => s.key === currentStep);
 
     return (
-        <div className="flex items-center gap-2 px-1 py-3">
-            {steps.map((step, index) => (
-                <div key={step.key} className="flex items-center gap-2 flex-1">
-                    <div className="flex items-center gap-2">
-                        <div
-                            className={`
-                            w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium transition-all
-                            ${index <= currentIndex
-                                    ? "bg-primary text-primary-foreground"
-                                    : "bg-muted text-muted-foreground"}
-                        `}
-                        >
-                            {index + 1}
+        <div className="flex items-start px-1 py-3">
+            {steps.map((step, index) => {
+                const isDone = index < currentIndex;
+                const isCurrent = index === currentIndex;
+                return (
+                    <div key={step.key} className="flex items-center flex-1 last:flex-none">
+                        <div className="flex flex-col items-center gap-1.5">
+                            <div
+                                className={`
+                                w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold transition-all shrink-0
+                                ${isDone
+                                        ? "bg-primary text-primary-foreground"
+                                        : isCurrent
+                                            ? "bg-primary text-primary-foreground ring-4 ring-primary/15"
+                                            : "bg-muted text-muted-foreground"}
+                            `}
+                            >
+                                {isDone ? <Check className="h-3.5 w-3.5" /> : index + 1}
+                            </div>
+                            <span
+                                className={`
+                                text-[11px] font-medium whitespace-nowrap
+                                ${isDone || isCurrent ? "text-foreground" : "text-muted-foreground"}
+                            `}
+                            >
+                                {step.label}
+                            </span>
                         </div>
-                        <span
-                            className={`
-                            text-xs font-medium hidden sm:block
-                            ${index <= currentIndex ? "text-foreground" : "text-muted-foreground"}
-                        `}
-                        >
-                            {step.label}
-                        </span>
+                        {index < steps.length - 1 && (
+                            <div
+                                className={`
+                                flex-1 h-[2px] mx-2 mb-4 transition-all
+                                ${isDone ? "bg-primary" : "bg-muted"}
+                            `}
+                            />
+                        )}
                     </div>
-                    {index < steps.length - 1 && (
-                        <div
-                            className={`
-                            flex-1 h-[2px] transition-all
-                            ${index < currentIndex ? "bg-primary" : "bg-muted"}
-                        `}
-                        />
-                    )}
-                </div>
-            ))}
+                );
+            })}
+        </div>
+    );
+}
+
+// ─── Section header used inside the Details step's cards ──────────────
+function SectionHeader({
+    icon: Icon,
+    title,
+}: {
+    icon: React.ElementType;
+    title: string;
+}) {
+    return (
+        <div className="flex items-center gap-2 mb-4">
+            <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                <Icon className="h-3.5 w-3.5 text-primary" />
+            </div>
+            <h3 className="text-sm font-semibold">{title}</h3>
         </div>
     );
 }
@@ -286,6 +320,11 @@ export default function BookTicket() {
     const [confirmedBooking, setConfirmedBooking] = useState<Booking | null>(null);
     const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
     const receiptDownloadedRef = useRef(false);
+    // Set true when the passenger explicitly backs out of a selected route
+    // via "Edit". Prevents the single-result auto-select effect below from
+    // immediately snapping them right back into the details step before
+    // they can change anything — cleared as soon as they touch origin/destination.
+    const suppressAutoSelectRef = useRef(false);
     const queryClient = useQueryClient();
 
     const {
@@ -398,6 +437,7 @@ export default function BookTicket() {
     const searchResults = searchQuery.data ?? [];
 
     useEffect(() => {
+        if (suppressAutoSelectRef.current) return;
         if (searchQuery.isSuccess && searchResults.length === 1 && !selectedRoute) {
             setSelectedRoute(searchResults[0]);
             setStep("details");
@@ -470,6 +510,7 @@ export default function BookTicket() {
         effectiveBoardingWindowMin! > boardingWindowMax;
 
     function chooseRoute(route: RouteSearchResult) {
+        suppressAutoSelectRef.current = false;
         setSelectedRoute(route);
         setStep("details");
     }
@@ -510,9 +551,11 @@ export default function BookTicket() {
         bookingMutation.reset();
         setPollStartedAt(null);
         receiptDownloadedRef.current = false;
+        suppressAutoSelectRef.current = false;
     }
 
     function backToSearch() {
+        suppressAutoSelectRef.current = true;
         setStep("search");
         setSelectedRoute(null);
     }
@@ -561,8 +604,12 @@ export default function BookTicket() {
                                 ? "Payment didn't go through"
                                 : "Waiting for M-Pesa..."}
                     </h2>
-                    <p className="text-sm text-muted-foreground mt-1">
-                        {selectedRoute.saccoName} · {travelDate}
+                    <p className="text-sm text-muted-foreground mt-1 px-4 leading-relaxed">
+                        {isPaid ? (
+                            <>Your seat on {selectedRoute.saccoName} is secured. A copy of this receipt has been sent to your phone.</>
+                        ) : (
+                            <>{selectedRoute.saccoName} · {travelDate}</>
+                        )}
                     </p>
                 </div>
 
@@ -570,74 +617,80 @@ export default function BookTicket() {
                 {isPaid ? (
                     <div className="mt-6 rounded-xl border border-border overflow-hidden">
                         {/* Receipt header strip */}
-                        <div className="bg-emerald-50 border-b border-emerald-100 px-4 py-3 text-center">
-                            <p className="text-xs font-medium text-emerald-700 uppercase tracking-wide">
-                                Receipt
-                            </p>
-                            <p className="text-sm font-semibold text-emerald-900 mt-0.5">
-                                {selectedRoute.saccoName}
-                            </p>
+                        <div className="bg-emerald-50 border-b border-emerald-100 px-4 py-3 flex items-center justify-between gap-3">
+                            <div>
+                                <p className="text-xs font-medium text-emerald-700 uppercase tracking-wide">
+                                    Receipt
+                                </p>
+                                <p className="text-sm font-semibold text-emerald-900 mt-0.5">
+                                    {selectedRoute.saccoName}
+                                </p>
+                                <p className="text-[11px] text-emerald-700/80 font-mono mt-0.5">
+                                    REF: #{confirmedBooking.id.slice(0, 6).toUpperCase()}
+                                </p>
+                            </div>
+                            <div className="w-10 h-10 rounded-lg bg-white/70 border border-emerald-200 flex items-center justify-center shrink-0">
+                                <QrCode className="h-5 w-5 text-emerald-700" />
+                            </div>
                         </div>
 
                         <div className="px-4 py-4 space-y-3">
-                            {/* Route + ref */}
-                            <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    <MapPin className="h-4 w-4 text-muted-foreground" />
-                                    <span className="text-sm font-medium">
-                                        {selectedRoute.origin} → {selectedRoute.destination}
-                                    </span>
-                                </div>
-                                <Badge variant="secondary" className="font-mono">
-                                    #{confirmedBooking.id.slice(0, 6).toUpperCase()}
-                                </Badge>
+                            {/* Route */}
+                            <div className="flex items-center gap-2">
+                                <MapPin className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm font-medium">
+                                    {selectedRoute.origin} → {selectedRoute.destination}
+                                </span>
                             </div>
 
-                            <div className="h-px bg-border" style={{ borderTop: "1px dashed var(--border)" }} />
+                            <div className="h-px" style={{ borderTop: "1px dashed var(--border)" }} />
 
                             {/* Line items */}
-                            <dl className="space-y-2 text-sm">
-                                <div className="flex justify-between">
-                                    <dt className="text-muted-foreground">Passenger</dt>
+                            <div className="grid grid-cols-2 gap-y-3 gap-x-2 text-sm">
+                                <div>
+                                    <dt className="text-xs text-muted-foreground">Passenger</dt>
                                     <dd className="font-medium">{confirmedBooking.passengerName}</dd>
                                 </div>
-                                <div className="flex justify-between">
-                                    <dt className="text-muted-foreground">Phone</dt>
-                                    <dd className="font-medium">{confirmedBooking.passengerPhone}</dd>
-                                </div>
-                                <div className="flex justify-between">
-                                    <dt className="text-muted-foreground">Travel date</dt>
+                                <div>
+                                    <dt className="text-xs text-muted-foreground">Travel date</dt>
                                     <dd className="font-medium">{travelDate}</dd>
                                 </div>
+                                <div>
+                                    <dt className="text-xs text-muted-foreground">Phone</dt>
+                                    <dd className="font-medium">{confirmedBooking.passengerPhone}</dd>
+                                </div>
                                 {confirmedBooking.seatNumber && (
-                                    <div className="flex justify-between">
-                                        <dt className="text-muted-foreground">Seat</dt>
+                                    <div>
+                                        <dt className="text-xs text-muted-foreground">Seat number</dt>
                                         <dd className="font-medium">{confirmedBooking.seatNumber}</dd>
                                     </div>
                                 )}
-                                <div className="flex justify-between">
-                                    <dt className="text-muted-foreground">Payment method</dt>
-                                    <dd className="font-medium">{confirmedBooking.paymentMethod}</dd>
+                                <div>
+                                    <dt className="text-xs text-muted-foreground">Status</dt>
+                                    <dd>
+                                        <Badge variant="secondary" className="mt-0.5 bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
+                                            {confirmedBooking.status}
+                                        </Badge>
+                                    </dd>
                                 </div>
                                 {confirmedBooking.mpesaReceiptNumber && (
-                                    <div className="flex justify-between">
-                                        <dt className="text-muted-foreground">M-Pesa Ref</dt>
-                                        <dd className="font-mono text-xs font-medium">
+                                    <div>
+                                        <dt className="text-xs text-muted-foreground">M-Pesa Ref</dt>
+                                        <dd className="font-mono text-xs font-medium mt-0.5">
                                             {confirmedBooking.mpesaReceiptNumber}
                                         </dd>
                                     </div>
                                 )}
-                                <div className="flex justify-between">
-                                    <dt className="text-muted-foreground">Status</dt>
-                                    <dd className="font-medium">{confirmedBooking.status}</dd>
-                                </div>
-                            </dl>
+                            </div>
 
                             <div className="h-px" style={{ borderTop: "1px dashed var(--border)" }} />
 
                             {/* Total */}
                             <div className="flex items-center justify-between pt-1">
-                                <span className="text-sm font-semibold">Total Paid</span>
+                                <div>
+                                    <p className="text-sm font-semibold">Total Paid</p>
+                                    <p className="text-xs text-muted-foreground">{confirmedBooking.paymentMethod}</p>
+                                </div>
                                 <span className="text-lg font-bold">KES {confirmedBooking.fare}</span>
                             </div>
                         </div>
@@ -688,7 +741,7 @@ export default function BookTicket() {
 
                     {(isFailed || paymentTimedOut) && (
                         <Button
-                            className="w-full"
+                            className="w-full h-11"
                             onClick={() => {
                                 setConfirmedBooking(null);
                                 setStep("details");
@@ -701,14 +754,15 @@ export default function BookTicket() {
 
                     {isPaid && (
                         <Button
-                            className="w-full"
+                            className="w-full h-11 gap-2"
                             onClick={() => downloadReceiptPdf(confirmedBooking.id).catch(console.error)}
                         >
+                            <Download className="h-4 w-4" />
                             Download Receipt
                         </Button>
                     )}
 
-                    <Button variant="outline" className="w-full" onClick={startOver}>
+                    <Button variant="outline" className="w-full h-11" onClick={startOver}>
                         Book another seat
                     </Button>
                 </div>
@@ -727,33 +781,64 @@ export default function BookTicket() {
         const isPreBookingBlocked = isPreBookingClosed || isCapReached;
 
         return (
-            <div className="mx-auto w-full max-w-md px-4 py-6">
+            <div className="mx-auto w-full max-w-md px-4 py-6 pb-28">
                 <StepProgress currentStep="details" />
 
-                <div className="mt-4 flex items-start justify-between gap-4">
-                    <div>
-                        <button
-                            onClick={backToSearch}
-                            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                            <ArrowLeft className="h-3.5 w-3.5" />
-                            Change
-                        </button>
-                        <div className="mt-2">
-                            <h2 className="text-lg font-semibold flex items-center gap-2">
+                <div className="mt-4 rounded-xl border border-border bg-muted/20 px-4 py-3">
+                    <div className="flex items-start gap-3">
+                        <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                            <Bus className="h-4 w-4 text-primary" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <h2 className="text-sm font-semibold leading-snug break-words">
                                 {selectedRoute.origin}
-                                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                <ChevronRight className="inline h-3.5 w-3.5 text-muted-foreground mx-0.5 -translate-y-px" />
                                 {selectedRoute.destination}
                             </h2>
-                            <p className="text-sm text-muted-foreground">
-                                {selectedRoute.saccoName} · KES {selectedRoute.fare}
+                            <p className="text-xs text-muted-foreground truncate mt-0.5">
+                                {selectedRoute.saccoName}
                             </p>
                         </div>
+                        <button
+                            type="button"
+                            onClick={backToSearch}
+                            className="flex items-center gap-1 text-xs font-medium text-primary hover:underline shrink-0 py-0.5"
+                        >
+                            <ArrowLeft className="h-3.5 w-3.5" />
+                            Edit
+                        </button>
                     </div>
-                    <Badge variant="outline" className="shrink-0">
-                        <CalendarIcon className="h-3 w-3 mr-1" />
-                        {travelDate}
-                    </Badge>
+
+                    {/* Quick date switch — lets a passenger jump to the other
+                        available day right here if today's slots are gone,
+                        without having to leave the details step to do it. */}
+                    <div className="flex items-center gap-2 mt-3">
+                        <button
+                            type="button"
+                            onClick={() => handleTravelDateChange(todayString())}
+                            className={`
+                            flex-1 h-8 rounded-md text-xs font-medium border transition-all
+                            ${travelDate === todayString()
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-border bg-background text-foreground hover:bg-accent"}
+                        `}
+                        >
+                            Today
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleTravelDateChange(tomorrowString())}
+                            disabled={tomorrowString() > maxTravelDate}
+                            className={`
+                            flex-1 h-8 rounded-md text-xs font-medium border transition-all disabled:opacity-40 disabled:cursor-not-allowed
+                            ${travelDate === tomorrowString()
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-border bg-background text-foreground hover:bg-accent"}
+                        `}
+                        >
+                            Tomorrow
+                        </button>
+                    </div>
                 </div>
 
                 {availabilityQuery.isLoading ? (
@@ -809,25 +894,11 @@ export default function BookTicket() {
                                     </div>
                                 </div>
                             ) : (
-                                <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3">
-                                    <div className="flex items-start gap-3">
-                                        <div className="flex-1">
-                                            <div className="flex items-center justify-between">
-                                                <p className="text-sm font-medium text-emerald-900">
-                                                    {seatsLeft} seat{seatsLeft === 1 ? "" : "s"} available
-                                                </p>
-                                                <span className="text-xs text-emerald-700">Boarding now</span>
-                                            </div>
-                                            <div className="mt-1.5 h-1.5 bg-emerald-200 rounded-full overflow-hidden">
-                                                <div
-                                                    className="h-full bg-emerald-600 rounded-full transition-all duration-500"
-                                                    style={{
-                                                        width: `${Math.min((seatsLeft / 14) * 100, 100)}%`,
-                                                    }}
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
+                                <div className="flex items-center justify-center gap-2 rounded-full bg-emerald-50 border border-emerald-200 px-4 py-2.5">
+                                    <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                                    <p className="text-sm font-medium text-emerald-900">
+                                        {seatsLeft} seat{seatsLeft === 1 ? "" : "s"} available
+                                    </p>
                                 </div>
                             )}
 
@@ -835,7 +906,7 @@ export default function BookTicket() {
                                 and pre-booking is actually open, so it doesn't duplicate the
                                 blocked-state banner above. */}
                             {preBooking && !isPreBookingBlocked && (
-                                <p className="text-xs text-muted-foreground px-1">
+                                <p className="text-xs text-muted-foreground text-center">
                                     {preBooking.seatsRemaining} of {preBooking.maxPreBookableSeats} online
                                     pre-booking seat{preBooking.maxPreBookableSeats === 1 ? "" : "s"} left today
                                 </p>
@@ -845,144 +916,119 @@ export default function BookTicket() {
                 )}
 
                 <form onSubmit={handleSubmit(onSubmit)} className="mt-4 space-y-4" noValidate>
-                    {/* Name */}
-                    <div className="space-y-1.5">
-                        <Label htmlFor="passengerName" className="text-sm font-medium">
-                            Full name
-                        </Label>
-                        <Input
-                            id="passengerName"
-                            placeholder="e.g. Jane Wanjiru"
-                            className="h-11"
-                            {...register("passengerName")}
-                        />
-                        {errors.passengerName && (
-                            <p className="text-xs text-destructive">{errors.passengerName.message}</p>
-                        )}
-                    </div>
+                    {/* Passenger Details card */}
+                    <div className="rounded-xl border border-border p-4">
+                        <SectionHeader icon={User} title="Passenger Details" />
 
-                    {/* Phone */}
-                    <div className="space-y-1.5">
-                        <Label htmlFor="passengerPhone" className="text-sm font-medium">
-                            Phone number
-                        </Label>
-                        <Controller
-                            name="passengerPhone"
-                            control={control}
-                            render={({ field }) => (
-                                <Input
-                                    id="passengerPhone"
-                                    type="tel"
-                                    placeholder="0712345678"
-                                    className="h-11"
-                                    value={field.value}
-                                    onChange={(e) => {
-                                        const raw = e.target.value.replace(/\D/g, "");
-                                        if (raw.length <= 12) field.onChange(raw);
-                                    }}
-                                />
-                            )}
-                        />
-                        {errors.passengerPhone ? (
-                            <p className="text-xs text-destructive">{errors.passengerPhone.message}</p>
-                        ) : (
-                            <p className="text-xs text-muted-foreground">
-                                We'll send you a confirmation SMS here
-                            </p>
-                        )}
-                    </div>
-
-                    <div className="space-y-1.5">
-                        <Label htmlFor="passengerEmail" className="text-sm font-medium">
-                            Email <span className="text-muted-foreground font-normal">(optional)</span>
-                        </Label>
-                        <Input
-                            id="passengerEmail"
-                            type="email"
-                            placeholder="you@example.com"
-                            className="h-11"
-                            {...register("passengerEmail")}
-                        />
-                        {errors.passengerEmail ? (
-                            <p className="text-xs text-destructive">{errors.passengerEmail.message}</p>
-                        ) : (
-                            <p className="text-xs text-muted-foreground">
-                                Add this to look up your tickets later
-                            </p>
-                        )}
-                    </div>
-
-                    {/* Payment Method */}
-                    <div className="space-y-1.5">
-                        <Label className="text-sm font-medium">Payment method</Label>
-                        <Controller
-                            name="paymentMethod"
-                            control={control}
-                            render={({ field }) => (
-                                <div className="grid grid-cols-2 gap-2">
-                                    <button
-                                        type="button"
-                                        onClick={() => field.onChange(PaymentMethod.MPESA)}
-                                        className={`
-                                    relative flex items-center justify-center gap-2 h-11 rounded-lg border-2 
-                                    transition-all text-sm font-medium
-                                    ${field.value === PaymentMethod.MPESA
-                                                ? "border-primary bg-primary/5 text-primary"
-                                                : "border-border bg-background text-foreground hover:bg-accent"}
-                                `}
-                                    >
-                                        <Smartphone className="h-4 w-4" />
-                                        M-Pesa
-                                        {field.value === PaymentMethod.MPESA && (
-                                            <CheckCircle2 className="h-4 w-4 text-primary absolute right-2" />
-                                        )}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => field.onChange(PaymentMethod.CASH)}
-                                        className={`
-                                    relative flex items-center justify-center gap-2 h-11 rounded-lg border-2 
-                                    transition-all text-sm font-medium
-                                    ${field.value === PaymentMethod.CASH
-                                                ? "border-primary bg-primary/5 text-primary"
-                                                : "border-border bg-background text-foreground hover:bg-accent"}
-                                `}
-                                    >
-                                        <Banknote className="h-4 w-4" />
-                                        Cash
-                                        {field.value === PaymentMethod.CASH && (
-                                            <CheckCircle2 className="h-4 w-4 text-primary absolute right-2" />
-                                        )}
-                                    </button>
+                        <div className="space-y-4">
+                            {/* Name */}
+                            <div className="space-y-1.5">
+                                <Label
+                                    htmlFor="passengerName"
+                                    className="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                                >
+                                    Full name
+                                </Label>
+                                <div className="relative">
+                                    <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                    <Input
+                                        id="passengerName"
+                                        placeholder="Enter your full name"
+                                        className="h-11 pl-9"
+                                        {...register("passengerName")}
+                                    />
                                 </div>
-                            )}
-                        />
-                        <p className="text-xs text-muted-foreground">
-                            {paymentMethod === PaymentMethod.MPESA
-                                ? "Pay instantly via M-Pesa"
-                                : "Pay the conductor when you board"}
-                        </p>
+                                {errors.passengerName && (
+                                    <p className="text-xs text-destructive">{errors.passengerName.message}</p>
+                                )}
+                            </div>
+
+                            {/* Phone */}
+                            <div className="space-y-1.5">
+                                <Label
+                                    htmlFor="passengerPhone"
+                                    className="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                                >
+                                    Phone number
+                                </Label>
+                                <Controller
+                                    name="passengerPhone"
+                                    control={control}
+                                    render={({ field }) => (
+                                        <div className="relative flex items-center">
+                                            <span className="absolute left-3 flex items-center gap-1 text-sm text-muted-foreground pointer-events-none">
+                                                <Phone className="h-4 w-4" />
+                                                +254
+                                            </span>
+                                            <Input
+                                                id="passengerPhone"
+                                                type="tel"
+                                                placeholder="7XX XXX XXX"
+                                                className="h-11 pl-[4.5rem]"
+                                                value={field.value}
+                                                onChange={(e) => {
+                                                    const raw = e.target.value.replace(/\D/g, "");
+                                                    if (raw.length <= 12) field.onChange(raw);
+                                                }}
+                                            />
+                                        </div>
+                                    )}
+                                />
+                                {errors.passengerPhone ? (
+                                    <p className="text-xs text-destructive">{errors.passengerPhone.message}</p>
+                                ) : (
+                                    <p className="text-xs text-muted-foreground">
+                                        We'll send you a confirmation SMS here
+                                    </p>
+                                )}
+                            </div>
+
+                            {/* Email */}
+                            <div className="space-y-1.5">
+                                <Label
+                                    htmlFor="passengerEmail"
+                                    className="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                                >
+                                    Email <span className="normal-case font-normal">(optional)</span>
+                                </Label>
+                                <div className="relative">
+                                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                    <Input
+                                        id="passengerEmail"
+                                        type="email"
+                                        placeholder="you@example.com"
+                                        className="h-11 pl-9"
+                                        {...register("passengerEmail")}
+                                    />
+                                </div>
+                                {errors.passengerEmail ? (
+                                    <p className="text-xs text-destructive">{errors.passengerEmail.message}</p>
+                                ) : (
+                                    <p className="text-xs text-muted-foreground">
+                                        Add this to look up your tickets later
+                                    </p>
+                                )}
+                            </div>
+                        </div>
                     </div>
 
-                    {/* Travel time window — constrained to the sacco's pre-booking hours,
-                        and to "now" when travelling today */}
-                    <div className="space-y-2">
-                        <div>
-                            <Label className="text-sm font-medium">
-                                When would you like to travel?
-                            </Label>
-                            <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                                {boardingWindowMin && boardingWindowMax
-                                    ? `Choose a time between ${boardingWindowMin} and ${boardingWindowMax}. We'll assign you to a shuttle boarding within this period.`
-                                    : "Choose a time range that works for you. We'll assign you to a shuttle boarding within this period."}
-                            </p>
-                        </div>
+                    {/* Preferred Boarding Window card */}
+                    <div className="rounded-xl border border-border p-4">
+                        <SectionHeader icon={Clock} title="Preferred Boarding Window" />
 
-                        <div className="flex items-center gap-2">
-                            <div className="flex-1 space-y-1">
+                        <p className="text-xs text-muted-foreground leading-relaxed mb-3">
+                            Shuttles operate on a "fill-and-go" basis. Please select a time window
+                            you're available to board
+                            {boardingWindowMin && boardingWindowMax
+                                ? ` (between ${boardingWindowMin} and ${boardingWindowMax}).`
+                                : "."}
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
                                 <Label
                                     htmlFor="preferredBoardingFrom"
-                                    className="text-xs text-muted-foreground"
+                                    className="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
                                 >
                                     From
                                 </Label>
@@ -1001,12 +1047,10 @@ export default function BookTicket() {
                                 />
                             </div>
 
-                            <span className="text-xs text-muted-foreground mt-3">to</span>
-
-                            <div className="flex-1 space-y-1">
+                            <div className="space-y-1.5">
                                 <Label
                                     htmlFor="preferredBoardingTo"
-                                    className="text-xs text-muted-foreground"
+                                    className="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
                                 >
                                     Until
                                 </Label>
@@ -1027,24 +1071,80 @@ export default function BookTicket() {
                         </div>
 
                         {(errors.preferredBoardingFrom || errors.preferredBoardingTo) && (
-                            <p className="text-xs text-destructive">
+                            <p className="text-xs text-destructive mt-2">
                                 {errors.preferredBoardingTo?.message ??
                                     errors.preferredBoardingFrom?.message}
                             </p>
                         )}
 
                         {isBoardingWindowExpiredToday && (
-                            <p className="text-xs text-destructive px-1">
+                            <p className="text-xs text-destructive mt-2">
                                 Today's pre-booking window has closed. Try tomorrow, or book in person.
                             </p>
                         )}
+                    </div>
 
-                        <div className="rounded-md bg-muted/40 px-3 py-2">
-                            <p className="text-xs text-muted-foreground leading-relaxed">
-                                Shuttles are fill-and-go. Your exact shuttle will be
-                                assigned when one is ready within your selected time range.
-                            </p>
-                        </div>
+                    {/* Payment Method card */}
+                    <div className="rounded-xl border border-border p-4">
+                        <SectionHeader icon={Smartphone} title="Payment Method" />
+
+                        <Controller
+                            name="paymentMethod"
+                            control={control}
+                            render={({ field }) => (
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => field.onChange(PaymentMethod.MPESA)}
+                                        className={`
+                                        relative flex flex-col items-center justify-center gap-2 py-4 rounded-xl border-2
+                                        transition-all text-sm font-medium
+                                        ${field.value === PaymentMethod.MPESA
+                                                ? "border-primary bg-primary/5 text-primary"
+                                                : "border-border bg-background text-foreground hover:bg-accent"}
+                                    `}
+                                    >
+                                        <span
+                                            className={`
+                                            absolute top-2 right-2 h-3.5 w-3.5 rounded-full border-2
+                                            ${field.value === PaymentMethod.MPESA
+                                                    ? "border-primary bg-primary"
+                                                    : "border-muted-foreground/40"}
+                                        `}
+                                        />
+                                        <Smartphone className="h-5 w-5" />
+                                        M-Pesa
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => field.onChange(PaymentMethod.CASH)}
+                                        className={`
+                                        relative flex flex-col items-center justify-center gap-2 py-4 rounded-xl border-2
+                                        transition-all text-sm font-medium
+                                        ${field.value === PaymentMethod.CASH
+                                                ? "border-primary bg-primary/5 text-primary"
+                                                : "border-border bg-background text-foreground hover:bg-accent"}
+                                    `}
+                                    >
+                                        <span
+                                            className={`
+                                            absolute top-2 right-2 h-3.5 w-3.5 rounded-full border-2
+                                            ${field.value === PaymentMethod.CASH
+                                                    ? "border-primary bg-primary"
+                                                    : "border-muted-foreground/40"}
+                                        `}
+                                        />
+                                        <Banknote className="h-5 w-5" />
+                                        Cash
+                                    </button>
+                                </div>
+                            )}
+                        />
+                        <p className="text-xs text-muted-foreground mt-3">
+                            {paymentMethod === PaymentMethod.MPESA
+                                ? "Pay instantly via M-Pesa"
+                                : "Pay the conductor when you board"}
+                        </p>
                     </div>
 
                     {bookingMutation.isError && (
@@ -1058,7 +1158,7 @@ export default function BookTicket() {
 
                     <Button
                         type="submit"
-                        className="w-full h-11 text-base font-medium"
+                        className="w-full h-12 text-base font-semibold gap-2"
                         disabled={
                             bookingMutation.isPending ||
                             isFull ||
@@ -1069,7 +1169,7 @@ export default function BookTicket() {
                     >
                         {bookingMutation.isPending ? (
                             <>
-                                <span className="animate-spin mr-2">⟳</span>
+                                <span className="animate-spin">⟳</span>
                                 {paymentMethod === PaymentMethod.MPESA
                                     ? "Processing M-Pesa..."
                                     : "Booking..."}
@@ -1081,7 +1181,10 @@ export default function BookTicket() {
                         ) : isFull ? (
                             "Join waiting list"
                         ) : (
-                            `Book seat${paymentMethod === PaymentMethod.MPESA ? " & pay" : ""}`
+                            <>
+                                {`Book seat${paymentMethod === PaymentMethod.MPESA ? " & pay" : ""}`}
+                                <ArrowRight className="h-4 w-4" />
+                            </>
                         )}
                     </Button>
                 </form>
@@ -1099,15 +1202,15 @@ export default function BookTicket() {
             <StepProgress currentStep="search" />
 
             <div className="mt-4">
-                <h1 className="text-2xl font-bold">Book your seat</h1>
-                <p className="text-sm text-muted-foreground mt-1">
-                    No account needed — just your name and phone
+                <h1 className="text-lg font-semibold">Where are you going?</h1>
+                <p className="text-xs text-muted-foreground mt-1">
+                    Enter your route to find available shuttles — no account needed.
                 </p>
             </div>
 
-            <div className="mt-6 space-y-4">
+            <div className="mt-6 rounded-xl border border-border p-4 space-y-4">
                 {locationsQuery.isLoading ? (
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-3">
                         <Skeleton className="h-11 w-full" />
                         <Skeleton className="h-11 w-full" />
                     </div>
@@ -1119,132 +1222,185 @@ export default function BookTicket() {
                     </div>
                 ) : (
                     <div className="grid grid-cols-2 gap-2">
-                        <div className="space-y-1.5">
-                            <Label className="text-sm font-medium">From</Label>
-                            <Select
-                                value={origin}
-                                onValueChange={(value) => {
-                                    setOrigin(value ?? "");
-                                    setSelectedRoute(null);
-                                }}
-                            >
-                                <SelectTrigger className="h-11">
-                                    <SelectValue placeholder="Origin" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {origins.map((o) => (
-                                        <SelectItem key={o} value={o}>
-                                            {o}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        <div className="space-y-1.5">
-                            <Label className="text-sm font-medium">To</Label>
-                            <Select
-                                value={destination}
-                                onValueChange={(value) => {
-                                    setDestination(value ?? "");
-                                    setSelectedRoute(null);
-                                }}
-                            >
-                                <SelectTrigger className="h-11">
-                                    <SelectValue placeholder="Destination" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {destinations
-                                        .filter((d) => d !== origin)
-                                        .map((d) => (
-                                            <SelectItem key={d} value={d}>
-                                                {d}
+                        <div className="space-y-1.5 min-w-0">
+                            <Label className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                                From
+                            </Label>
+                            <div className="relative">
+                                <MapPin className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground z-10 pointer-events-none" />
+                                <Select
+                                    value={origin}
+                                    onValueChange={(value) => {
+                                        suppressAutoSelectRef.current = false;
+                                        setOrigin(value ?? "");
+                                        setSelectedRoute(null);
+                                    }}
+                                >
+                                    <SelectTrigger className="h-11 pl-8">
+                                        <SelectValue placeholder="Origin" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {origins.map((o) => (
+                                            <SelectItem key={o} value={o}>
+                                                {o}
                                             </SelectItem>
                                         ))}
-                                </SelectContent>
-                            </Select>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+
+                        <div className="space-y-1.5 min-w-0">
+                            <Label className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                                To
+                            </Label>
+                            <div className="relative">
+                                <MapPin className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground z-10 pointer-events-none" />
+                                <Select
+                                    value={destination}
+                                    onValueChange={(value) => {
+                                        suppressAutoSelectRef.current = false;
+                                        setDestination(value ?? "");
+                                        setSelectedRoute(null);
+                                    }}
+                                >
+                                    <SelectTrigger className="h-11 pl-8">
+                                        <SelectValue placeholder="Destination" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {destinations
+                                            .filter((d) => d !== origin)
+                                            .map((d) => (
+                                                <SelectItem key={d} value={d}>
+                                                    {d}
+                                                </SelectItem>
+                                            ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
                         </div>
                     </div>
                 )}
 
+                <div className="h-px bg-border" />
+
                 <div className="space-y-1.5">
-                    <Label className="text-sm font-medium">Travel date</Label>
-                    <DatePicker
-                        value={travelDate}
-                        onChange={handleTravelDateChange}
-                        min={minTravelDate}
-                        max={maxTravelDate}
-                    />
+                    <Label className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                        Travel date
+                    </Label>
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => handleTravelDateChange(todayString())}
+                            className={`
+                            flex-1 h-11 rounded-lg text-sm font-medium border-2 transition-all
+                            ${travelDate === todayString()
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-border bg-background text-foreground hover:bg-accent"}
+                        `}
+                        >
+                            Today
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleTravelDateChange(tomorrowString())}
+                            disabled={tomorrowString() > maxTravelDate}
+                            className={`
+                            flex-1 h-11 rounded-lg text-sm font-medium border-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed
+                            ${travelDate === tomorrowString()
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-border bg-background text-foreground hover:bg-accent"}
+                        `}
+                        >
+                            Tomorrow
+                        </button>
+                        <DatePicker
+                            value={travelDate}
+                            onChange={handleTravelDateChange}
+                            min={minTravelDate}
+                            max={maxTravelDate}
+                        />
+                    </div>
                     <p className="text-xs text-muted-foreground">
                         Online booking covers today and tomorrow only
                     </p>
                 </div>
 
-                {hasSearched && searchQuery.isLoading && (
-                    <div className="space-y-2">
-                        <Skeleton className="h-14 w-full" />
-                        <Skeleton className="h-14 w-full" />
-                    </div>
-                )}
-
-                {/* Show error state */}
-                {hasSearched && searchQuery.isError && (
-                    <div className="bg-destructive/10 border border-destructive/20 rounded-lg px-4 py-3">
-                        <p className="text-sm text-destructive">
-                            Couldn't search routes. Please try again.
-                        </p>
-                    </div>
-                )}
-
-                {/* Show no results */}
-                {hasSearched && searchQuery.isSuccess && searchResults.length === 0 && (
-                    <div className="bg-muted/30 rounded-lg px-4 py-6 text-center">
-                        <Bus className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-                        <p className="text-sm text-muted-foreground">
-                            No SACCOs run {origin} → {destination}
-                        </p>
-                    </div>
-                )}
-
-                {/* Show results */}
-                {hasSearched && searchResults.length > 1 && (
-                    <div className="space-y-2">
-                        <Label className="text-sm font-medium">Choose a SACCO</Label>
-                        {searchResults.map((route) => (
-                            <button
-                                key={route.routeId}
-                                onClick={() => chooseRoute(route)}
-                                className="flex w-full items-center justify-between rounded-lg border border-border px-4 py-3 text-left transition-all hover:border-primary hover:bg-primary/5 active:scale-[0.98]"
-                            >
-                                <div className="flex items-center gap-3">
-                                    <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center">
-                                        <Bus className="h-4 w-4 text-primary" />
-                                    </div>
-                                    <div>
-                                        <p className="text-sm font-medium">{route.saccoName}</p>
-                                        <p className="text-xs text-muted-foreground">
-                                            {route.origin} → {route.destination}
-                                        </p>
-                                    </div>
-                                </div>
-                                <div className="text-right">
-                                    <p className="text-sm font-semibold">KES {route.fare}</p>
-                                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                                </div>
-                            </button>
-                        ))}
-                    </div>
-                )}
-
-                {/* Single result - auto-selects via useEffect above */}
-                {hasSearched && searchQuery.isSuccess && searchResults.length === 1 && (
-                    <div className="bg-muted/30 rounded-lg px-4 py-3 text-center">
-                        <p className="text-sm text-muted-foreground">
-                            Found {searchResults.length} route. Redirecting...
-                        </p>
-                    </div>
-                )}
+                <Button
+                    type="button"
+                    disabled={!hasSearched}
+                    className="w-full h-12 text-base font-medium gap-2"
+                >
+                    <Search className="h-4 w-4" />
+                    Search Shuttles
+                    <ArrowRight className="h-4 w-4" />
+                </Button>
             </div>
+
+            {hasSearched && searchQuery.isLoading && (
+                <div className="space-y-2 mt-4">
+                    <Skeleton className="h-14 w-full" />
+                    <Skeleton className="h-14 w-full" />
+                </div>
+            )}
+
+            {/* Show error state */}
+            {hasSearched && searchQuery.isError && (
+                <div className="bg-destructive/10 border border-destructive/20 rounded-lg px-4 py-3 mt-4">
+                    <p className="text-sm text-destructive">
+                        Couldn't search routes. Please try again.
+                    </p>
+                </div>
+            )}
+
+            {/* Show no results */}
+            {hasSearched && searchQuery.isSuccess && searchResults.length === 0 && (
+                <div className="bg-muted/30 rounded-lg px-4 py-6 text-center mt-4">
+                    <Bus className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
+                    <p className="text-sm text-muted-foreground">
+                        No SACCOs run {origin} → {destination}
+                    </p>
+                </div>
+            )}
+
+            {/* Show results */}
+            {hasSearched && searchResults.length > 1 && (
+                <div className="space-y-2 mt-4">
+                    <Label className="text-sm font-medium">Choose a SACCO</Label>
+                    {searchResults.map((route) => (
+                        <button
+                            key={route.routeId}
+                            onClick={() => chooseRoute(route)}
+                            className="flex w-full items-center justify-between rounded-lg border border-border px-4 py-3 text-left transition-all hover:border-primary hover:bg-primary/5 active:scale-[0.98]"
+                        >
+                            <div className="flex items-center gap-3">
+                                <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center">
+                                    <Bus className="h-4 w-4 text-primary" />
+                                </div>
+                                <div>
+                                    <p className="text-sm font-medium">{route.saccoName}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                        {route.origin} → {route.destination}
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <p className="text-sm font-semibold">KES {route.fare}</p>
+                                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                            </div>
+                        </button>
+                    ))}
+                </div>
+            )}
+
+            {/* Single result - auto-selects via useEffect above */}
+            {hasSearched && searchQuery.isSuccess && searchResults.length === 1 && (
+                <div className="bg-muted/30 rounded-lg px-4 py-3 text-center mt-4">
+                    <p className="text-sm text-muted-foreground">
+                        Found {searchResults.length} route. Redirecting...
+                    </p>
+                </div>
+            )}
         </div>
     );
 }
