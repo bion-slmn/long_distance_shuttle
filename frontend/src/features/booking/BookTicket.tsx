@@ -54,6 +54,13 @@ function todayString(): string {
     return new Date().toISOString().slice(0, 10);
 }
 
+// Current wall-clock time as 'HH:mm' — used to stop passengers picking a
+// boarding slot today that's already passed. Mirrors the backend's
+// same-day check in BookingService.validatePreferredWindow.
+function currentTimeString(): string {
+    return new Date().toTimeString().slice(0, 5);
+}
+
 // ─── Date Picker (shadcn Popover + Calendar) ───────────────────────────
 function DatePicker({
     value,
@@ -122,7 +129,7 @@ function TimeSelect({
     max,
     placeholder,
 }: {
-    value?: string;                                   // was: string
+    value?: string;
     onChange: (value: string) => void;
     min?: string;
     max?: string;
@@ -132,7 +139,7 @@ function TimeSelect({
     return (
         <Select
             value={value || undefined}
-            onValueChange={(val) => onChange(val ?? "")}   // was: onValueChange={onChange}
+            onValueChange={(val) => onChange(val ?? "")}
         >
             <SelectTrigger className="h-11">
                 <SelectValue placeholder={placeholder} />
@@ -178,6 +185,9 @@ function passengerMessage(booking: Booking): string {
 type Step = "search" | "details" | "confirmed";
 
 // ─── Zod schema — mirrors CreateBookingDto ─────────────────────────────
+// preferredBoardingFrom/To are required — the backend's
+// validatePreBookingTimeWindow rejects public-portal bookings without a
+// window, so we mirror that here instead of failing after full submission.
 export const bookingFormSchema = z
     .object({
         passengerName: z
@@ -195,26 +205,21 @@ export const bookingFormSchema = z
 
         preferredBoardingFrom: z
             .string()
+            .min(1, "Please choose a start time.")
             .regex(
                 /^([01]\d|2[0-3]):[0-5]\d$/,
                 "Enter a valid time (e.g. 08:00)."
-            )
-            .optional()
-            .or(z.literal("")),
+            ),
         preferredBoardingTo: z
             .string()
+            .min(1, "Please choose an end time.")
             .regex(
                 /^([01]\d|2[0-3]):[0-5]\d$/,
                 "Enter a valid time (e.g. 17:30)."
-            )
-            .optional()
-            .or(z.literal("")),
+            ),
     })
     .refine(
-        (data) =>
-            !data.preferredBoardingFrom ||
-            !data.preferredBoardingTo ||
-            data.preferredBoardingFrom < data.preferredBoardingTo,
+        (data) => data.preferredBoardingFrom < data.preferredBoardingTo,
         {
             message: '"From" must be earlier than "To".',
             path: ["preferredBoardingTo"],
@@ -283,13 +288,13 @@ export default function BookTicket() {
     const receiptDownloadedRef = useRef(false);
     const queryClient = useQueryClient();
 
-
     const {
         control,
         register,
         handleSubmit,
         watch,
         reset,
+        setError,
         formState: { errors, isValid },
     } = useForm<BookingFormValues>({
         resolver: zodResolver(bookingFormSchema),
@@ -446,6 +451,24 @@ export default function BookTicket() {
     const minTravelDate = preBooking?.minTravelDate ?? todayString();
     const maxTravelDate = preBooking?.maxTravelDate ?? tomorrowString();
 
+    // If travelling today, don't offer/accept boarding slots that have
+    // already passed — raises the effective floor to "now" when that's
+    // later than the sacco's own window start. Mirrors the backend's
+    // same-day check in BookingService.validatePreferredWindow.
+    const effectiveBoardingWindowMin =
+        travelDate === todayString()
+            ? boardingWindowMin && boardingWindowMin > currentTimeString()
+                ? boardingWindowMin
+                : currentTimeString()
+            : boardingWindowMin;
+
+    // True once "now" has eaten the whole window for today — nothing left
+    // to book online, same spirit as isPreBookingBlocked below.
+    const isBoardingWindowExpiredToday =
+        travelDate === todayString() &&
+        !!boardingWindowMax &&
+        effectiveBoardingWindowMin > boardingWindowMax;
+
     function chooseRoute(route: RouteSearchResult) {
         setSelectedRoute(route);
         setStep("details");
@@ -453,6 +476,16 @@ export default function BookTicket() {
 
     const onSubmit = (values: BookingFormValues) => {
         if (!selectedRoute) return;
+
+        // Final safety-net check — covers a stale tab left open past the
+        // boundary between when the fields were picked and now.
+        if (travelDate === todayString() && values.preferredBoardingTo < currentTimeString()) {
+            setError("preferredBoardingTo", {
+                type: "manual",
+                message: "This time has already passed — please pick a later time.",
+            });
+            return;
+        }
 
         bookingMutation.mutate({
             routeId: selectedRoute.routeId,
@@ -462,8 +495,8 @@ export default function BookTicket() {
             passengerEmail: values.passengerEmail?.trim() || undefined,
             paymentMethod: values.paymentMethod,
             source: BookingSource.PUBLIC_PORTAL,
-            preferredBoardingFrom: values.preferredBoardingFrom || undefined,
-            preferredBoardingTo: values.preferredBoardingTo || undefined,
+            preferredBoardingFrom: values.preferredBoardingFrom,
+            preferredBoardingTo: values.preferredBoardingTo,
         });
     };
 
@@ -931,7 +964,8 @@ export default function BookTicket() {
                         </p>
                     </div>
 
-                    {/* Travel time window — constrained to the sacco's pre-booking hours */}
+                    {/* Travel time window — constrained to the sacco's pre-booking hours,
+                        and to "now" when travelling today */}
                     <div className="space-y-2">
                         <div>
                             <Label className="text-sm font-medium">
@@ -959,9 +993,9 @@ export default function BookTicket() {
                                         <TimeSelect
                                             value={field.value}
                                             onChange={field.onChange}
-                                            min={boardingWindowMin}
+                                            min={effectiveBoardingWindowMin}
                                             max={boardingWindowMax}
-                                            placeholder={boardingWindowMin ?? "08:00"}
+                                            placeholder={effectiveBoardingWindowMin ?? "08:00"}
                                         />
                                     )}
                                 />
@@ -983,7 +1017,7 @@ export default function BookTicket() {
                                         <TimeSelect
                                             value={field.value}
                                             onChange={field.onChange}
-                                            min={boardingWindowMin}
+                                            min={effectiveBoardingWindowMin}
                                             max={boardingWindowMax}
                                             placeholder={boardingWindowMax ?? "17:30"}
                                         />
@@ -996,6 +1030,12 @@ export default function BookTicket() {
                             <p className="text-xs text-destructive">
                                 {errors.preferredBoardingTo?.message ??
                                     errors.preferredBoardingFrom?.message}
+                            </p>
+                        )}
+
+                        {isBoardingWindowExpiredToday && (
+                            <p className="text-xs text-destructive px-1">
+                                Today's pre-booking window has closed. Try tomorrow, or book in person.
                             </p>
                         )}
 
@@ -1019,7 +1059,13 @@ export default function BookTicket() {
                     <Button
                         type="submit"
                         className="w-full h-11 text-base font-medium"
-                        disabled={bookingMutation.isPending || isFull || isPreBookingBlocked || !isValid}
+                        disabled={
+                            bookingMutation.isPending ||
+                            isFull ||
+                            isPreBookingBlocked ||
+                            isBoardingWindowExpiredToday ||
+                            !isValid
+                        }
                     >
                         {bookingMutation.isPending ? (
                             <>
@@ -1030,6 +1076,8 @@ export default function BookTicket() {
                             </>
                         ) : isPreBookingBlocked ? (
                             isPreBookingClosed ? "Pre-booking closed" : "Fully booked"
+                        ) : isBoardingWindowExpiredToday ? (
+                            "No boarding slots left today"
                         ) : isFull ? (
                             "Join waiting list"
                         ) : (
@@ -1132,15 +1180,12 @@ export default function BookTicket() {
                     </p>
                 </div>
 
-
                 {hasSearched && searchQuery.isLoading && (
                     <div className="space-y-2">
                         <Skeleton className="h-14 w-full" />
                         <Skeleton className="h-14 w-full" />
                     </div>
                 )}
-
-
 
                 {/* Show error state */}
                 {hasSearched && searchQuery.isError && (

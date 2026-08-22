@@ -124,9 +124,9 @@ export class BookingService {
     source: BookingSource = BookingSource.CLERK,
   ): Promise<Booking> {
     const route = await this.getRouteOrThrow(dto.routeId);
-    this.validatePreferredWindow(dto.preferredBoardingFrom, dto.preferredBoardingTo);
-
     const travelDate = dto.travelDate ?? this.toDateString(new Date());
+    this.validatePreferredWindow(travelDate, dto.preferredBoardingFrom, dto.preferredBoardingTo);
+
     const paymentStatus = this.initialPaymentStatus(dto.paymentMethod);
 
     if (source === BookingSource.PUBLIC_PORTAL) {
@@ -226,9 +226,20 @@ export class BookingService {
     return route;
   }
 
-  private validatePreferredWindow(from?: string, to?: string): void {
+  private validatePreferredWindow(travelDate: string, from?: string, to?: string): void {
     if (from && to && from > to) {
       throw new BadRequestException('preferredBoardingFrom must not be after preferredBoardingTo.');
+    }
+
+    const today = this.toDateString(new Date());
+    if (to && travelDate === today) {
+      const nowTime = this.timeOfDay(new Date()); // 'HH:mm:ss'
+      const toNormalized = to.length === 5 ? `${to}:00` : to;
+      if (toNormalized < nowTime) {
+        throw new BadRequestException(
+          'preferredBoardingTo has already passed for today — pick a later time or a different date.',
+        );
+      }
     }
   }
 
