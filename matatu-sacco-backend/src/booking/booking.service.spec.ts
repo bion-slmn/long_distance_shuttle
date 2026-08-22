@@ -52,6 +52,24 @@ describe('BookingService — pre-booking (public portal)', () => {
   const ROUTE_ID = 'route-1';
   const SACCO_ID = 'sacco-1';
 
+  // Freeze the clock well before every boarding time used anywhere in this
+  // file (earliest is 04:30) so the same-day "already passed" check in
+  // BookingService.validatePreferredWindow never fires unless a test is
+  // specifically exercising that behavior. Without this, tests pass/fail
+  // depending on what time of day the suite happens to run — exactly what
+  // caused the earlier flaky failures.
+  const FROZEN_NOW = new Date();
+  FROZEN_NOW.setHours(0, 30, 0, 0);
+
+  beforeAll(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(FROZEN_NOW);
+  });
+
+  afterAll(() => {
+    jest.useRealTimers();
+  });
+
   const baseRoute: Partial<Route> = {
     id: ROUTE_ID,
     saccoId: SACCO_ID,
@@ -413,7 +431,7 @@ describe('BookingService — pre-booking (public portal)', () => {
           } as any,
           BookingSource.PUBLIC_PORTAL,
         ),
-      ).rejects.toThrow('preferredBoardingFrom and preferredBoardingTo are required for pre-booking.');
+      ).rejects.toThrow('Please select a boarding time range to pre-book online.');
 
       expect(bookingRepository.createQueryBuilder).not.toHaveBeenCalled();
       expect(bookingRepository.manager.transaction).not.toHaveBeenCalled();
@@ -472,7 +490,77 @@ describe('BookingService — pre-booking (public portal)', () => {
     });
   });
 
-  // ── 5. getAvailability() pre-booking summary block ──────────────────────
+  // ── 5. Same-day "already passed" guard (validatePreferredWindow) ────────
+  // Separate from the sacco-hours window above: this checks the requested
+  // preferredBoardingTo against the actual current clock, but only when
+  // travelDate is today. Booking tomorrow is never affected by this check.
+  describe('same-day boarding time already passed', () => {
+    afterEach(() => {
+      // Restore the frozen "early morning" baseline so later tests in this
+      // file aren't affected by moving the clock forward here.
+      jest.setSystemTime(FROZEN_NOW);
+    });
+
+    it('rejects a preferredBoardingTo that has already passed for today', async () => {
+      const onePM = new Date();
+      onePM.setHours(13, 0, 0, 0);
+      jest.setSystemTime(onePM);
+
+      await expect(
+        service.create(
+          {
+            ...baseDto,
+            travelDate: todayStr(),
+            preferredBoardingFrom: '05:00',
+            preferredBoardingTo: '07:30',
+          } as any,
+          BookingSource.PUBLIC_PORTAL,
+        ),
+      ).rejects.toThrow('That boarding time has already passed for today');
+    });
+
+    it('allows a preferredBoardingTo that is still ahead of the current time today', async () => {
+      const nineAM = new Date();
+      nineAM.setHours(9, 0, 0, 0);
+      jest.setSystemTime(nineAM);
+      mockCapCount(0);
+      mockNoOpenTrip();
+
+      const result = await service.create(
+        {
+          ...baseDto,
+          travelDate: todayStr(),
+          preferredBoardingFrom: '10:00',
+          preferredBoardingTo: '11:00',
+        } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+    });
+
+    it('does not apply the "already passed" check to a booking for tomorrow', async () => {
+      const lateAfternoon = new Date();
+      lateAfternoon.setHours(18, 0, 0, 0);
+      jest.setSystemTime(lateAfternoon);
+      mockCapCount(0);
+      mockNoOpenTrip();
+
+      const result = await service.create(
+        {
+          ...baseDto,
+          travelDate: shiftedStr(1),
+          preferredBoardingFrom: '05:00',
+          preferredBoardingTo: '06:00',
+        } as any,
+        BookingSource.PUBLIC_PORTAL,
+      );
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+    });
+  });
+
+  // ── 6. getAvailability() pre-booking summary block ──────────────────────
   describe('getAvailability — pre-booking summary', () => {
     beforeEach(() => {
       tripRepository.findOne.mockResolvedValue(null); // no open BOARDING trip
@@ -530,7 +618,7 @@ describe('BookingService — pre-booking (public portal)', () => {
     });
   });
 
-  // ── 6. Payment method interplay with pre-bookings ────────────────────────
+  // ── 7. Payment method interplay with pre-bookings ────────────────────────
   describe('payment handling for pre-bookings', () => {
     it('CASH pre-bookings are stored PAID immediately and a Payment row is recorded in-transaction', async () => {
       mockCapCount(0);
@@ -585,7 +673,7 @@ describe('BookingService — pre-booking (public portal)', () => {
     });
   });
 
-  // ── 7. Route validation happens before any sacco-settings lookup ────────
+  // ── 8. Route validation happens before any sacco-settings lookup ────────
   describe('unknown route', () => {
     it('rejects with NotFoundException before ever checking sacco pre-booking settings', async () => {
       routeRepository.findOne.mockResolvedValue(null);
