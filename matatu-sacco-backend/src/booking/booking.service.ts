@@ -184,7 +184,7 @@ export class BookingService {
   ): void {
     if (!preferredBoardingFrom || !preferredBoardingTo) {
       throw new BadRequestException(
-        'preferredBoardingFrom and preferredBoardingTo are required for pre-booking.',
+        'Please select a boarding time range to pre-book online.',
       );
     }
 
@@ -228,7 +228,7 @@ export class BookingService {
 
   private validatePreferredWindow(travelDate: string, from?: string, to?: string): void {
     if (from && to && from > to) {
-      throw new BadRequestException('preferredBoardingFrom must not be after preferredBoardingTo.');
+      throw new BadRequestException('Your "from" time must be earlier than your "to" time.');
     }
 
     const today = this.toDateString(new Date());
@@ -237,7 +237,7 @@ export class BookingService {
       const toNormalized = to.length === 5 ? `${to}:00` : to;
       if (toNormalized < nowTime) {
         throw new BadRequestException(
-          'preferredBoardingTo has already passed for today — pick a later time or a different date.',
+          'That boarding time has already passed for today — please choose a later time or a different date.',
         );
       }
     }
