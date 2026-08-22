@@ -467,7 +467,7 @@ export default function BookTicket() {
     const isBoardingWindowExpiredToday =
         travelDate === todayString() &&
         !!boardingWindowMax &&
-        effectiveBoardingWindowMin > boardingWindowMax;
+        effectiveBoardingWindowMin! > boardingWindowMax;
 
     function chooseRoute(route: RouteSearchResult) {
         setSelectedRoute(route);
