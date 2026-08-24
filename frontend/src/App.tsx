@@ -8,6 +8,8 @@ import ProtectedRoute from './features/auth/ProtectedRoute'
 import { DashboardLayout } from './layouts/DashboardLayout'
 import { PublicLayout } from './layouts/PublicLayout'
 import MyTickets from './components/MyTickets'
+import VerifyReceipt from './features/booking/VerifyReceipt'
+import NotFound from './components/NotFound'
 
 // Public pages
 const HomePage = lazy(() => import('./components/page'))
@@ -58,6 +60,7 @@ function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path='/ticket' element={<MyTickets />} />
+            <Route path="/verify/:bookingId" element={<VerifyReceipt />} />
           </Route>
 
           {/* Protected routes with dashboard layout */}
@@ -80,6 +83,7 @@ function App() {
             <Route path="/payments" element={<PaymentsList />} />
             <Route path="/bookings-report" element={<BookingsList />} />
           </Route>
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
       <Toaster />

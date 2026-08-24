@@ -1328,12 +1328,22 @@ export default function BookTicket() {
 
                 <Button
                     type="button"
-                    disabled={!hasSearched}
+                    onClick={() => searchQuery.refetch()}
+                    disabled={!hasSearched || searchQuery.isFetching}
                     className="w-full h-12 text-base font-medium gap-2"
                 >
-                    <Search className="h-4 w-4" />
-                    Search Shuttles
-                    <ArrowRight className="h-4 w-4" />
+                    {searchQuery.isFetching ? (
+                        <>
+                            <span className="animate-spin">⟳</span>
+                            Searching...
+                        </>
+                    ) : (
+                        <>
+                            <Search className="h-4 w-4" />
+                            Search Shuttles
+                            <ArrowRight className="h-4 w-4" />
+                        </>
+                    )}
                 </Button>
             </div>
 
