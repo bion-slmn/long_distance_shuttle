@@ -23,6 +23,7 @@ import {
 } from '../payment/entities/payment.entity';
 import { SaccoSettingsService } from 'src/sacco/sacco-settings.service';
 import { SaccoSettings } from 'src/sacco/entities/sacco-settings.entity';
+import { MpesaTransaction, MpesaTransactionMatchStatus } from 'src/payment/entities/mpesa.entity';
 
 export interface UniquePassengerStats {
   saccoId: string | null;
@@ -114,11 +115,14 @@ export class BookingService {
     return result;
   }
 
-  // ─── Create ───────────────────────────────────────────────────────────
-  // `source` is NEVER read from the request body (see CreateBookingDto —
-  // it has no `source` field). It's passed in by the controller based on
-  // which endpoint received the request, so a public-portal caller can't
-  // spoof BookingSource.CLERK to dodge the pre-booking constraints below.
+  private initialPaymentStatus(dto: CreateBookingDto): PaymentStatus {
+    if (dto.paymentMethod === PaymentMethod.CASH) return PaymentStatus.PAID;
+    if (dto.paymentMethod === PaymentMethod.MPESA && dto.mpesaTransactionId) return PaymentStatus.PAID;
+    return PaymentStatus.PENDING;
+  }
+  // (update the one call site: `this.initialPaymentStatus(dto.paymentMethod)` → `this.initialPaymentStatus(dto)`)
+
+  // ── create(): skip triggerMpesaPayment (STK) when a C2B match was supplied
   async create(
     dto: CreateBookingDto,
     source: BookingSource = BookingSource.CLERK,
@@ -127,7 +131,7 @@ export class BookingService {
     const travelDate = dto.travelDate ?? this.toDateString(new Date());
     this.validatePreferredWindow(travelDate, dto.preferredBoardingFrom, dto.preferredBoardingTo);
 
-    const paymentStatus = this.initialPaymentStatus(dto.paymentMethod);
+    const paymentStatus = this.initialPaymentStatus(dto);
 
     if (source === BookingSource.PUBLIC_PORTAL) {
       const settings = await this.saccoSettingsService.findOne(route.saccoId);
@@ -144,11 +148,82 @@ export class BookingService {
       this.createBookingInTransaction(manager, { dto, route, travelDate, paymentStatus, source }),
     );
 
-    if (dto.paymentMethod === PaymentMethod.MPESA) {
+    // Only trigger an STK push if this is a fresh MPESA payment — not when
+    // the clerk already matched an existing unmatched C2B receipt.
+    if (dto.paymentMethod === PaymentMethod.MPESA && !dto.mpesaTransactionId) {
       await this.triggerMpesaPayment(savedBooking);
     }
 
     return savedBooking;
+  }
+
+  // ── createBookingInTransaction: add the match step alongside the cash step
+  private async createBookingInTransaction(
+    manager: EntityManager,
+    ctx: BookingCreationContext,
+  ): Promise<Booking> {
+    const { dto, route, travelDate, paymentStatus, source } = ctx;
+
+    const openTrip = await this.findLockedOpenTrip(manager, dto.routeId, travelDate);
+    const windowOk = this.isWithinPreferredWindow(
+      openTrip ? this.timeOfDay(new Date()) : null,
+      dto.preferredBoardingFrom ?? null,
+      dto.preferredBoardingTo ?? null,
+    );
+
+    let saved: Booking | null = null;
+
+    if (openTrip && windowOk) {
+      saved = await this.trySeatOnTrip(manager, openTrip, { dto, route, travelDate, paymentStatus, source });
+    }
+
+    if (!saved) {
+      saved = await this.createAwaitingTripBooking(manager, { dto, route, travelDate, paymentStatus, source });
+    }
+
+    if (dto.paymentMethod === PaymentMethod.CASH) {
+      await this.recordCashPaymentInTransaction(manager, saved, route);
+    }
+
+    if (dto.paymentMethod === PaymentMethod.MPESA && dto.mpesaTransactionId) {
+      await this.matchMpesaTransactionInTransaction(manager, saved, dto.mpesaTransactionId);
+    }
+
+    return saved;
+  }
+
+  // ── Atomically claim the UNMATCHED transaction and stamp the booking with
+  // its receipt number, inside the same transaction as booking creation.
+  // If another clerk already matched this transaction, the whole booking
+  // creation rolls back — the clerk sees the error and re-searches.
+  private async matchMpesaTransactionInTransaction(
+    manager: EntityManager,
+    booking: Booking,
+    mpesaTransactionId: string,
+  ): Promise<void> {
+    const result = await manager
+      .getRepository(MpesaTransaction)
+      .update(
+        { id: mpesaTransactionId, matchStatus: MpesaTransactionMatchStatus.UNMATCHED },
+        {
+          matchStatus: MpesaTransactionMatchStatus.MATCHED,
+          matchedBookingId: booking.id,
+          matchedBy: booking.createdByUserId ?? 'AUTO',
+          matchedAt: new Date(),
+        },
+      );
+
+    if (result.affected === 0) {
+      throw new ConflictException(
+        `M-Pesa transaction ${mpesaTransactionId} was already matched to another booking.`,
+      );
+    }
+
+    const transaction = await manager.getRepository(MpesaTransaction).findOneByOrFail({ id: mpesaTransactionId });
+    booking.mpesaReceiptNumber = transaction.mpesaReceiptNumber;
+    await manager.save(Booking, booking);
+
+    this.logger.log(`Booking ${booking.id} matched to M-Pesa transaction ${transaction.mpesaReceiptNumber}`);
   }
 
   // ─── Public-portal pre-booking constraints ───────────────────────────────
@@ -243,41 +318,9 @@ export class BookingService {
     }
   }
 
-  private initialPaymentStatus(method: PaymentMethod): PaymentStatus {
-    return method === PaymentMethod.CASH ? PaymentStatus.PAID : PaymentStatus.PENDING;
-  }
 
-  // The transaction body — pure DB logic, no validation, no payment
-  // initiation mixed in.
-  private async createBookingInTransaction(
-    manager: EntityManager,
-    ctx: BookingCreationContext,
-  ): Promise<Booking> {
-    const { dto, route, travelDate, paymentStatus, source } = ctx;
 
-    const openTrip = await this.findLockedOpenTrip(manager, dto.routeId, travelDate);
-    const windowOk = this.isWithinPreferredWindow(
-      openTrip ? this.timeOfDay(new Date()) : null,
-      dto.preferredBoardingFrom ?? null,
-      dto.preferredBoardingTo ?? null,
-    );
 
-    let saved: Booking | null = null;
-
-    if (openTrip && windowOk) {
-      saved = await this.trySeatOnTrip(manager, openTrip, { dto, route, travelDate, paymentStatus, source });
-    }
-
-    if (!saved) {
-      saved = await this.createAwaitingTripBooking(manager, { dto, route, travelDate, paymentStatus, source });
-    }
-
-    if (dto.paymentMethod === PaymentMethod.CASH) {
-      await this.recordCashPaymentInTransaction(manager, saved, route);
-    }
-
-    return saved;
-  }
 
   private async recordCashPaymentInTransaction(
     manager: EntityManager,
@@ -311,6 +354,59 @@ export class BookingService {
       .getOne();
   }
 
+  // Seat numbers currently held by real (non-cancelled) occupants of a trip.
+  // Shared by trySeatOnTrip (inside the locked transaction) and
+  // getAvailability (plain read) — same query, two callers, one source of
+  // truth for "what's taken."
+  private async getTakenSeatNumbers(manager: EntityManager, tripId: string): Promise<number[]> {
+    const rows = await manager
+      .createQueryBuilder(Booking, 'b')
+      .select('b.seatNumber', 'seatNumber')
+      .where('b.tripId = :tripId', { tripId })
+      .andWhere('b.status IN (:...statuses)', {
+        statuses: [BookingStatus.CONFIRMED, BookingStatus.BOARDED],
+      })
+      .getRawMany<{ seatNumber: number }>();
+
+    return rows.map((r) => r.seatNumber);
+  }
+
+  // A clerk asked for a specific seat. Validate it's a real seat on this
+  // vehicle and that nobody's sitting in it — both checked under the same
+  // pessimistic lock trySeatOnTrip already holds on the trip, so this can't
+  // race with another booking for the same seat.
+  private resolveClerkRequestedSeat(
+    requestedSeat: number,
+    vehicleCapacity: number,
+    takenSeats: number[],
+  ): number {
+    if (!Number.isInteger(requestedSeat) || requestedSeat < 1 || requestedSeat > vehicleCapacity) {
+      throw new BadRequestException(
+        `Seat ${requestedSeat} is not valid for this vehicle (capacity ${vehicleCapacity}).`,
+      );
+    }
+    if (takenSeats.includes(requestedSeat)) {
+      throw new ConflictException(`Seat ${requestedSeat} is already taken.`);
+    }
+    return requestedSeat;
+  }
+
+  // Auto-assign: lowest-numbered free seat. NOT `takenSeats.length + 1` —
+  // once clerks can hand out arbitrary seat numbers, occupied seats are no
+  // longer guaranteed contiguous (a clerk could seat someone in seat 8
+  // while 1–7 are still open), so auto-assign has to actually scan for a
+  // gap rather than assume one.
+  private nextAvailableSeat(vehicleCapacity: number, takenSeats: number[]): number {
+    const taken = new Set(takenSeats);
+    for (let seat = 1; seat <= vehicleCapacity; seat++) {
+      if (!taken.has(seat)) return seat;
+    }
+    // Shouldn't happen — callers only reach here after confirming
+    // takenSeats.length < vehicleCapacity — but fail loudly instead of
+    // silently overbooking if it ever does.
+    throw new ConflictException('No seats available on this trip.');
+  }
+
   private async trySeatOnTrip(
     manager: EntityManager,
     trip: Trip,
@@ -318,21 +414,24 @@ export class BookingService {
   ): Promise<Booking | null> {
     const { dto, route, travelDate, paymentStatus, source } = ctx;
 
-    const seatedCount = await manager
-      .createQueryBuilder(Booking, 'b')
-      .where('b.tripId = :tripId', { tripId: trip.id })
-      .andWhere('b.status IN (:...statuses)', {
-        statuses: [BookingStatus.CONFIRMED, BookingStatus.BOARDED],
-      })
-      .getCount();
+    const takenSeats = await this.getTakenSeatNumbers(manager, trip.id);
 
-    if (seatedCount >= trip.vehicleCapacity) return null;
+    if (takenSeats.length >= trip.vehicleCapacity) return null;
+
+    // Only a clerk can hand out a specific seat. Public-portal callers never
+    // reach this branch even if a seatNumber is somehow present on the dto —
+    // same "source decides, request body doesn't" rule as BookingSource
+    // itself.
+    const seatNumber =
+      source === BookingSource.CLERK && dto.seatNumber != null
+        ? this.resolveClerkRequestedSeat(dto.seatNumber, trip.vehicleCapacity, takenSeats)
+        : this.nextAvailableSeat(trip.vehicleCapacity, takenSeats);
 
     const booking = manager.create(Booking, {
       routeId: dto.routeId,
       travelDate,
       tripId: trip.id,
-      seatNumber: seatedCount + 1,
+      seatNumber,
       saccoId: route.saccoId,
       passengerName: dto.passengerName,
       passengerPhone: dto.passengerPhone,
@@ -357,6 +456,10 @@ export class BookingService {
   ): Promise<Booking> {
     const { dto, route, travelDate, paymentStatus, source } = ctx;
 
+    // Pre-bookings never get a seat number, clerk-requested or otherwise —
+    // there's no vehicle yet for the seat to belong to. Any dto.seatNumber
+    // here is simply ignored; assignPendingBookingsToTrip auto-assigns once
+    // a real trip absorbs this booking.
     const booking = manager.create(Booking, {
       routeId: dto.routeId,
       travelDate,
@@ -411,19 +514,14 @@ export class BookingService {
       `(route ${trip.routeId}, travelDate ${trip.travelDate}, capacity ${trip.vehicleCapacity})`,
     );
 
-    const alreadySeated = await manager
-      .createQueryBuilder(Booking, 'b')
-      .where('b.tripId = :tripId', { tripId: trip.id })
-      .andWhere('b.status IN (:...statuses)', {
-        statuses: [BookingStatus.CONFIRMED, BookingStatus.BOARDED],
-      })
-      .getCount();
+    const takenSeats = await this.getTakenSeatNumbers(manager, trip.id);
 
-    this.logger.log(`Trip ${trip.id}: ${alreadySeated} seat(s) already filled before assignment`);
+    this.logger.log(`Trip ${trip.id}: ${takenSeats.length} seat(s) already filled before assignment`);
 
-    let seat = alreadySeated;
-    if (seat >= trip.vehicleCapacity) {
-      this.logger.log(`Trip ${trip.id} is already full (${seat}/${trip.vehicleCapacity}) — skipping assignment`);
+    if (takenSeats.length >= trip.vehicleCapacity) {
+      this.logger.log(
+        `Trip ${trip.id} is already full (${takenSeats.length}/${trip.vehicleCapacity}) — skipping assignment`,
+      );
       return;
     }
 
@@ -447,13 +545,14 @@ export class BookingService {
       return;
     }
 
+    const taken = new Set(takenSeats);
     let assigned = 0;
     let skippedOutsideWindow = 0;
 
     for (const booking of pending) {
-      if (seat >= trip.vehicleCapacity) {
+      if (taken.size >= trip.vehicleCapacity) {
         this.logger.log(
-          `Trip ${trip.id}: capacity reached (${seat}/${trip.vehicleCapacity}) — ` +
+          `Trip ${trip.id}: capacity reached (${taken.size}/${trip.vehicleCapacity}) — ` +
           `stopping, ${pending.length - assigned - skippedOutsideWindow} booking(s) left unprocessed`,
         );
         break;
@@ -477,7 +576,10 @@ export class BookingService {
         continue;
       }
 
-      seat++;
+      // Pre-bookings never carry a clerk-assigned seat — always take the
+      // lowest free number.
+      const seat = this.nextAvailableSeat(trip.vehicleCapacity, [...taken]);
+      taken.add(seat);
       assigned++;
       booking.tripId = trip.id;
       booking.seatNumber = seat;
@@ -491,7 +593,7 @@ export class BookingService {
 
     this.logger.log(
       `Trip ${trip.id}: assignment complete — assigned ${assigned}, skipped (window) ${skippedOutsideWindow}, ` +
-      `${seat}/${trip.vehicleCapacity} seats filled`,
+      `${taken.size}/${trip.vehicleCapacity} seats filled`,
     );
   }
 
@@ -597,7 +699,8 @@ export class BookingService {
   }
 
   // ─── Cancel — frees the seat implicitly (capacity checks are always
-  // live COUNT queries, so a CANCELLED booking just stops counting).
+  // live COUNT/SELECT queries, so a CANCELLED booking just stops counting
+  // and its seat number becomes selectable again).
   async cancel(id: string, saccoId?: string): Promise<Booking> {
     const booking = await this.findOne(id);
     if (saccoId && booking.saccoId !== saccoId) {
@@ -623,8 +726,36 @@ export class BookingService {
     return count > 0;
   }
 
-  // ─── Availability — now also returns pre-booking settings so the
-  // frontend can render limits/copy directly off this one call. ───────────
+  // ─── Seat map — just the trip capacity and which seats are taken. Nothing
+  // about pre-booking windows/caps, because the clerk seat picker doesn't
+  // care about any of that; it only exists so BookingSheet can render a
+  // grid. Use this instead of getAvailability wherever the only goal is
+  // "show me the seats." getAvailability stays as-is for the public portal,
+  // which genuinely needs the pre-booking settings block.
+  async getSeatMap(routeId: string, travelDate?: string): Promise<{
+    hasOpenTrip: boolean;
+    seatsTotal: number | null;
+    takenSeatNumbers: number[];
+  }> {
+    const date = travelDate ?? this.toDateString(new Date());
+
+    const openTrip = await this.tripRepository.findOne({
+      where: { routeId, travelDate: date, status: TripStatus.BOARDING },
+    });
+
+    const takenSeatNumbers = openTrip
+      ? await this.getTakenSeatNumbers(this.bookingRepository.manager, openTrip.id)
+      : [];
+
+    return {
+      hasOpenTrip: !!openTrip,
+      seatsTotal: openTrip?.vehicleCapacity ?? null,
+      takenSeatNumbers,
+    };
+  }
+
+  // ─── Availability — pre-booking settings AND taken seat numbers, for the
+  // public portal (which needs the pre-booking block for limits/copy). ────
   async getAvailability(routeId: string, travelDate?: string): Promise<AvailabilityResult> {
     const date = travelDate ?? this.toDateString(new Date());
 

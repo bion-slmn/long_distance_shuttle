@@ -67,6 +67,22 @@ export class BookingController {
     return this.bookingService.getAvailability(routeId, travelDate);
   }
 
+  // ── STAFF: seat map for the clerk seat picker ──────────────────────────
+  // Deliberately NOT @Public() — this is the clerk-facing counterpart to
+  // /availability above, returning just seatsTotal + takenSeatNumbers
+  // instead of the whole pre-booking settings block. Must stay registered
+  // before the @Get(':id') handlers further down, or Nest will try to match
+  // "seat-map" as an :id param instead of hitting this route.
+  @Get('seat-map')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
+  getSeatMap(
+    @Query('routeId', new ParseUUIDPipe()) routeId: string,
+    @Query('travelDate') travelDate?: string,
+  ) {
+    return this.bookingService.getSeatMap(routeId, travelDate);
+  }
+
   // ── STAFF ONLY below this line ────────────────────────────────────────
 
   @Get()

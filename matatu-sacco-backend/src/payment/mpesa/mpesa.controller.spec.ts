@@ -1,65 +1,34 @@
 // src/payment/mpesa/mpesa.controller.spec.ts
-import { Test, TestingModule } from '@nestjs/testing';
 import { MpesaController } from './mpesa.controller';
-import { MpesaService } from './mpesa.service';
-import { PaymentService } from '../payment.service';
 
 describe('MpesaController', () => {
     let controller: MpesaController;
-    let mpesaService: Partial<Record<keyof MpesaService, jest.Mock>>;
-    let paymentService: Partial<Record<keyof PaymentService, jest.Mock>>;
+
+    let mpesaService: {
+        getTransactionsByPhone: jest.Mock;
+        handleStkCallback: jest.Mock;
+        handleC2BConfirmation: jest.Mock;
+    };
+    let paymentService: { handleMpesaCallback: jest.Mock };
     let loggerErrorSpy: jest.SpyInstance;
     let loggerLogSpy: jest.SpyInstance;
 
-    const rawBody = {
-        Body: {
-            stkCallback: {
-                MerchantRequestID: 'mr_1',
-                CheckoutRequestID: 'ws_CO_1',
-                ResultCode: 0,
-                ResultDesc: 'The service request is processed successfully.',
-                CallbackMetadata: {
-                    Item: [
-                        { Name: 'Amount', Value: 500 },
-                        { Name: 'MpesaReceiptNumber', Value: 'NLJ7RT61SV' },
-                        { Name: 'TransactionDate', Value: 20260817101530 },
-                        { Name: 'PhoneNumber', Value: 254712345678 },
-                    ],
-                },
-            },
-        },
-    } as any;
+    beforeEach(() => {
+        jest.clearAllMocks();
 
-    const parsedSuccess = {
-        checkoutRequestId: 'ws_CO_1',
-        resultCode: 0,
-        resultDesc: 'The service request is processed successfully.',
-        success: true,
-        amount: 500,
-        mpesaReceiptNumber: 'NLJ7RT61SV',
-        transactionDate: '20260817101530',
-        payerPhone: '254712345678',
-    };
-
-    beforeEach(async () => {
         mpesaService = {
-            parseCallback: jest.fn(),
+            getTransactionsByPhone: jest.fn(),
+            handleStkCallback: jest.fn(),
+            handleC2BConfirmation: jest.fn(),
         };
-        paymentService = {
-            handleMpesaCallback: jest.fn(),
-        };
+        paymentService = { handleMpesaCallback: jest.fn() };
 
-        const module: TestingModule = await Test.createTestingModule({
-            controllers: [MpesaController],
-            providers: [
-                { provide: MpesaService, useValue: mpesaService },
-                { provide: PaymentService, useValue: paymentService },
-            ],
-        }).compile();
+        controller = new MpesaController(
+            mpesaService as any,
+            paymentService as any,
+        );
 
-        controller = module.get<MpesaController>(MpesaController);
-
-        // Silence + spy on the controller's Logger instance
+        // Silence + spy on the controller's own Logger instance.
         loggerErrorSpy = jest
             .spyOn((controller as any).logger, 'error')
             .mockImplementation(() => undefined);
@@ -68,98 +37,177 @@ describe('MpesaController', () => {
             .mockImplementation(() => undefined);
     });
 
-    afterEach(() => {
-        jest.clearAllMocks();
+    // ── GET /payment/mpesa/transactions ────────────────────────────────────
+    describe('getTransactionsByPhone', () => {
+        it('parses dateFrom/dateTo strings into Dates before delegating', async () => {
+            mpesaService.getTransactionsByPhone.mockResolvedValue([{ id: 'tx-1' }]);
+
+            const result = await controller.getTransactionsByPhone({
+                phone: '0712345678',
+                dateFrom: '2024-01-01',
+                dateTo: '2024-01-31',
+            } as any);
+
+            expect(mpesaService.getTransactionsByPhone).toHaveBeenCalledWith(
+                '0712345678',
+                new Date('2024-01-01'),
+                new Date('2024-01-31'),
+            );
+            expect(result).toEqual([{ id: 'tx-1' }]);
+        });
+
+        it('passes undefined for dateFrom/dateTo when omitted', async () => {
+            mpesaService.getTransactionsByPhone.mockResolvedValue([]);
+
+            await controller.getTransactionsByPhone({
+                phone: '0712345678',
+            } as any);
+
+            expect(mpesaService.getTransactionsByPhone).toHaveBeenCalledWith(
+                '0712345678',
+                undefined,
+                undefined,
+            );
+        });
+
+        it('lets a service error propagate (not a Safaricom-facing endpoint)', async () => {
+            mpesaService.getTransactionsByPhone.mockRejectedValue(
+                new Error('lookup failed'),
+            );
+
+            await expect(
+                controller.getTransactionsByPhone({ phone: '0712345678' } as any),
+            ).rejects.toThrow('lookup failed');
+        });
     });
 
+    // ── POST /payment/mpesa/callback ───────────────────────────────────────
     describe('handleCallback', () => {
-        it('parses the body, forwards it to PaymentService, and acknowledges Daraja', async () => {
-            mpesaService.parseCallback!.mockReturnValue(parsedSuccess);
-            paymentService.handleMpesaCallback!.mockResolvedValue(undefined);
-
-            const result = await controller.handleCallback(rawBody);
-
-            expect(mpesaService.parseCallback).toHaveBeenCalledWith(rawBody);
-            expect(paymentService.handleMpesaCallback).toHaveBeenCalledWith(parsedSuccess, rawBody);
-            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
-        });
-
-        it('logs the parsed callback summary', async () => {
-            mpesaService.parseCallback!.mockReturnValue(parsedSuccess);
-            paymentService.handleMpesaCallback!.mockResolvedValue(undefined);
-
-            await controller.handleCallback(rawBody);
-
-            expect(loggerLogSpy).toHaveBeenCalledWith(
-                expect.stringContaining('checkoutRequestId=ws_CO_1'),
-            );
-            expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining('success=true'));
-        });
-
-        it('still returns { ResultCode: 0, ResultDesc: "Accepted" } when parseCallback throws', async () => {
-            mpesaService.parseCallback!.mockImplementation(() => {
-                throw new Error('Malformed callback payload');
-            });
-
-            const result = await controller.handleCallback(rawBody);
-
-            expect(paymentService.handleMpesaCallback).not.toHaveBeenCalled();
-            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
-            expect(loggerErrorSpy).toHaveBeenCalledWith(
-                expect.stringContaining('Malformed callback payload'),
-                expect.anything(),
-            );
-        });
-
-        it('still returns { ResultCode: 0, ResultDesc: "Accepted" } when handleMpesaCallback rejects', async () => {
-            mpesaService.parseCallback!.mockReturnValue(parsedSuccess);
-            paymentService.handleMpesaCallback!.mockRejectedValue(new Error('DB connection lost'));
-
-            const result = await controller.handleCallback(rawBody);
-
-            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
-            expect(loggerErrorSpy).toHaveBeenCalledWith(
-                expect.stringContaining('DB connection lost'),
-                expect.anything(),
-            );
-        });
-
-        it('never throws out of handleCallback, even on unexpected errors', async () => {
-            mpesaService.parseCallback!.mockImplementation(() => {
-                throw new TypeError('Cannot read properties of undefined');
-            });
-
-            await expect(controller.handleCallback(rawBody)).resolves.toEqual({
-                ResultCode: 0,
-                ResultDesc: 'Accepted',
-            });
-        });
-
-        it('handles a FAILED callback the same way — still calls through and acknowledges 200', async () => {
-            const parsedFailed = {
-                checkoutRequestId: 'ws_CO_2',
-                resultCode: 1032,
-                resultDesc: 'Request cancelled by user.',
-                success: false,
-            };
-            mpesaService.parseCallback!.mockReturnValue(parsedFailed);
-            paymentService.handleMpesaCallback!.mockResolvedValue(undefined);
-
-            const failedRawBody = {
-                Body: {
-                    stkCallback: {
-                        MerchantRequestID: 'mr_2',
-                        CheckoutRequestID: 'ws_CO_2',
-                        ResultCode: 1032,
-                        ResultDesc: 'Request cancelled by user.',
-                    },
+        const body = {
+            Body: {
+                stkCallback: {
+                    CheckoutRequestID: 'checkout-1',
+                    ResultCode: 0,
+                    ResultDesc: 'Success',
                 },
-            } as any;
+            },
+        } as any;
 
-            const result = await controller.handleCallback(failedRawBody);
+        it('parses the callback and forwards it to PaymentService', async () => {
+            const parsed = {
+                checkoutRequestId: 'checkout-1',
+                resultCode: 0,
+                resultDesc: 'Success',
+                success: true,
+            };
+            mpesaService.handleStkCallback.mockResolvedValue(parsed);
 
-            expect(paymentService.handleMpesaCallback).toHaveBeenCalledWith(parsedFailed, failedRawBody);
+            const result = await controller.handleCallback(body);
+
+            expect(mpesaService.handleStkCallback).toHaveBeenCalledWith(body);
+            expect(paymentService.handleMpesaCallback).toHaveBeenCalledWith(
+                parsed,
+                body,
+            );
             expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+        });
+
+        it('still returns the Daraja ack shape when handleStkCallback throws', async () => {
+            mpesaService.handleStkCallback.mockRejectedValue(
+                new Error('db unavailable'),
+            );
+
+            const result = await controller.handleCallback(body);
+
+            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+            expect(paymentService.handleMpesaCallback).not.toHaveBeenCalled();
+            expect(loggerErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining('db unavailable'),
+                expect.anything(),
+            );
+        });
+
+        it('still returns the Daraja ack shape when PaymentService throws', async () => {
+            mpesaService.handleStkCallback.mockResolvedValue({
+                checkoutRequestId: 'checkout-1',
+                resultCode: 0,
+                resultDesc: 'Success',
+                success: true,
+            });
+            paymentService.handleMpesaCallback.mockRejectedValue(
+                new Error('booking not found'),
+            );
+
+            const result = await controller.handleCallback(body);
+
+            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+            expect(loggerErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining('booking not found'),
+                expect.anything(),
+            );
+        });
+
+        it('never throws, regardless of downstream failures', async () => {
+            mpesaService.handleStkCallback.mockRejectedValue(new Error('boom'));
+
+            await expect(controller.handleCallback(body)).resolves.toBeDefined();
+        });
+    });
+
+    // ── POST /payment/mpesa/c2b/validation ─────────────────────────────────
+    describe('handleC2BValidation', () => {
+        it('logs the incoming payload and accepts by default', async () => {
+            const body = {
+                TransID: 'OEI2AK4Q16',
+                BillRefNumber: 'BK-42',
+                MSISDN: '254712345678',
+            };
+
+            const result = await controller.handleC2BValidation(body);
+
+            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+            expect(loggerLogSpy).toHaveBeenCalledWith(
+                expect.stringContaining('OEI2AK4Q16'),
+            );
+        });
+
+        it('still accepts even with a malformed/empty body', async () => {
+            const result = await controller.handleC2BValidation(undefined as any);
+
+            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+        });
+    });
+
+    // ── POST /payment/mpesa/c2b/confirmation ───────────────────────────────
+    describe('handleC2BConfirmation', () => {
+        const body = {
+            TransID: 'OEI2AK4Q16',
+            BillRefNumber: 'BK-42',
+            MSISDN: '254712345678',
+            TransAmount: '500.00',
+        };
+
+        it('delegates to MpesaService and acknowledges receipt', async () => {
+            mpesaService.handleC2BConfirmation.mockResolvedValue(undefined);
+
+            const result = await controller.handleC2BConfirmation(body);
+
+            expect(mpesaService.handleC2BConfirmation).toHaveBeenCalledWith(body);
+            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+        });
+
+        it('still acknowledges receipt when persistence throws', async () => {
+            mpesaService.handleC2BConfirmation.mockRejectedValue(
+                new Error('duplicate key'),
+            );
+
+            const result = await controller.handleC2BConfirmation(body);
+
+            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+            expect(loggerErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining('duplicate key'),
+                expect.anything(),
+            );
         });
     });
 });

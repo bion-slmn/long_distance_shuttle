@@ -165,3 +165,61 @@ export async function reconcilePaymentRequest(
     });
     return res.data;
 }
+
+
+// ─── M-Pesa Transactions (unmatched C2B lookup for clerks) ────────────────
+// Mirrors src/payment/mpesa/entities/mpesa.entity.ts on the backend
+
+export const MpesaTransactionSource = {
+    STK_PUSH: "STK_PUSH",
+    C2B: "C2B",
+} as const;
+
+export type MpesaTransactionSource =
+    (typeof MpesaTransactionSource)[keyof typeof MpesaTransactionSource];
+
+export const MpesaTransactionMatchStatus = {
+    UNMATCHED: "UNMATCHED",
+    MATCHED: "MATCHED",
+    IGNORED: "IGNORED",
+} as const;
+
+export type MpesaTransactionMatchStatus =
+    (typeof MpesaTransactionMatchStatus)[keyof typeof MpesaTransactionMatchStatus];
+
+export interface MpesaTransaction {
+    id: string;
+    source: MpesaTransactionSource;
+    mpesaReceiptNumber: string;
+    checkoutRequestId: string | null;
+    amount: number;
+    payerPhone: string;
+    payerName: string | null;
+    billRefNumber: string | null;
+    businessShortCode: string | null;
+    transactionTime: string;
+    matchStatus: MpesaTransactionMatchStatus;
+    matchedBookingId: string | null;
+    matchedPaymentId: string | null;
+    matchedBy: string | null;
+    matchedAt: string | null;
+    receivedAt: string;
+}
+
+export interface GetMpesaTransactionsByPhoneOptions {
+    phone: string;
+    dateFrom?: string;
+    dateTo?: string;
+}
+
+export async function getMpesaTransactionsByPhoneRequest(
+    options: GetMpesaTransactionsByPhoneOptions,
+): Promise<MpesaTransaction[]> {
+    const params = new URLSearchParams();
+    params.set("phone", options.phone);
+    if (options.dateFrom) params.set("dateFrom", options.dateFrom);
+    if (options.dateTo) params.set("dateTo", options.dateTo);
+
+    const res = await api.get(`/payment/mpesa/transactions?${params.toString()}`);
+    return res.data;
+}

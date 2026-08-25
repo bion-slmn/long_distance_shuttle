@@ -56,6 +56,7 @@ import {
     updateBookingRequest,
     BookingSource,
     createBookingByClerkRequest,
+    getBookingSeatMapRequest,
 } from "@/api/bookingApi"
 import { QueueClockInDialog } from "./QueueClockInDialog"
 import { useElapsedTime } from "@/hooks/useElapsedTime"
@@ -93,6 +94,8 @@ interface RouteQueueCardsProps {
 }
 
 import { useQueries } from "@tanstack/react-query" // add to existing react-query import
+import { SeatPicker } from "../booking/SeatPicker"
+import { getMpesaTransactionsByPhoneRequest, MpesaTransactionMatchStatus, type MpesaTransaction } from "@/api/paymentApi"
 
 export function RouteQueueCards({
     routes,
@@ -221,9 +224,11 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
         },
     })
 
+    const seatMapQueryKey = ["seat-map", route.id, selectedDate]
+
     const bookingMutation = useMutation({
         mutationFn: (payload: BookingFormValues) => {
-            const requests = Array.from({ length: payload.seats }, () =>
+            const requests = Array.from({ length: payload.seats }, (_, i) =>
                 createBookingByClerkRequest({
                     routeId: route.id,
                     travelDate: selectedDate,
@@ -231,6 +236,8 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
                     passengerPhone: payload.passengerPhone,
                     paymentMethod: payload.paymentMethod,
                     source: BookingSource.CLERK,
+                    seatNumber: payload.seatNumbers?.[i],
+                    mpesaTransactionId: i === 0 ? payload.mpesaTransactionId : undefined,
                 })
             )
             return Promise.all(requests)
@@ -238,6 +245,7 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
         onSuccess: () => {
             toast.success("Booking confirmed")
             queryClient.invalidateQueries({ queryKey: queueQueryKey })
+            queryClient.invalidateQueries({ queryKey: seatMapQueryKey })
             setShowBooking(false)
         },
         onError: () => {
@@ -360,6 +368,7 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
                         isSubmitting={bookingMutation.isPending}
                         onSubmit={(payload) => bookingMutation.mutate(payload)}
                         route={route}
+                        travelDate={selectedDate}
                     />
                     <ManifestSheet
                         open={showManifest}
@@ -595,21 +604,18 @@ function LoadingVehicleBlock({
 
 // ─── Booking Sheet ──────────────────────────────────────────────────────────
 
+// ── BookingFormValues: one new optional field ────────────────────────────
 export interface BookingFormValues {
     passengerName: string
     passengerPhone: string
     seats: number
     paymentMethod: PaymentMethodType
+    seatNumbers: number[]
+    // Set when the clerk matched an already-paid C2B transaction instead of
+    // triggering a fresh STK prompt. Only ever set when seats === 1.
+    mpesaTransactionId?: string
 }
 
-// ─── Booking Sheet ──────────────────────────────────────────────────────────
-
-export interface BookingFormValues {
-    passengerName: string
-    passengerPhone: string
-    seats: number
-    paymentMethod: PaymentMethodType
-}
 
 interface BookingSheetProps {
     open: boolean
@@ -619,10 +625,12 @@ interface BookingSheetProps {
     fare?: number
     isSubmitting?: boolean
     onSubmit: (payload: BookingFormValues) => void
-    route?: { origin: string; destination: string }
+    route?: { origin: string; destination: string; id: string }
+    travelDate: string
 }
 
-function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onSubmit, route }: BookingSheetProps) {
+// ── BookingSheet: new local state ─────────────────────────────────────
+function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onSubmit, route, travelDate }: BookingSheetProps) {
     const capacity = entry.vehicle.seatingCapacity
     const seated = entry.seatedCount ?? 0
     const remaining = Math.max(0, capacity - seated)
@@ -631,21 +639,67 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
 
     const [name, setName] = useState("")
     const [phone, setPhone] = useState("")
-    const [seats, setSeats] = useState(1)
     const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>(PaymentMethod.MPESA)
+    const [selectedSeats, setSelectedSeats] = useState<number[]>([])
+
+    // "prompt" = normal STK push flow. "manual" = customer already paid via
+    // paybill directly (C2B) — clerk searches for and matches the receipt.
+    const [mpesaMode, setMpesaMode] = useState<"prompt" | "manual">("prompt")
+    const [selectedTransactionId, setSelectedTransactionId] = useState<string | null>(null)
+
+    const seatMapQuery = useQuery({
+        queryKey: ["seat-map", route?.id, travelDate],
+        queryFn: () => getBookingSeatMapRequest(route!.id, travelDate),
+        enabled: open && !!route?.id,
+    })
+
+    // Only fetch once the phone number looks real, and only in manual mode —
+    // no point hitting the endpoint on every keystroke.
+    const normalizedPhone = phone.replace(/\D/g, "")
+    const transactionsQuery = useQuery({
+        queryKey: ["mpesa-transactions", normalizedPhone],
+        queryFn: () => getMpesaTransactionsByPhoneRequest({ phone: normalizedPhone }),
+        enabled: open && paymentMethod === PaymentMethod.MPESA && mpesaMode === "manual" && normalizedPhone.length >= 9,
+    })
+
+    const unmatchedTransactions = (transactionsQuery.data ?? []).filter(
+        (t) => t.matchStatus === MpesaTransactionMatchStatus.UNMATCHED
+    )
 
     useEffect(() => {
         if (open) {
             setName("")
             setPhone("")
-            setSeats(remaining > 0 ? 1 : 0)
             setPaymentMethod(PaymentMethod.MPESA)
+            setSelectedSeats([])
+            setMpesaMode("prompt")
+            setSelectedTransactionId(null)
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open])
 
+    // Reset the picked transaction whenever the search set changes, so a
+    // stale selection can't survive a phone-number edit.
+    useEffect(() => {
+        setSelectedTransactionId(null)
+    }, [normalizedPhone, mpesaMode])
+
+    function toggleSeat(seat: number) {
+        setSelectedSeats((prev) =>
+            prev.includes(seat) ? prev.filter((s) => s !== seat) : [...prev, seat]
+        )
+    }
+
+    const seats = selectedSeats.length
     const total = unitFare * seats
-    const canSubmit = seats > 0 && seats <= remaining && phone.trim().length > 0 && !isSubmitting && !isFull
+
+    // Manual match ties one paid receipt to exactly one booking — cap it to
+    // a single seat and require a selection before it's submittable.
+    const isManualMatch = paymentMethod === PaymentMethod.MPESA && mpesaMode === "manual"
+    const manualMatchValid = !isManualMatch || (seats === 1 && !!selectedTransactionId)
+
+    const canSubmit =
+        seats > 0 && phone.trim().length > 0 && !isSubmitting && !isFull && manualMatchValid
 
     const handleSubmit = () => {
         if (!canSubmit) return
@@ -654,6 +708,8 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
             passengerPhone: phone.trim(),
             seats,
             paymentMethod,
+            seatNumbers: selectedSeats,
+            mpesaTransactionId: isManualMatch ? selectedTransactionId! : undefined,
         })
     }
 
@@ -737,43 +793,50 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
                         </div>
                     </div>
 
-                    {/* Seats + Fare row */}
-                    <div className="flex items-end justify-between gap-3">
-                        <div className="space-y-1">
-                            <Label className="text-sm font-semibold">Seats</Label>
-                            <div className="flex items-center gap-2 rounded-lg border p-1">
-                                <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8"
-                                    onClick={() => setSeats((s) => Math.max(1, s - 1))}
-                                    disabled={seats <= 1 || isFull}
-                                >
-                                    −
-                                </Button>
-                                <span className="text-base font-bold w-6 text-center">{seats}</span>
-                                <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8"
-                                    onClick={() => setSeats((s) => Math.min(remaining, s + 1))}
-                                    disabled={seats >= remaining || isFull}
-                                >
-                                    +
-                                </Button>
+                    {/* Seat map — required. Seat count and fare both derive
+                        from how many cells are tapped below. */}
+                    {!isFull && (
+                        <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                                <Label className="text-sm font-semibold">
+                                    Select Seats <span className="text-destructive">*</span>
+                                </Label>
+                                <div className="flex items-center gap-2">
+                                    <Badge variant="outline" className="text-[10px] font-medium text-primary border-primary/30 bg-primary/5">
+                                        {capacity}-Seater
+                                    </Badge>
+                                    {selectedSeats.length > 0 && (
+                                        <button
+                                            type="button"
+                                            className="text-xs text-muted-foreground hover:text-foreground"
+                                            onClick={() => setSelectedSeats([])}
+                                        >
+                                            Clear
+                                        </button>
+                                    )}
+                                </div>
                             </div>
+                            {seatMapQuery.isLoading ? (
+                                <Skeleton className="h-32 w-full rounded-xl" />
+                            ) : (
+                                <SeatPicker
+                                    seatsTotal={seatMapQuery.data?.seatsTotal ?? capacity}
+                                    takenSeatNumbers={seatMapQuery.data?.takenSeatNumbers ?? []}
+                                    selectedSeats={selectedSeats}
+                                    onToggle={toggleSeat}
+                                />
+                            )}
                         </div>
+                    )}
 
-                        <div className="flex flex-col items-end gap-1">
-                            <span className="text-[10px] text-muted-foreground/60">
-                                Fare (KSh {unitFare.toLocaleString()} × {seats})
-                            </span>
-                            <span className="text-lg font-bold text-primary">
-                                KSh {total.toLocaleString()}
-                            </span>
-                        </div>
+                    {/* Fare summary — driven entirely by selection count */}
+                    <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2.5">
+                        <span className="text-xs text-muted-foreground/70">
+                            {seats} seat{seats === 1 ? "" : "s"} selected (KSh {unitFare.toLocaleString()} each)
+                        </span>
+                        <span className="text-lg font-bold text-primary">
+                            KSh {total.toLocaleString()}
+                        </span>
                     </div>
 
                     {/* Payment method — segmented toggle */}
@@ -809,6 +872,71 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
                                 Cash
                             </button>
                         </div>
+
+                        {paymentMethod === PaymentMethod.MPESA && (
+                            <div className="space-y-2 pt-1">
+                                <div className="flex gap-1 rounded-lg bg-muted/60 p-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => setMpesaMode("prompt")}
+                                        disabled={isFull}
+                                        className={cn(
+                                            "flex-1 rounded-md py-1.5 text-xs font-semibold transition-all disabled:opacity-50",
+                                            mpesaMode === "prompt"
+                                                ? "bg-background text-primary shadow-sm"
+                                                : "text-muted-foreground hover:bg-background/50"
+                                        )}
+                                    >
+                                        Send STK Prompt
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setMpesaMode("manual")}
+                                        disabled={isFull}
+                                        className={cn(
+                                            "flex-1 rounded-md py-1.5 text-xs font-semibold transition-all disabled:opacity-50",
+                                            mpesaMode === "manual"
+                                                ? "bg-background text-primary shadow-sm"
+                                                : "text-muted-foreground hover:bg-background/50"
+                                        )}
+                                    >
+                                        Already Paid (paybill)
+                                    </button>
+                                </div>
+
+                                {mpesaMode === "manual" && (
+                                    <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+                                        {seats > 1 && (
+                                            <p className="text-xs text-destructive/80">
+                                                Matching an existing payment only works for a single seat — deselect down to one seat.
+                                            </p>
+                                        )}
+                                        {normalizedPhone.length < 9 ? (
+                                            <p className="text-xs text-muted-foreground/60">
+                                                Enter the passenger's phone number above to search for their payment.
+                                            </p>
+                                        ) : transactionsQuery.isLoading ? (
+                                            <Skeleton className="h-16 w-full rounded-md" />
+                                        ) : unmatchedTransactions.length === 0 ? (
+                                            <p className="text-xs text-muted-foreground/60">
+                                                No unmatched M-Pesa payments found for this number.
+                                            </p>
+                                        ) : (
+                                            <div className="space-y-1.5">
+                                                {unmatchedTransactions.map((t) => (
+                                                    <MpesaTransactionOption
+                                                        key={t.id}
+                                                        transaction={t}
+                                                        selected={selectedTransactionId === t.id}
+                                                        onSelect={() => setSelectedTransactionId(t.id)}
+                                                    />
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
 
                     {isFull && (
@@ -858,7 +986,6 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
     )
 }
 
-// ─── Manifest Sheet ─────────────────────────────────────────────────────────
 // ─── Manifest Sheet ─────────────────────────────────────────────────────────
 
 export interface ManifestSheetProps {
@@ -1261,5 +1388,38 @@ export function ManifestSheet({ open, onOpenChange, side, entry, bookings, isLoa
                 </AlertDialogContent>
             </AlertDialog>
         </>
+    )
+}
+
+
+// ── small presentational helper for one transaction row ──────────────────
+function MpesaTransactionOption({
+    transaction,
+    selected,
+    onSelect,
+}: {
+    transaction: MpesaTransaction
+    selected: boolean
+    onSelect: () => void
+}) {
+    return (
+        <button
+            type="button"
+            onClick={onSelect}
+            className={cn(
+                "w-full flex items-center justify-between rounded-md border px-3 py-2 text-left transition-colors",
+                selected
+                    ? "border-primary bg-primary/5"
+                    : "border-transparent bg-background hover:border-muted-foreground/20"
+            )}
+        >
+            <div className="min-w-0">
+                <p className="text-sm font-semibold">KSh {Number(transaction.amount).toLocaleString()}</p>
+                <p className="text-[11px] text-muted-foreground/60 truncate">
+                    {transaction.mpesaReceiptNumber} · {new Date(transaction.transactionTime).toLocaleString()}
+                </p>
+            </div>
+            {selected && <CheckCircle2 className="size-4 text-primary shrink-0" />}
+        </button>
     )
 }

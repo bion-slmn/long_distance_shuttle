@@ -8,13 +8,13 @@ import { SaccoModule } from '../sacco/sacco.module'; // wherever SaccoSettingsSe
 import { PaymentService } from './payment.service';
 import { Payment } from './entities/payment.entity';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { RedisModule } from '@nestjs-modules/ioredis';
+import { MpesaTransaction } from './entities/mpesa.entity';
 
 @Module({
     imports: [
         HttpModule,
         SaccoModule,
-        TypeOrmModule.forFeature([Payment]),
+        TypeOrmModule.forFeature([Payment, MpesaTransaction]),
 
     ],
     controllers: [PaymentController, MpesaController],

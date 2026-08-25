@@ -64,6 +64,12 @@ export interface Booking {
     } | null;
 }
 
+export interface BookingSeatMap {
+    hasOpenTrip: boolean;
+    seatsTotal: number | null;
+    takenSeatNumbers: number[];
+}
+
 // Seat-count-only availability for a route/date — no seat map.
 export interface BookingAvailabilityPreBooking {
     enabled: boolean;
@@ -98,18 +104,20 @@ export const BookingSource = {
 export type BookingSource = typeof BookingSource[keyof typeof BookingSource];
 
 export interface CreateBookingPayload {
-    bookingId?: string; // include on retry for idempotency
+    bookingId?: string;
     routeId: string;
-    travelDate?: string; // omit = today, on the backend
+    travelDate?: string;
     passengerName: string;
     passengerPhone: string;
     paymentMethod: PaymentMethod;
     source: BookingSource;
     createdByUserId?: string;
     status?: BookingStatus;
-    preferredBoardingFrom?: string; // HH:mm or HH:mm:ss
-    preferredBoardingTo?: string;   // HH:mm or HH:mm:ss
+    preferredBoardingFrom?: string;
+    preferredBoardingTo?: string;
     passengerEmail?: string;
+    mpesaTransactionId?: string;
+    seatNumber?: number; // clerk-only — the backend ignores this on public-portal bookings
 }
 
 export interface UpdateBookingPayload {
@@ -312,5 +320,16 @@ export async function getMyTicketsRequest(token: string): Promise<Booking[]> {
         headers: { Authorization: `Bearer ${token}` },
         skipAuthRefresh: true,
     });
+    return res.data;
+}
+
+export async function getBookingSeatMapRequest(
+    routeId: string,
+    travelDate?: string,
+): Promise<BookingSeatMap> {
+    const params = new URLSearchParams({ routeId });
+    if (travelDate) params.set("travelDate", travelDate);
+
+    const res = await api.get(`/bookings/seat-map?${params.toString()}`);
     return res.data;
 }

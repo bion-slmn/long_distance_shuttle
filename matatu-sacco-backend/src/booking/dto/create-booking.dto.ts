@@ -7,6 +7,8 @@ import {
     IsEnum,
     IsDateString,
     IsEmail,
+    IsInt,
+    Min,
     Matches,
 } from 'class-validator';
 import { BookingSource, BookingStatus, PaymentMethod } from '../entities/booking.entity';
@@ -63,6 +65,9 @@ export class CreateBookingDto {
     @IsEnum(BookingSource)
     declare source?: BookingSource;
 
+    @IsOptional()
+    mpesaTransactionId?: string;
+
 
     @IsOptional()
     @Matches(/^\d{2}:\d{2}(:\d{2})?$/, { message: 'preferredBoardingFrom must be HH:mm or HH:mm:ss' })
@@ -71,4 +76,14 @@ export class CreateBookingDto {
     @IsOptional()
     @Matches(/^\d{2}:\d{2}(:\d{2})?$/, { message: 'preferredBoardingTo must be HH:mm or HH:mm:ss' })
     preferredBoardingTo?: string;
+
+    // Only meaningful when source === CLERK — the service ignores this on
+    // any other source, so a public-portal caller sending a seatNumber has
+    // no effect. Range against the actual vehicle's capacity can't be
+    // validated here (the DTO doesn't know the trip yet); that check happens
+    // in BookingService.resolveClerkRequestedSeat once the trip is locked.
+    @IsOptional()
+    @IsInt({ message: 'seatNumber must be a whole number.' })
+    @Min(1, { message: 'seatNumber must be 1 or greater.' })
+    seatNumber?: number;
 }
