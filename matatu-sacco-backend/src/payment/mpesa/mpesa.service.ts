@@ -377,4 +377,37 @@ export class MpesaService {
             order: { transactionTime: 'DESC' },
         });
     }
+
+    // ── Register C2B validation/confirmation URLs for a sacco's shortcode ──
+    // One-time setup call per shortcode — not hit on every payment. Run it
+    // once after a sacco's M-Pesa credentials are configured, or on demand
+    // from an admin action.
+    async registerC2BUrls(saccoId: string): Promise<{ responseDescription: string }> {
+        const creds = await this.saccoSettingsService.getDecryptedMpesaCredentials(saccoId);
+        const token = await this.getAccessToken(saccoId, creds.consumerKey, creds.consumerSecret);
+
+        console.log(token)
+        const payload = {
+            ShortCode: 600584, //creds.shortcode,
+            ResponseType: 'Completed',
+            ConfirmationURL: `${process.env.MPESA_CALLBACK_BASE_URL}/payment/c2b/confirmation`,
+            ValidationURL: `${process.env.MPESA_CALLBACK_BASE_URL}/payment/c2b/validation`,
+        };
+
+        try {
+            const { data } = await firstValueFrom(
+                this.httpService.post(`${DARAJA_BASE_URL}/mpesa/c2b/v1/registerurl`, payload, {
+                    headers: { Authorization: `Bearer ${token}` },
+                }),
+            );
+
+            this.logger.log(`C2B URLs registered for sacco ${saccoId}: ${data.ResponseDescription}`);
+            return { responseDescription: data.ResponseDescription };
+        } catch (err: any) {
+            this.logger.error(
+                `C2B URL registration failed for sacco ${saccoId}: ${err?.response?.data?.errorMessage ?? err.message}`,
+            );
+            throw new BadRequestException('Failed to register M-Pesa C2B URLs.');
+        }
+    }
 }

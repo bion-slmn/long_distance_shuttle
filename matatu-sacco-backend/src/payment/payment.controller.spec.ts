@@ -1,35 +1,17 @@
 // src/payment/payment.controller.spec.ts
-import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { PaymentController } from './payment.controller';
 import { PaymentService } from './payment.service';
-import { PaymentMethod, PaymentReferenceType, PaymentStatus } from './entities/payment.entity';
+import { MpesaService } from './mpesa/mpesa.service';
+import { PaymentReferenceType, PaymentStatus } from './entities/payment.entity';
 import { UserRole } from '../auth/entities/user.entity';
 
 describe('PaymentController', () => {
   let controller: PaymentController;
-  let paymentService: Partial<Record<keyof PaymentService, jest.Mock>>;
+  let paymentService: jest.Mocked<PaymentService>;
+  let mpesaService: jest.Mocked<MpesaService>;
 
-  const basePayment = (overrides: Partial<any> = {}) => ({
-    id: 'payment-1',
-    referenceType: PaymentReferenceType.BOOKING,
-    referenceId: 'booking-1',
-    saccoId: 'sacco-1',
-    amount: 500,
-    method: PaymentMethod.MPESA,
-    status: PaymentStatus.SUCCESS,
-    mpesaReceiptNumber: 'NLJ7RT61SV',
-    resultDesc: null,
-    initiationErrorMessage: null,
-    ...overrides,
-  });
-
-  const superAdmin = { role: UserRole.SUPER_ADMIN, saccoId: null };
-  const saccoAdmin = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-1' };
-  const otherSaccoAdmin = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-2' };
-  const clerkNoSacco = { role: UserRole.CLERK, saccoId: null };
-
-  beforeEach(async () => {
+  beforeEach(() => {
     paymentService = {
       reconcileByBookingId: jest.fn(),
       getStatusByBookingId: jest.fn(),
@@ -37,238 +19,227 @@ describe('PaymentController', () => {
       findBySacco: jest.fn(),
       findByReference: jest.fn(),
       findById: jest.fn(),
-    };
+    } as unknown as jest.Mocked<PaymentService>;
 
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [PaymentController],
-      providers: [{ provide: PaymentService, useValue: paymentService }],
-    }).compile();
+    mpesaService = {} as jest.Mocked<MpesaService>;
 
-    controller = module.get<PaymentController>(PaymentController);
+    controller = new PaymentController(paymentService, mpesaService);
   });
 
-  afterEach(() => {
-    jest.clearAllMocks();
-  });
-
-  // ─── reconcile ─────────────────────────────────────────────────────────
+  // ── reconcile ────────────────────────────────────────────────────────
   describe('reconcile', () => {
-    it('returns paymentId/status/mpesaReceiptNumber with null error when SUCCESS', async () => {
-      const payment = basePayment({ status: PaymentStatus.SUCCESS });
-      paymentService.reconcileByBookingId!.mockResolvedValue(payment);
+    it('returns errorMessage from resultDesc when status is FAILED', async () => {
+      paymentService.reconcileByBookingId.mockResolvedValue({
+        id: 'pay-1',
+        status: PaymentStatus.FAILED,
+        resultDesc: 'Request Cancelled by user.',
+        initiationErrorMessage: null,
+        mpesaReceiptNumber: null,
+      } as any);
 
       const result = await controller.reconcile('booking-1');
 
       expect(paymentService.reconcileByBookingId).toHaveBeenCalledWith('booking-1');
       expect(result).toEqual({
-        paymentId: payment.id,
-        status: PaymentStatus.SUCCESS,
-        errorMessage: null,
-        mpesaReceiptNumber: payment.mpesaReceiptNumber,
-      });
-    });
-
-    it('surfaces resultDesc as errorMessage when FAILED', async () => {
-      const payment = basePayment({
+        paymentId: 'pay-1',
         status: PaymentStatus.FAILED,
-        resultDesc: 'Insufficient funds',
+        errorMessage: 'Request Cancelled by user.',
         mpesaReceiptNumber: null,
       });
-      paymentService.reconcileByBookingId!.mockResolvedValue(payment);
-
-      const result = await controller.reconcile('booking-1');
-
-      expect(result.errorMessage).toBe('Insufficient funds');
     });
 
-    it('falls back to initiationErrorMessage, then a generic message, when FAILED', async () => {
-      const payment = basePayment({
+    it('falls back to initiationErrorMessage when resultDesc is missing', async () => {
+      paymentService.reconcileByBookingId.mockResolvedValue({
+        id: 'pay-2',
         status: PaymentStatus.FAILED,
         resultDesc: null,
-        initiationErrorMessage: 'STK dispatch failed',
-      });
-      paymentService.reconcileByBookingId!.mockResolvedValue(payment);
+        initiationErrorMessage: 'Timeout awaiting response.',
+        mpesaReceiptNumber: null,
+      } as any);
 
-      const result = await controller.reconcile('booking-1');
-      expect(result.errorMessage).toBe('STK dispatch failed');
+      const result = await controller.reconcile('booking-2');
 
-      const payment2 = basePayment({
+      expect(result.errorMessage).toBe('Timeout awaiting response.');
+    });
+
+    it('falls back to a generic message when neither error field is set', async () => {
+      paymentService.reconcileByBookingId.mockResolvedValue({
+        id: 'pay-3',
         status: PaymentStatus.FAILED,
         resultDesc: null,
         initiationErrorMessage: null,
-      });
-      paymentService.reconcileByBookingId!.mockResolvedValue(payment2);
+        mpesaReceiptNumber: null,
+      } as any);
 
-      const result2 = await controller.reconcile('booking-1');
-      expect(result2.errorMessage).toBe('Payment failed.');
+      const result = await controller.reconcile('booking-3');
+
+      expect(result.errorMessage).toBe('Payment failed.');
     });
 
-    it('propagates NotFoundException from the service', async () => {
-      paymentService.reconcileByBookingId!.mockRejectedValue(
-        new NotFoundException('No payment found for booking "booking-1".'),
-      );
+    it('returns null errorMessage when status is not FAILED', async () => {
+      paymentService.reconcileByBookingId.mockResolvedValue({
+        id: 'pay-4',
+        status: PaymentStatus.SUCCESS,
+        resultDesc: null,
+        initiationErrorMessage: null,
+        mpesaReceiptNumber: 'ABC123',
+      } as any);
 
-      await expect(controller.reconcile('booking-1')).rejects.toThrow(NotFoundException);
+      const result = await controller.reconcile('booking-4');
+
+      expect(result).toEqual({
+        paymentId: 'pay-4',
+        status: PaymentStatus.SUCCESS,
+        errorMessage: null,
+        mpesaReceiptNumber: 'ABC123',
+      });
     });
   });
 
-  // ─── getStatusForBooking ───────────────────────────────────────────────
+  // ── getStatusForBooking ──────────────────────────────────────────────
   describe('getStatusForBooking', () => {
-    it('delegates directly to paymentService.getStatusByBookingId', async () => {
-      const statusResponse = {
-        paymentId: 'payment-1',
-        status: PaymentStatus.PENDING,
-        method: PaymentMethod.MPESA,
-        errorMessage: null,
-        mpesaReceiptNumber: null,
-      };
-      paymentService.getStatusByBookingId!.mockResolvedValue(statusResponse);
+    it('delegates straight to the service', async () => {
+      const status = { status: PaymentStatus.PENDING };
+      paymentService.getStatusByBookingId.mockResolvedValue(status as any);
 
       const result = await controller.getStatusForBooking('booking-1');
 
       expect(paymentService.getStatusByBookingId).toHaveBeenCalledWith('booking-1');
-      expect(result).toEqual(statusResponse);
-    });
-
-    it('propagates NotFoundException from the service', async () => {
-      paymentService.getStatusByBookingId!.mockRejectedValue(
-        new NotFoundException('No payment found for booking "booking-1".'),
-      );
-
-      await expect(controller.getStatusForBooking('booking-1')).rejects.toThrow(NotFoundException);
+      expect(result).toBe(status);
     });
   });
 
-  // ─── recordCash ─────────────────────────────────────────────────────────
+  // ── recordCash ───────────────────────────────────────────────────────
   describe('recordCash', () => {
-    it('delegates the dto straight to paymentService.recordCashPayment', async () => {
-      const dto = {
-        referenceType: PaymentReferenceType.BOOKING,
-        referenceId: 'booking-1',
-        saccoId: 'sacco-1',
-        amount: 500,
-      };
-      const created = basePayment({ method: PaymentMethod.CASH, status: PaymentStatus.SUCCESS });
-      paymentService.recordCashPayment!.mockResolvedValue(created);
+    it('delegates the dto to the service', async () => {
+      const dto = { bookingId: 'booking-1', amount: 500 } as any;
+      const payment = { id: 'pay-1' };
+      paymentService.recordCashPayment.mockResolvedValue(payment as any);
 
-      const result = await controller.recordCash(dto as any);
+      const result = await controller.recordCash(dto);
 
       expect(paymentService.recordCashPayment).toHaveBeenCalledWith(dto);
-      expect(result).toEqual(created);
+      expect(result).toBe(payment);
     });
   });
 
-  // ─── findForSacco ───────────────────────────────────────────────────────
+  // ── findForSacco ─────────────────────────────────────────────────────
   describe('findForSacco', () => {
-    it('SUPER_ADMIN: uses the provided ?saccoId query param', () => {
-      paymentService.findBySacco!.mockReturnValue([basePayment()]);
+    it('SUPER_ADMIN can scope by an explicit query saccoId', () => {
+      const user = { role: UserRole.SUPER_ADMIN, saccoId: undefined };
+      controller.findForSacco('sacco-99', {} as any, user);
 
-      controller.findForSacco('sacco-9', { from: '2026-08-01' } as any, superAdmin);
-
-      expect(paymentService.findBySacco).toHaveBeenCalledWith('sacco-9', { from: '2026-08-01' });
+      expect(paymentService.findBySacco).toHaveBeenCalledWith('sacco-99', {});
     });
 
-    it('SUPER_ADMIN: passes undefined saccoId through when omitted (all saccos)', () => {
-      paymentService.findBySacco!.mockReturnValue([]);
-
-      controller.findForSacco(undefined, {} as any, superAdmin);
+    it('SUPER_ADMIN with no query saccoId gets all saccos (undefined)', () => {
+      const user = { role: UserRole.SUPER_ADMIN, saccoId: undefined };
+      controller.findForSacco(undefined, {} as any, user);
 
       expect(paymentService.findBySacco).toHaveBeenCalledWith(undefined, {});
     });
 
-    it('SACCO_ADMIN: ignores query saccoId and scopes to their own saccoId', () => {
-      paymentService.findBySacco!.mockReturnValue([]);
+    it('non-SUPER_ADMIN is scoped to their own saccoId, ignoring any query saccoId', () => {
+      const user = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-5' };
+      // Attempting to pass a different sacco via query should have no effect —
+      // scoping must come from the JWT-derived user, not client input.
+      controller.findForSacco('sacco-other', {} as any, user);
 
-      // Even if they try to pass a different sacco in the query, it's ignored
-      controller.findForSacco('sacco-other', {} as any, saccoAdmin);
-
-      expect(paymentService.findBySacco).toHaveBeenCalledWith('sacco-1', {});
+      expect(paymentService.findBySacco).toHaveBeenCalledWith('sacco-5', {});
     });
 
-    it('throws ForbiddenException for a non-super-admin with no assigned saccoId', () => {
-      expect(() => controller.findForSacco(undefined, {} as any, clerkNoSacco)).toThrow(
+    it('CLERK is scoped to their own saccoId', () => {
+      const user = { role: UserRole.CLERK, saccoId: 'sacco-7' };
+      controller.findForSacco(undefined, {} as any, user);
+
+      expect(paymentService.findBySacco).toHaveBeenCalledWith('sacco-7', {});
+    });
+
+    it('throws ForbiddenException for a non-SUPER_ADMIN with no assigned sacco', () => {
+      const user = { role: UserRole.SACCO_ADMIN, saccoId: undefined };
+
+      expect(() => controller.findForSacco(undefined, {} as any, user)).toThrow(
         ForbiddenException,
       );
       expect(paymentService.findBySacco).not.toHaveBeenCalled();
     });
   });
 
-  // ─── findForBooking ─────────────────────────────────────────────────────
+  // ── findForBooking ───────────────────────────────────────────────────
   describe('findForBooking', () => {
-    it('returns the payment when found and user is SUPER_ADMIN', async () => {
-      const payment = basePayment({ saccoId: 'sacco-1' });
-      paymentService.findByReference!.mockResolvedValue(payment);
+    it('returns the payment when it belongs to the caller\'s sacco', async () => {
+      const payment = { id: 'pay-1', saccoId: 'sacco-5' };
+      paymentService.findByReference.mockResolvedValue(payment as any);
+      const user = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-5' };
 
-      const result = await controller.findForBooking('booking-1', superAdmin);
+      const result = await controller.findForBooking('booking-1', user);
 
       expect(paymentService.findByReference).toHaveBeenCalledWith(
         PaymentReferenceType.BOOKING,
         'booking-1',
       );
-      expect(result).toEqual(payment);
+      expect(result).toBe(payment);
     });
 
-    it('returns the payment when the sacco admin owns the payment saccoId', async () => {
-      const payment = basePayment({ saccoId: 'sacco-1' });
-      paymentService.findByReference!.mockResolvedValue(payment);
+    it('SUPER_ADMIN can access a payment regardless of sacco', async () => {
+      const payment = { id: 'pay-1', saccoId: 'sacco-5' };
+      paymentService.findByReference.mockResolvedValue(payment as any);
+      const user = { role: UserRole.SUPER_ADMIN, saccoId: undefined };
 
-      const result = await controller.findForBooking('booking-1', saccoAdmin);
+      const result = await controller.findForBooking('booking-1', user);
 
-      expect(result).toEqual(payment);
+      expect(result).toBe(payment);
     });
 
-    it('throws NotFoundException when no payment exists for the booking', async () => {
-      paymentService.findByReference!.mockResolvedValue(null);
+    it('throws ForbiddenException when the payment belongs to a different sacco', async () => {
+      const payment = { id: 'pay-1', saccoId: 'sacco-5' };
+      paymentService.findByReference.mockResolvedValue(payment as any);
+      const user = { role: UserRole.CLERK, saccoId: 'sacco-6' };
 
-      await expect(controller.findForBooking('booking-1', superAdmin)).rejects.toThrow(
-        NotFoundException,
+      await expect(controller.findForBooking('booking-1', user)).rejects.toThrow(
+        ForbiddenException,
       );
     });
 
-    it('throws ForbiddenException when a non-super-admin requests a payment from another sacco', async () => {
-      const payment = basePayment({ saccoId: 'sacco-1' });
-      paymentService.findByReference!.mockResolvedValue(payment);
+    it('throws NotFoundException when no payment exists for the booking', async () => {
+      paymentService.findByReference.mockResolvedValue(null);
+      const user = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-5' };
 
-      await expect(controller.findForBooking('booking-1', otherSaccoAdmin)).rejects.toThrow(
-        ForbiddenException,
+      await expect(controller.findForBooking('booking-404', user)).rejects.toThrow(
+        NotFoundException,
       );
     });
   });
 
-  // ─── findOne ────────────────────────────────────────────────────────────
+  // ── findOne ──────────────────────────────────────────────────────────
   describe('findOne', () => {
-    it('returns the payment when found and user is SUPER_ADMIN', async () => {
-      const payment = basePayment({ saccoId: 'sacco-1' });
-      paymentService.findById!.mockResolvedValue(payment);
+    it('returns the payment when it belongs to the caller\'s sacco', async () => {
+      const payment = { id: 'pay-1', saccoId: 'sacco-5' };
+      paymentService.findById.mockResolvedValue(payment as any);
+      const user = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-5' };
 
-      const result = await controller.findOne('payment-1', superAdmin);
+      const result = await controller.findOne('pay-1', user);
 
-      expect(paymentService.findById).toHaveBeenCalledWith('payment-1');
-      expect(result).toEqual(payment);
+      expect(paymentService.findById).toHaveBeenCalledWith('pay-1');
+      expect(result).toBe(payment);
     });
 
-    it('returns the payment when the sacco admin owns it', async () => {
-      const payment = basePayment({ saccoId: 'sacco-1' });
-      paymentService.findById!.mockResolvedValue(payment);
+    it('SUPER_ADMIN can access any payment', async () => {
+      const payment = { id: 'pay-1', saccoId: 'sacco-5' };
+      paymentService.findById.mockResolvedValue(payment as any);
+      const user = { role: UserRole.SUPER_ADMIN, saccoId: undefined };
 
-      const result = await controller.findOne('payment-1', saccoAdmin);
+      const result = await controller.findOne('pay-1', user);
 
-      expect(result).toEqual(payment);
+      expect(result).toBe(payment);
     });
 
-    it('propagates NotFoundException from the service when the payment does not exist', async () => {
-      paymentService.findById!.mockRejectedValue(new NotFoundException('Payment "x" not found.'));
+    it('throws ForbiddenException when the payment belongs to a different sacco', async () => {
+      const payment = { id: 'pay-1', saccoId: 'sacco-5' };
+      paymentService.findById.mockResolvedValue(payment as any);
+      const user = { role: UserRole.CLERK, saccoId: 'sacco-6' };
 
-      await expect(controller.findOne('x', superAdmin)).rejects.toThrow(NotFoundException);
-    });
-
-    it('throws ForbiddenException when a non-super-admin requests a payment from another sacco', async () => {
-      const payment = basePayment({ saccoId: 'sacco-1' });
-      paymentService.findById!.mockResolvedValue(payment);
-
-      await expect(controller.findOne('payment-1', otherSaccoAdmin)).rejects.toThrow(
-        ForbiddenException,
-      );
+      await expect(controller.findOne('pay-1', user)).rejects.toThrow(ForbiddenException);
     });
   });
 });

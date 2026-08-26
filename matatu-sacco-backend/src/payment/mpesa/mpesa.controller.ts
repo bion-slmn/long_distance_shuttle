@@ -5,6 +5,7 @@ import {
     Get,
     HttpCode,
     Logger,
+    Param,
     Post,
     Query,
 } from '@nestjs/common';
@@ -133,5 +134,13 @@ export class MpesaController {
 
         // Daraja expects this exact shape acknowledging receipt.
         return { ResultCode: 0, ResultDesc: 'Accepted' };
+    }
+
+    // ── One-time C2B URL registration for a sacco's shortcode ──────────────
+    // Protected — an admin/setup action you trigger yourself, not a
+    // Safaricom-facing webhook. Import Param from @nestjs/common.
+    @Post(':saccoId/c2b/register')
+    async registerC2BUrls(@Param('saccoId') saccoId: string) {
+        return this.mpesaService.registerC2BUrls(saccoId);
     }
 }

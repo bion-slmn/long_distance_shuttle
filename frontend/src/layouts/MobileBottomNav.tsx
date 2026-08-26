@@ -1,14 +1,14 @@
 // src/components/layout/MobileBottomNav.tsx
 import { Link, useLocation } from "react-router-dom"
-import { Building2, Route as RouteIcon, Car, Road, LayoutDashboard, MoreHorizontal } from "lucide-react"
+import { ClipboardList, Wallet, Route as RouteIcon, Road, LayoutDashboard, MoreHorizontal } from "lucide-react"
 import { useSidebar } from "@/components/ui/sidebar"
 
 const MOBILE_TABS = [
     { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-    { label: "Saccos", href: "/sacco", icon: Building2 },
-    { label: "Routes", href: "/routes", icon: RouteIcon },
-    { label: "Fleet", href: "/vehicles", icon: Car },
+    { label: "Bookings", href: "/bookings-report", icon: ClipboardList },
+    { label: "Payments", href: "/payments", icon: Wallet },
     { label: "Trips", href: "/trips", icon: Road },
+    { label: "Routes", href: "/routes", icon: RouteIcon },
 ]
 
 export function MobileBottomNav() {
@@ -33,7 +33,7 @@ export function MobileBottomNav() {
                     )
                 })}
 
-                {/* Opens the full sidebar drawer for "More" (Settings, Payments, Profile, Logout) */}
+                {/* Opens the full sidebar drawer for "More" (Saccos, Fleet, Users, Settings, Profile, Logout) */}
                 <button
                     onClick={() => setOpenMobile(true)}
                     className="flex flex-col items-center justify-center gap-0.5 w-full h-full text-muted-foreground"

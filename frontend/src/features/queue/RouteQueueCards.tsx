@@ -23,6 +23,8 @@ import {
     Mail,
     MapPin,
     Undo2,
+    Search,
+    Van,
 } from "lucide-react"
 import { toast } from "sonner"
 import { motion, AnimatePresence } from "framer-motion"
@@ -95,7 +97,9 @@ interface RouteQueueCardsProps {
 
 import { useQueries } from "@tanstack/react-query" // add to existing react-query import
 import { SeatPicker } from "../booking/SeatPicker"
-import { getMpesaTransactionsByPhoneRequest, MpesaTransactionMatchStatus, type MpesaTransaction } from "@/api/paymentApi"
+import { getMpesaTransactionsByPhoneRequest, getPaymentStatusForBookingRequest, MpesaTransactionMatchStatus, reconcilePaymentRequest, type MpesaTransaction } from "@/api/paymentApi"
+import { Dialog } from "@base-ui/react"
+import { DialogContent, DialogHeader } from "@/components/ui/dialog"
 
 export function RouteQueueCards({
     routes,
@@ -242,11 +246,20 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
             )
             return Promise.all(requests)
         },
-        onSuccess: () => {
-            toast.success("Booking confirmed")
+        onSuccess: (bookings, payload) => {
             queryClient.invalidateQueries({ queryKey: queueQueryKey })
             queryClient.invalidateQueries({ queryKey: seatMapQueryKey })
-            setShowBooking(false)
+
+            // Prompt-mode M-Pesa isn't actually confirmed yet — BookingSheet
+            // takes over from here and polls payment status itself. Cash and
+            // Paybill/Till (manual match) are final the moment the record
+            // exists, so those close immediately as before.
+            const isPromptFlow =
+                payload.paymentMethod === PaymentMethod.MPESA && !payload.mpesaTransactionId
+            if (!isPromptFlow) {
+                toast.success("Booking confirmed")
+                setShowBooking(false)
+            }
         },
         onError: () => {
             toast.error("Failed to book — try again")
@@ -366,7 +379,7 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
                         entry={loadingVehicle}
                         fare={route.fare}
                         isSubmitting={bookingMutation.isPending}
-                        onSubmit={(payload) => bookingMutation.mutate(payload)}
+                        onSubmit={(payload) => bookingMutation.mutateAsync(payload)}
                         route={route}
                         travelDate={selectedDate}
                     />
@@ -624,12 +637,12 @@ interface BookingSheetProps {
     entry: QueueEntry
     fare?: number
     isSubmitting?: boolean
-    onSubmit: (payload: BookingFormValues) => void
+    onSubmit: (payload: BookingFormValues) => Promise<Booking[]>
     route?: { origin: string; destination: string; id: string }
     travelDate: string
 }
 
-// ── BookingSheet: new local state ─────────────────────────────────────
+
 function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onSubmit, route, travelDate }: BookingSheetProps) {
     const capacity = entry.vehicle.seatingCapacity
     const seated = entry.seatedCount ?? 0
@@ -642,10 +655,75 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
     const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>(PaymentMethod.MPESA)
     const [selectedSeats, setSelectedSeats] = useState<number[]>([])
 
-    // "prompt" = normal STK push flow. "manual" = customer already paid via
-    // paybill directly (C2B) — clerk searches for and matches the receipt.
     const [mpesaMode, setMpesaMode] = useState<"prompt" | "manual">("prompt")
     const [selectedTransactionId, setSelectedTransactionId] = useState<string | null>(null)
+
+    const queryClient = useQueryClient()
+
+    // Set once the prompt-mode booking record exists and we're waiting on
+    // the passenger's phone. null the rest of the time.
+    const [awaitingBooking, setAwaitingBooking] = useState<Booking | null>(null)
+    const [pollStartedAt, setPollStartedAt] = useState<number | null>(null)
+
+    const isAwaitingMpesa = !!awaitingBooking && awaitingBooking.paymentStatus === "PENDING"
+
+    const paymentStatusQuery = useQuery({
+        queryKey: ["payment-status", awaitingBooking?.id],
+        queryFn: () => getPaymentStatusForBookingRequest(awaitingBooking!.id),
+        enabled: isAwaitingMpesa,
+        refetchIntervalInBackground: true,
+        refetchInterval: (query) => {
+            const status = query.state.data?.status
+            if (status && status !== "PENDING" && status !== "PROCESSING") return false
+            if (pollStartedAt === null) return 3000
+            if (Date.now() - pollStartedAt > 180_000) return false
+            return 3000
+        },
+    })
+
+    const paymentResult = paymentStatusQuery.data
+    const paymentSucceeded = paymentResult?.status === "SUCCESS"
+    const paymentFailed = paymentResult?.status === "FAILED" || paymentResult?.status === "EXPIRED"
+    const paymentTimedOut =
+        isAwaitingMpesa &&
+        pollStartedAt !== null &&
+        !paymentSucceeded &&
+        !paymentFailed &&
+        Date.now() - pollStartedAt > 180_000 &&
+        !paymentStatusQuery.isFetching
+
+    // Same 175s reconcile-before-giving-up fallback as BookTicket.tsx
+    const reconcileMutation = useMutation({
+        mutationFn: () => reconcilePaymentRequest(awaitingBooking!.id),
+        onSuccess: (result) => {
+            queryClient.setQueryData(["payment-status", awaitingBooking?.id], result)
+        },
+    })
+
+    useEffect(() => {
+        if (
+            isAwaitingMpesa &&
+            pollStartedAt !== null &&
+            Date.now() - pollStartedAt > 175_000 &&
+            !paymentSucceeded &&
+            !paymentFailed &&
+            !reconcileMutation.isPending &&
+            !reconcileMutation.isSuccess
+        ) {
+            reconcileMutation.mutate()
+        }
+    }, [isAwaitingMpesa, pollStartedAt, paymentSucceeded, paymentFailed])
+
+    // Payment landed — close out. The booking record itself is already
+    // counted in the seat map (created as pending on submit), so this just
+    // needs to tell the clerk it's done.
+    useEffect(() => {
+        if (paymentSucceeded && awaitingBooking) {
+            toast.success("Payment received — booking confirmed")
+            queryClient.invalidateQueries({ queryKey: ["queue", route?.id, travelDate] })
+            onOpenChange(false)
+        }
+    }, [paymentSucceeded])
 
     const seatMapQuery = useQuery({
         queryKey: ["seat-map", route?.id, travelDate],
@@ -653,8 +731,6 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
         enabled: open && !!route?.id,
     })
 
-    // Only fetch once the phone number looks real, and only in manual mode —
-    // no point hitting the endpoint on every keystroke.
     const normalizedPhone = phone.replace(/\D/g, "")
     const transactionsQuery = useQuery({
         queryKey: ["mpesa-transactions", normalizedPhone],
@@ -674,17 +750,28 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
             setSelectedSeats([])
             setMpesaMode("prompt")
             setSelectedTransactionId(null)
+            setAwaitingBooking(null)
+            setPollStartedAt(null)
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open])
-
-    // Reset the picked transaction whenever the search set changes, so a
-    // stale selection can't survive a phone-number edit.
     useEffect(() => {
         setSelectedTransactionId(null)
     }, [normalizedPhone, mpesaMode])
 
+    // Manual match = exactly 1 seat. Trim automatically so the clerk never
+    // hits a validation wall after selecting seats.
+    useEffect(() => {
+        if (mpesaMode === "manual" && selectedSeats.length > 1) {
+            setSelectedSeats([selectedSeats[0]])
+        }
+    }, [mpesaMode])
+
     function toggleSeat(seat: number) {
+        if (mpesaMode === "manual") {
+            setSelectedSeats((prev) => (prev.includes(seat) ? [] : [seat]))
+            return
+        }
         setSelectedSeats((prev) =>
             prev.includes(seat) ? prev.filter((s) => s !== seat) : [...prev, seat]
         )
@@ -693,25 +780,53 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
     const seats = selectedSeats.length
     const total = unitFare * seats
 
-    // Manual match ties one paid receipt to exactly one booking — cap it to
-    // a single seat and require a selection before it's submittable.
     const isManualMatch = paymentMethod === PaymentMethod.MPESA && mpesaMode === "manual"
     const manualMatchValid = !isManualMatch || (seats === 1 && !!selectedTransactionId)
 
     const canSubmit =
         seats > 0 && phone.trim().length > 0 && !isSubmitting && !isFull && manualMatchValid
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
         if (!canSubmit) return
-        onSubmit({
-            passengerName: name.trim(),
-            passengerPhone: phone.trim(),
-            seats,
-            paymentMethod,
-            seatNumbers: selectedSeats,
-            mpesaTransactionId: isManualMatch ? selectedTransactionId! : undefined,
-        })
+        const isPromptFlow = paymentMethod === PaymentMethod.MPESA && mpesaMode === "prompt"
+        try {
+            const bookings = await onSubmit({
+                passengerName: name.trim(),
+                passengerPhone: phone.trim(),
+                seats,
+                paymentMethod,
+                seatNumbers: selectedSeats,
+                mpesaTransactionId: isManualMatch ? selectedTransactionId! : undefined,
+            })
+            if (isPromptFlow && bookings[0]) {
+                setAwaitingBooking(bookings[0])
+                setPollStartedAt(Date.now())
+            }
+            // Cash / manual match: parent's onSuccess already closed the sheet.
+        } catch {
+            // parent's onError already toasts; nothing more to do here.
+        }
     }
+
+    function getSubmitIcon() {
+        if (isFull) return <XCircle className="size-4" />
+        if (paymentMethod === PaymentMethod.MPESA && mpesaMode === "prompt") {
+            return <Smartphone className="size-4" />
+        }
+        return <CheckCircle2 className="size-4" />
+    }
+
+    function getSubmitLabel() {
+        if (isFull) return "Vehicle Full"
+        if (paymentMethod === PaymentMethod.MPESA && mpesaMode === "prompt") {
+            return "Send Payment Prompt"
+        }
+        if (isManualMatch) return "Confirm & Match Payment"
+        return "Confirm Booking"
+    }
+
+
+
 
     return (
         <Sheet open={open} onOpenChange={onOpenChange}>
@@ -751,235 +866,273 @@ function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onS
                         </div>
                     </div>
 
-                    {/* Phone / Name */}
-                    <div className="space-y-3">
-                        <div className="space-y-1">
-                            <Label htmlFor="passenger-phone" className="text-sm font-semibold">
-                                Phone number <span className="text-destructive">*</span>
-                            </Label>
-                            <div className="relative">
-                                <Phone className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground/50" />
-                                <Input
-                                    id="passenger-phone"
-                                    value={phone}
-                                    onChange={(e) => setPhone(e.target.value)}
-                                    placeholder="07XX XXX XXX"
-                                    inputMode="tel"
-                                    required
-                                    disabled={isFull}
-                                    className="pl-9"
-                                />
-                            </div>
-                            {phone && phone.length < 10 && (
-                                <p className="text-xs text-destructive/70">Please enter a valid phone number</p>
+                    {awaitingBooking ? (
+                        <div className="flex flex-col items-center text-center gap-3 py-10">
+                            {paymentSucceeded ? (
+                                <CheckCircle2 className="size-10 text-emerald-500" />
+                            ) : paymentFailed || paymentTimedOut ? (
+                                <XCircle className="size-10 text-red-500" />
+                            ) : (
+                                <motion.div
+                                    animate={{ x: [-4, 4, -4] }}
+                                    transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+                                >
+                                    <Van className="size-10 text-primary" />
+                                </motion.div>
                             )}
-                        </div>
-
-                        <div className="space-y-1">
-                            <Label htmlFor="passenger-name" className="text-sm font-semibold">
-                                Passenger name
-                            </Label>
-                            <div className="relative">
-                                <Users className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground/50" />
-                                <Input
-                                    id="passenger-name"
-                                    value={name}
-                                    onChange={(e) => setName(e.target.value)}
-                                    placeholder="Optional"
-                                    disabled={isFull}
-                                    className="pl-9"
-                                />
+                            <div>
+                                <p className="text-sm font-semibold">
+                                    {paymentFailed || paymentTimedOut
+                                        ? "Payment didn't go through"
+                                        : "Waiting for M-Pesa..."}
+                                </p>
+                                <p className="text-xs text-muted-foreground/70 mt-1">
+                                    {paymentFailed
+                                        ? paymentResult?.errorMessage ?? "The payment failed. Try a different payment method."
+                                        : paymentTimedOut
+                                            ? "The prompt wasn't completed in time. Ask the passenger to check their phone, or try a different payment method."
+                                            : `Ask ${name.trim() || "the passenger"} to enter their M-Pesa PIN on their phone.`}
+                                </p>
                             </div>
                         </div>
-                    </div>
-
-                    {/* Seat map — required. Seat count and fare both derive
-                        from how many cells are tapped below. */}
-                    {!isFull && (
-                        <div className="space-y-1.5">
-                            <div className="flex items-center justify-between">
-                                <Label className="text-sm font-semibold">
-                                    Select Seats <span className="text-destructive">*</span>
-                                </Label>
-                                <div className="flex items-center gap-2">
-                                    <Badge variant="outline" className="text-[10px] font-medium text-primary border-primary/30 bg-primary/5">
-                                        {capacity}-Seater
-                                    </Badge>
-                                    {selectedSeats.length > 0 && (
-                                        <button
-                                            type="button"
-                                            className="text-xs text-muted-foreground hover:text-foreground"
-                                            onClick={() => setSelectedSeats([])}
-                                        >
-                                            Clear
-                                        </button>
+                    ) : (
+                        <>
+                            {/* Phone / Name */}
+                            <div className="space-y-3">
+                                <div className="space-y-1">
+                                    <Label htmlFor="passenger-phone" className="text-sm font-semibold">
+                                        Phone number <span className="text-destructive">*</span>
+                                    </Label>
+                                    <div className="relative">
+                                        <Phone className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground/50" />
+                                        <Input
+                                            id="passenger-phone"
+                                            value={phone}
+                                            onChange={(e) => setPhone(e.target.value)}
+                                            placeholder="07XX XXX XXX"
+                                            inputMode="tel"
+                                            required
+                                            disabled={isFull}
+                                            className="pl-9"
+                                        />
+                                    </div>
+                                    {phone && phone.length < 10 && (
+                                        <p className="text-xs text-destructive/70">Please enter a valid phone number</p>
                                     )}
                                 </div>
+
+                                <div className="space-y-1">
+                                    <Label htmlFor="passenger-name" className="text-sm font-semibold">
+                                        Passenger name
+                                    </Label>
+                                    <div className="relative">
+                                        <Users className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground/50" />
+                                        <Input
+                                            id="passenger-name"
+                                            value={name}
+                                            onChange={(e) => setName(e.target.value)}
+                                            placeholder="Optional"
+                                            disabled={isFull}
+                                            className="pl-9"
+                                        />
+                                    </div>
+                                </div>
                             </div>
-                            {seatMapQuery.isLoading ? (
-                                <Skeleton className="h-32 w-full rounded-xl" />
-                            ) : (
-                                <SeatPicker
-                                    seatsTotal={seatMapQuery.data?.seatsTotal ?? capacity}
-                                    takenSeatNumbers={seatMapQuery.data?.takenSeatNumbers ?? []}
-                                    selectedSeats={selectedSeats}
-                                    onToggle={toggleSeat}
-                                />
+
+                            {/* Seat map */}
+                            {!isFull && (
+                                <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between">
+                                        <Label className="text-sm font-semibold">
+                                            Select Seats <span className="text-destructive">*</span>
+                                        </Label>
+                                        <div className="flex items-center gap-2">
+                                            <Badge variant="outline" className="text-[10px] font-medium text-primary border-primary/30 bg-primary/5">
+                                                {capacity}-Seater
+                                            </Badge>
+                                            {mpesaMode === "manual" && (
+                                                <span className="text-[10px] font-medium text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 px-1.5 py-0.5 rounded">
+                                                    1 seat only
+                                                </span>
+                                            )}
+                                            {selectedSeats.length > 0 && mpesaMode !== "manual" && (
+                                                <button
+                                                    type="button"
+                                                    className="text-xs text-muted-foreground hover:text-foreground"
+                                                    onClick={() => setSelectedSeats([])}
+                                                >
+                                                    Clear
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                    {seatMapQuery.isLoading ? (
+                                        <Skeleton className="h-32 w-full rounded-xl" />
+                                    ) : (
+                                        <SeatPicker
+                                            seatsTotal={seatMapQuery.data?.seatsTotal ?? capacity}
+                                            takenSeatNumbers={seatMapQuery.data?.takenSeatNumbers ?? []}
+                                            selectedSeats={selectedSeats}
+                                            onToggle={toggleSeat}
+                                        />
+                                    )}
+                                </div>
                             )}
-                        </div>
-                    )}
 
-                    {/* Fare summary — driven entirely by selection count */}
-                    <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2.5">
-                        <span className="text-xs text-muted-foreground/70">
-                            {seats} seat{seats === 1 ? "" : "s"} selected (KSh {unitFare.toLocaleString()} each)
-                        </span>
-                        <span className="text-lg font-bold text-primary">
-                            KSh {total.toLocaleString()}
-                        </span>
-                    </div>
+                            {/* Fare summary */}
+                            <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2.5">
+                                <span className="text-xs text-muted-foreground/70">
+                                    {seats} seat{seats === 1 ? "" : "s"} selected (KSh {unitFare.toLocaleString()} each)
+                                </span>
+                                <span className="text-lg font-bold text-primary">
+                                    KSh {total.toLocaleString()}
+                                </span>
+                            </div>
 
-                    {/* Payment method — segmented toggle */}
-                    <div className="space-y-1.5">
-                        <Label className="text-sm font-semibold">Payment method</Label>
-                        <div className="flex gap-1 rounded-lg bg-muted p-1">
-                            <button
-                                type="button"
-                                onClick={() => setPaymentMethod(PaymentMethod.MPESA)}
-                                disabled={isFull}
-                                className={cn(
-                                    "flex-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50",
-                                    paymentMethod === PaymentMethod.MPESA
-                                        ? "bg-background text-primary shadow-sm"
-                                        : "text-muted-foreground hover:bg-background/50"
-                                )}
-                            >
-                                <Smartphone className="size-3.5" />
-                                M-Pesa
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => setPaymentMethod(PaymentMethod.CASH)}
-                                disabled={isFull}
-                                className={cn(
-                                    "flex-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50",
-                                    paymentMethod === PaymentMethod.CASH
-                                        ? "bg-background text-primary shadow-sm"
-                                        : "text-muted-foreground hover:bg-background/50"
-                                )}
-                            >
-                                <Wallet className="size-3.5" />
-                                Cash
-                            </button>
-                        </div>
-
-                        {paymentMethod === PaymentMethod.MPESA && (
-                            <div className="space-y-2 pt-1">
-                                <div className="flex gap-1 rounded-lg bg-muted/60 p-1">
+                            {/* Payment — 3 flat pills. No nested toggles, no dialog. */}
+                            <div className="space-y-2">
+                                <Label className="text-sm font-semibold">Payment method</Label>
+                                <div className="flex gap-1.5 rounded-lg bg-muted p-1">
+                                    {/* Cash — inverted (white/light bg, green text) */}
                                     <button
                                         type="button"
-                                        onClick={() => setMpesaMode("prompt")}
+                                        onClick={() => { setPaymentMethod(PaymentMethod.CASH); setMpesaMode("prompt"); }}
                                         disabled={isFull}
                                         className={cn(
-                                            "flex-1 rounded-md py-1.5 text-xs font-semibold transition-all disabled:opacity-50",
-                                            mpesaMode === "prompt"
-                                                ? "bg-background text-primary shadow-sm"
+                                            "flex-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50",
+                                            paymentMethod === PaymentMethod.CASH
+                                                ? "bg-background text-emerald-600 shadow-sm ring-1 ring-emerald-600/50"
                                                 : "text-muted-foreground hover:bg-background/50"
                                         )}
                                     >
-                                        Send STK Prompt
+                                        <Wallet className="size-3.5" />
+                                        Cash
                                     </button>
+
+                                    {/* M-Pesa STK — branded green */}
                                     <button
                                         type="button"
-                                        onClick={() => setMpesaMode("manual")}
+                                        onClick={() => { setPaymentMethod(PaymentMethod.MPESA); setMpesaMode("prompt"); }}
                                         disabled={isFull}
                                         className={cn(
-                                            "flex-1 rounded-md py-1.5 text-xs font-semibold transition-all disabled:opacity-50",
-                                            mpesaMode === "manual"
-                                                ? "bg-background text-primary shadow-sm"
-                                                : "text-muted-foreground hover:bg-background/50"
+                                            "flex-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50",
+                                            paymentMethod === PaymentMethod.MPESA && mpesaMode === "prompt"
+                                                ? "bg-emerald-600 text-white shadow-sm"
+                                                : "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
                                         )}
                                     >
-                                        Already Paid (paybill)
+                                        <Smartphone className="size-3.5" />
+                                        M-Pesa
+                                    </button>
+
+                                    {/* Paybill / Already Paid — branded green, slightly smaller label */}
+                                    <button
+                                        type="button"
+                                        onClick={() => { setPaymentMethod(PaymentMethod.MPESA); setMpesaMode("manual"); }}
+                                        disabled={isFull}
+                                        className={cn(
+                                            "flex-1 rounded-md py-2 text-xs font-semibold flex items-center justify-center transition-all disabled:opacity-50",
+                                            paymentMethod === PaymentMethod.MPESA && mpesaMode === "manual"
+                                                ? "bg-emerald-600 text-white shadow-sm"
+                                                : "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
+                                        )}
+                                    >
+                                        Paybill/Till
                                     </button>
                                 </div>
 
+                                {/* Inline manual match — replaces the old Dialog */}
                                 {mpesaMode === "manual" && (
-                                    <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
-                                        {seats > 1 && (
-                                            <p className="text-xs text-destructive/80">
-                                                Matching an existing payment only works for a single seat — deselect down to one seat.
-                                            </p>
-                                        )}
+                                    <div className="space-y-2 pt-1">
                                         {normalizedPhone.length < 9 ? (
-                                            <p className="text-xs text-muted-foreground/60">
-                                                Enter the passenger's phone number above to search for their payment.
+                                            <p className="text-xs text-muted-foreground/60 px-1">
+                                                Enter the passenger's phone number to find their payment.
                                             </p>
                                         ) : transactionsQuery.isLoading ? (
-                                            <Skeleton className="h-16 w-full rounded-md" />
+                                            <div className="space-y-1.5">
+                                                <Skeleton className="h-10 w-full rounded-md" />
+                                                <Skeleton className="h-10 w-full rounded-md" />
+                                            </div>
                                         ) : unmatchedTransactions.length === 0 ? (
-                                            <p className="text-xs text-muted-foreground/60">
+                                            <p className="text-xs text-muted-foreground/60 px-1">
                                                 No unmatched M-Pesa payments found for this number.
                                             </p>
                                         ) : (
-                                            <div className="space-y-1.5">
-                                                {unmatchedTransactions.map((t) => (
-                                                    <MpesaTransactionOption
-                                                        key={t.id}
-                                                        transaction={t}
-                                                        selected={selectedTransactionId === t.id}
-                                                        onSelect={() => setSelectedTransactionId(t.id)}
-                                                    />
-                                                ))}
+                                            <div className="space-y-1">
+                                                <p className="text-[11px] font-medium text-muted-foreground/70 px-1">
+                                                    Tap a payment to match
+                                                </p>
+                                                <div className="space-y-1.5">
+                                                    {unmatchedTransactions.map((t) => (
+                                                        <MpesaTransactionOption
+                                                            key={t.id}
+                                                            transaction={t}
+                                                            selected={selectedTransactionId === t.id}
+                                                            onSelect={() =>
+                                                                setSelectedTransactionId((prev) =>
+                                                                    prev === t.id ? null : t.id
+                                                                )
+                                                            }
+                                                        />
+                                                    ))}
+                                                </div>
                                             </div>
                                         )}
                                     </div>
                                 )}
                             </div>
-                        )}
-                    </div>
 
-                    {isFull && (
-                        <motion.div
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            className="flex items-center gap-2 rounded-lg border-2 border-red-500/20 bg-red-500/5 px-4 py-3 text-red-600 dark:text-red-400"
-                        >
-                            <XCircle className="size-5 shrink-0" />
-                            <span className="text-sm">This vehicle is at full capacity. No more seats available.</span>
-                        </motion.div>
+                            {isFull && (
+                                <motion.div
+                                    initial={{ opacity: 0, y: 10 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    className="flex items-center gap-2 rounded-lg border-2 border-red-500/20 bg-red-500/5 px-4 py-3 text-red-600 dark:text-red-400"
+                                >
+                                    <XCircle className="size-5 shrink-0" />
+                                    <span className="text-sm">This vehicle is at full capacity. No more seats available.</span>
+                                </motion.div>
+                            )}
+                        </>
                     )}
                 </div>
 
                 {/* ── Sticky Footer ────────────────────────────────────── */}
                 <SheetFooter className="px-6 py-4 border-t shrink-0">
-                    <Button
-                        className="w-full h-11 gap-2"
-                        onClick={handleSubmit}
-                        disabled={!canSubmit}
-                    >
-                        {isSubmitting ? (
-                            <>
-                                <motion.span
-                                    animate={{ rotate: 360 }}
-                                    transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                                >
-                                    <span className="inline-block">⏳</span>
-                                </motion.span>
-                                Booking...
-                            </>
-                        ) : isFull ? (
-                            <>
-                                <XCircle className="size-4" />
-                                Vehicle Full
-                            </>
-                        ) : (
-                            <>
-                                <CheckCircle2 className="size-4" />
-                                Confirm Booking
-                            </>
-                        )}
-                    </Button>
+                    {awaitingBooking && !paymentFailed && !paymentTimedOut && !paymentSucceeded ? (
+                        <Button
+                            variant="outline"
+                            className="w-full h-11"
+                            onClick={() => onOpenChange(false)}
+                        >
+                            Close — booking stays pending
+                        </Button>
+                    ) : awaitingBooking && (paymentFailed || paymentTimedOut) ? (
+                        <Button
+                            className="w-full h-11"
+                            onClick={() => {
+                                setAwaitingBooking(null)
+                                setPollStartedAt(null)
+                            }}
+                        >
+                            Try Again
+                        </Button>
+                    ) : (
+                        <Button className="w-full h-11 gap-2" onClick={handleSubmit} disabled={!canSubmit}>
+                            {isSubmitting ? (
+                                <>
+                                    <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
+                                        <span className="inline-block">⏳</span>
+                                    </motion.span>
+                                    Booking...
+                                </>
+                            ) : (
+                                <>
+                                    {getSubmitIcon()}
+                                    {getSubmitLabel()}
+                                </>
+                            )}
+                        </Button>
+                    )}
                 </SheetFooter>
             </SheetContent>
         </Sheet>

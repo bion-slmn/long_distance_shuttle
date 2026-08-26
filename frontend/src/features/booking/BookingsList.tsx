@@ -37,9 +37,13 @@ import {
     Clock,
     AlertCircle,
     Car,
+    ClipboardList,
+    SlidersHorizontal,
+    ChevronDown,
 } from "lucide-react";
 import { RouteCombobox } from "../routes/RouteCombobox";
 import { useVehicleNumberPlate } from "@/hooks/useVehicleNumberPlate";
+import { cn } from "@/lib/utils";
 
 function todayString(): string {
     return new Date().toISOString().slice(0, 10);
@@ -291,6 +295,7 @@ export default function BookingsList() {
     const [to, setTo] = useState(todayString());
     const [status, setStatus] = useState<BookingStatus | "ALL">("ALL");
     const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
+    const [showFilters, setShowFilters] = useState(false);
 
     const bookingsQuery = useQuery({
         queryKey: ["bookings-report", saccoId, routeId, vehicleId, from, to, status],
@@ -312,16 +317,75 @@ export default function BookingsList() {
         .filter((b) => b.paymentStatus === "PAID")
         .reduce((sum, b) => sum + Number(b.fare), 0);
 
+    // Drives the mobile filter-toggle badge — counts anything set away from
+    // its "no filter" default. Date range is excluded since it always has
+    // a value and isn't really an "active filter" in the same sense.
+    const activeFilterCount = [
+        isSuperAdmin && saccoId,
+        routeId,
+        vehicleId,
+        status !== "ALL" ? status : null,
+    ].filter(Boolean).length;
+
     return (
         <div className="space-y-4">
-            <div>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
                 <h2 className="text-lg font-semibold">Bookings</h2>
-                <p className="text-sm text-muted-foreground">
-                    {bookings.length} booking{bookings.length === 1 ? "" : "s"} · KES {totalFare.toLocaleString()} paid
-                </p>
+
+                <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 flex items-center gap-2">
+                        <div className="hidden sm:flex rounded-md bg-primary/10 p-1.5 shrink-0">
+                            <ClipboardList className="size-3.5 text-primary" />
+                        </div>
+                        <div className="min-w-0">
+                            <p className="text-[9px] font-semibold text-primary/70 uppercase tracking-wide truncate">
+                                Bookings
+                            </p>
+                            <p className="text-base font-bold leading-none mt-0.5">
+                                {bookings.length}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 flex items-center gap-2">
+                        <div className="hidden sm:flex rounded-md bg-emerald-500/10 p-1.5 shrink-0">
+                            <Banknote className="size-3.5 text-emerald-500" />
+                        </div>
+                        <div className="min-w-0">
+                            <p className="text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide truncate">
+                                Paid
+                            </p>
+                            <p className="text-base font-bold leading-none mt-0.5">
+                                KES {totalFare.toLocaleString()}
+                            </p>
+                        </div>
+                    </div>
+                </div>
             </div>
 
-            <div className={`grid grid-cols-2 gap-2 ${isSuperAdmin ? "sm:grid-cols-6" : "sm:grid-cols-5"}`}>
+            {/* Mobile filter toggle — filters grid is always visible on sm+ */}
+            <button
+                type="button"
+                onClick={() => setShowFilters((v) => !v)}
+                className="sm:hidden flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+            >
+                <SlidersHorizontal className="size-3.5" />
+                Filters
+                {activeFilterCount > 0 && (
+                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                        {activeFilterCount}
+                    </Badge>
+                )}
+                <ChevronDown className={cn("size-3.5 transition-transform", showFilters && "rotate-180")} />
+            </button>
+
+            <div
+                className={cn(
+                    "grid grid-cols-2 gap-2 sm:grid",
+                    isSuperAdmin ? "sm:grid-cols-6" : "sm:grid-cols-5",
+                    !showFilters && "hidden sm:grid"
+                )}
+            >
                 {isSuperAdmin && (
                     <div className="space-y-1">
                         <Label className="text-xs text-muted-foreground">Sacco</Label>

@@ -9,6 +9,8 @@ import {
     UseGuards,
     ForbiddenException,
     NotFoundException,
+    Logger,
+    HttpCode,
 } from '@nestjs/common';
 import { PaymentService } from './payment.service';
 import { PaymentReferenceType, PaymentStatus } from './entities/payment.entity';
@@ -20,11 +22,17 @@ import { Roles } from '../decorators/roles.decorator';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import { UserRole } from '../auth/entities/user.entity';
 import { Public } from 'src/decorators/public.decorator';
+import { MpesaService } from './mpesa/mpesa.service';
 
 @Controller('payment')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class PaymentController {
-    constructor(private readonly paymentService: PaymentService) { }
+    private readonly logger = new Logger(PaymentController.name);
+
+    constructor(
+        private readonly paymentService: PaymentService,
+        private readonly mpesaService: MpesaService,
+    ) { }
 
     // ── Public: actively re-check a stuck payment against Daraja ────────────
     // Called by the frontend as a last-resort check right before it would
@@ -118,4 +126,5 @@ export class PaymentController {
         }
         return payment;
     }
+
 }
