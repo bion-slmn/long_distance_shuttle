@@ -1,6 +1,6 @@
 // src/features/queue/ClerkDashboard.tsx
-import { useState } from "react"
-import { useQuery, useQueries } from "@tanstack/react-query"
+import { useMemo, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { format, parseISO } from "date-fns"
 import { Calendar as CalendarIcon, Search, MapPinned, Car, Clock, Truck, SlidersHorizontal, X } from "lucide-react"
 
@@ -11,7 +11,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Calendar } from "@/components/ui/calendar"
 import { cn } from "@/lib/utils"
 
-import { getRoutesRequest, getQueueEntriesRequest, QueueEntryStatus } from "@/api/routeApi"
+import { getRoutesRequest, QueueEntryStatus } from "@/api/routeApi"
+import { useRouteQueues } from "@/hooks/useRouteQueues"
 import { SaccoCombobox } from "@/features/sacco/SaccoCombobox"
 import { RouteQueueCards } from "@/features/queue/RouteQueueCards"
 import { useNavigate } from "react-router-dom"
@@ -69,19 +70,20 @@ export function ClerkDashboard({ onSelectRoute, className }: ClerkDashboardProps
         return routes
     })()
 
-    const queueQueries = useQueries({
-        queries: filteredRoutes.map((route) => ({
-            queryKey: ["queue", route.id, selectedDate],
-            queryFn: () => getQueueEntriesRequest({ routeId: route.id, date: selectedDate }),
-            refetchInterval: isToday ? 15_000 : false,
-        })),
-    })
+    // ONE request covering every route, keyed on the full route list rather
+    // than the filtered one — so typing in the search box or switching sacco
+    // filters is pure in-memory work and costs no network at all.
+    const allRouteIds = useMemo(() => (allRoutes ?? []).map((r) => r.id), [allRoutes])
+    const { entriesByRoute, isLoading: queueLoading, isFetching, refetch } = useRouteQueues(
+        allRouteIds,
+        selectedDate,
+    )
 
-    const statsLoading = routesLoading || queueQueries.some((q) => q.isLoading)
+    const statsLoading = routesLoading || queueLoading
 
-    const stats = queueQueries.reduce(
-        (acc, q) => {
-            const entries = q.data ?? []
+    const stats = filteredRoutes.reduce(
+        (acc, route) => {
+            const entries = entriesByRoute.get(route.id) ?? []
             acc.activeVehicles += entries.filter((e) => e.status === QueueEntryStatus.BOARDING).length
             acc.totalWaiting += entries.filter((e) => e.status === QueueEntryStatus.WAITING).length
             acc.totalDispatched += entries.filter((e) => e.status === QueueEntryStatus.DISPATCHED).length
@@ -266,6 +268,10 @@ export function ClerkDashboard({ onSelectRoute, className }: ClerkDashboardProps
             </div>
             <RouteQueueCards
                 routes={filteredRoutes}
+                entriesByRoute={entriesByRoute}
+                isLoading={queueLoading}
+                isFetching={isFetching}
+                onRefresh={() => refetch()}
                 selectedDate={selectedDate}
                 isToday={isToday}
                 onSelectRoute={handleSelectRoute}

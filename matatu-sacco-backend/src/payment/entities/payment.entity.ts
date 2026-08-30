@@ -96,9 +96,9 @@ export class Payment {
     @Column({ nullable: true })
     declare initiationErrorMessage: string; // Daraja's errorMessage, human-readable
 
-    @CreateDateColumn()
+    @CreateDateColumn({ type: 'timestamptz' })
     declare createdAt: Date;
 
-    @UpdateDateColumn()
+    @UpdateDateColumn({ type: 'timestamptz' })
     declare updatedAt: Date;
 }

@@ -1,6 +1,6 @@
 // src/features/queue/RouteQueueCards.tsx
 import { useEffect, useState } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import {
     Plus,
     Car,
@@ -11,69 +11,35 @@ import {
     Banknote,
     ArrowRightCircle,
     UserPlus,
-    Smartphone,
-    Wallet,
     ClipboardList,
-    Phone,
-    CheckCircle2,
-    XCircle,
-    Sparkles,
     PartyPopper,
-    PhoneCall,
-    Mail,
-    MapPin,
-    Undo2,
-    Search,
-    Van,
+    RefreshCw,
 } from "lucide-react"
 import { toast } from "sonner"
-import { motion, AnimatePresence } from "framer-motion"
 
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import {
-    Sheet,
-    SheetContent,
-    SheetHeader,
-    SheetTitle,
-    SheetDescription,
-    SheetFooter,
-} from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
 
 import {
-    getQueueEntriesRequest,
     updateQueueEntryRequest,
     QueueEntryStatus,
     type QueueEntry,
 } from "@/api/routeApi"
 import {
     PaymentMethod,
-    BookingStatus,
-    type PaymentMethod as PaymentMethodType,
-    type Booking,
-    updateBookingRequest,
     BookingSource,
     createBookingByClerkRequest,
-    getBookingSeatMapRequest,
+    type Booking,
 } from "@/api/bookingApi"
 import { QueueClockInDialog } from "./QueueClockInDialog"
+import { BookingSheet, type BookingFormValues } from "./BookingSheet"
+import { MpesaPaymentDialog } from "./MpesaPaymentDialog"
+import { ManifestSheet } from "./ManifestSheet"
 import { useElapsedTime } from "@/hooks/useElapsedTime"
-import { useSaccoName } from "@/hooks/useSaccoName"
+import { useSaccoNames } from "@/hooks/useSaccoNames"
+import { invalidateQueues } from "@/hooks/useRouteQueues"
 import { useVehicleManifest } from "@/hooks/useVehicleMainfest"
-import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 
 // ─── Manifest Hook (shared) ─────────────────────────────────────────────────
 //
@@ -86,42 +52,40 @@ import {
 // carry a vehicle once assigned to a trip, so AWAITING_TRIP bookings
 // (trip: null) never show up on any vehicle's manifest yet.
 
-
 interface RouteQueueCardsProps {
     routes: any[]
+    // Queue data is owned by the caller so that filtering the routes list
+    // (search, sacco filter) never re-issues a request — one batched query
+    // covers every route and the filtering happens in memory.
+    entriesByRoute: Map<string, QueueEntry[]>
+    isLoading: boolean
+    isFetching?: boolean
+    onRefresh?: () => void
     selectedDate: string
     isToday: boolean
     onSelectRoute?: (routeId: string) => void
     className?: string
 }
 
-import { useQueries } from "@tanstack/react-query" // add to existing react-query import
-import { SeatPicker } from "../booking/SeatPicker"
-import { getMpesaTransactionsByPhoneRequest, getPaymentStatusForBookingRequest, MpesaTransactionMatchStatus, reconcilePaymentRequest, type MpesaTransaction } from "@/api/paymentApi"
-import { Dialog } from "@base-ui/react"
-import { DialogContent, DialogHeader } from "@/components/ui/dialog"
-
 export function RouteQueueCards({
     routes,
+    entriesByRoute,
+    isLoading,
+    isFetching,
+    onRefresh,
     selectedDate,
     isToday,
     onSelectRoute,
     className,
 }: RouteQueueCardsProps) {
-    // Fetch queue entries for every route so we can sort the grid — same
-    // queryKey as RouteQueueCard's own useQuery, so this is a cache-share,
-    // not a duplicate fetch. Individual cards read the same cached data.
-    const queueQueries = useQueries({
-        queries: routes.map((route) => ({
-            queryKey: ["queue", route.id, selectedDate],
-            queryFn: () => getQueueEntriesRequest({ routeId: route.id, date: selectedDate }),
-            refetchInterval: isToday ? 15_000 : false,
-        })),
-    })
+    // One request for every sacco name on screen. The cards are pure
+    // consumers — no card issues a fetch of its own, so the grid costs the
+    // same number of round trips whether it shows 3 routes or 30.
+    const saccoNames = useSaccoNames()
 
     const sortedRoutes = [...routes].sort((a, b) => {
-        const metaA = getSortMeta(queueQueries[routes.indexOf(a)]?.data)
-        const metaB = getSortMeta(queueQueries[routes.indexOf(b)]?.data)
+        const metaA = getSortMeta(entriesByRoute.get(a.id))
+        const metaB = getSortMeta(entriesByRoute.get(b.id))
 
         // 1. Boarding vehicles bubble to the top
         if (metaA.hasBoarding !== metaB.hasBoarding) {
@@ -133,16 +97,38 @@ export function RouteQueueCards({
     })
 
     return (
-        <div className={cn("grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3", className)}>
-            {sortedRoutes.map((route) => (
-                <RouteQueueCard
-                    key={route.id}
-                    route={route}
-                    selectedDate={selectedDate}
-                    isToday={isToday}
-                    onSelectRoute={onSelectRoute}
-                />
-            ))}
+        <div className={cn("space-y-3", className)}>
+            {/* Nothing polls any more — this is how the clerk pulls fresh data
+                on demand without paying for a background request every 15s. */}
+            {isToday && onRefresh && (
+                <div className="flex justify-end">
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 gap-1.5 text-xs text-muted-foreground"
+                        disabled={isFetching}
+                        onClick={onRefresh}
+                    >
+                        <RefreshCw className={cn("size-3.5", isFetching && "animate-spin")} />
+                        {isFetching ? "Refreshing..." : "Refresh"}
+                    </Button>
+                </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {sortedRoutes.map((route) => (
+                    <RouteQueueCard
+                        key={route.id}
+                        route={route}
+                        entries={entriesByRoute.get(route.id)}
+                        isLoading={isLoading}
+                        saccoName={saccoNames.get(route.saccoId)}
+                        selectedDate={selectedDate}
+                        isToday={isToday}
+                        onSelectRoute={onSelectRoute}
+                    />
+                ))}
+            </div>
         </div>
     )
 }
@@ -166,17 +152,35 @@ function getSortMeta(entries?: QueueEntry[]) {
 
 interface RouteQueueCardProps {
     route: any
+    // Queue data comes from the parent's single batched query — the card
+    // never fetches for itself.
+    entries?: QueueEntry[]
+    isLoading: boolean
+    saccoName?: string
     selectedDate: string
     isToday: boolean
     onSelectRoute?: (routeId: string) => void
 }
 
-function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQueueCardProps) {
+function RouteQueueCard({
+    route,
+    entries,
+    isLoading,
+    saccoName,
+    selectedDate,
+    isToday,
+    onSelectRoute,
+}: RouteQueueCardProps) {
     const [showClockIn, setShowClockIn] = useState(false)
     const [showBooking, setShowBooking] = useState(false)
     const [showManifest, setShowManifest] = useState(false)
     const [isMobile, setIsMobile] = useState(false)
-    const saccoName = useSaccoName(route.saccoId)
+    // The STK prompt runs in a dialog over the grid rather than inside the
+    // booking sheet, so the clerk can still see the queue while it's pending.
+    const [awaitingBooking, setAwaitingBooking] = useState<Booking | null>(null)
+    // Set when a failed payment is being retried — reopens the sheet against
+    // the existing booking row instead of creating a second seat claim.
+    const [retryBooking, setRetryBooking] = useState<Booking | null>(null)
     const queryClient = useQueryClient()
 
     useEffect(() => {
@@ -185,14 +189,6 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
         window.addEventListener("resize", checkMobile)
         return () => window.removeEventListener("resize", checkMobile)
     }, [])
-
-    const queueQueryKey = ["queue", route.id, selectedDate]
-
-    const { data: entries, isLoading } = useQuery({
-        queryKey: queueQueryKey,
-        queryFn: () => getQueueEntriesRequest({ routeId: route.id, date: selectedDate }),
-        refetchInterval: isToday ? 15_000 : false,
-    })
 
     const waiting = entries?.filter((e) => e.status === QueueEntryStatus.WAITING) ?? []
     const boarding = entries?.filter((e) => e.status === QueueEntryStatus.BOARDING) ?? []
@@ -208,23 +204,26 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
         showManifest
     )
 
+    // The queue now lives in one batched cache entry shared by every card, so
+    // optimistic writes and rollbacks address it by prefix rather than by a
+    // key this card owns.
     const statusMutation = useMutation({
         mutationFn: ({ id, status }: { id: string; status: QueueEntryStatus }) =>
             updateQueueEntryRequest(id, { status }),
         onMutate: async ({ id, status }) => {
-            await queryClient.cancelQueries({ queryKey: queueQueryKey })
-            const previous = queryClient.getQueryData<QueueEntry[]>(queueQueryKey)
-            queryClient.setQueryData<QueueEntry[]>(queueQueryKey, (old) =>
+            await queryClient.cancelQueries({ queryKey: ["queue"] })
+            const previous = queryClient.getQueriesData<QueueEntry[]>({ queryKey: ["queue"] })
+            queryClient.setQueriesData<QueueEntry[]>({ queryKey: ["queue"] }, (old) =>
                 old?.map((e) => (e.id === id ? { ...e, status } : e))
             )
             return { previous }
         },
         onError: (_err, _vars, context) => {
-            queryClient.setQueryData(queueQueryKey, context?.previous)
+            context?.previous.forEach(([key, data]) => queryClient.setQueryData(key, data))
             toast.error("Failed to update queue status")
         },
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: queueQueryKey })
+            invalidateQueues(queryClient)
         },
     })
 
@@ -247,18 +246,23 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
             return Promise.all(requests)
         },
         onSuccess: (bookings, payload) => {
-            queryClient.invalidateQueries({ queryKey: queueQueryKey })
+            invalidateQueues(queryClient)
             queryClient.invalidateQueries({ queryKey: seatMapQueryKey })
 
-            // Prompt-mode M-Pesa isn't actually confirmed yet — BookingSheet
-            // takes over from here and polls payment status itself. Cash and
-            // Paybill/Till (manual match) are final the moment the record
-            // exists, so those close immediately as before.
+            // Prompt-mode M-Pesa isn't confirmed yet: close the sheet and hand
+            // over to the payment dialog, which polls and then shows the
+            // receipt. Cash and Paybill/Till (manual match) are final the
+            // moment the record exists, so those just close.
             const isPromptFlow =
                 payload.paymentMethod === PaymentMethod.MPESA && !payload.mpesaTransactionId
-            if (!isPromptFlow) {
+
+            setShowBooking(false)
+            setRetryBooking(null)
+
+            if (isPromptFlow && bookings[0]) {
+                setAwaitingBooking(bookings[0])
+            } else {
                 toast.success("Booking confirmed")
-                setShowBooking(false)
             }
         },
         onError: () => {
@@ -267,7 +271,7 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
     })
 
     return (
-        <div className="rounded-xl border bg-card p-4 space-y-3 transition-all hover:border-muted-foreground/20 hover:shadow-sm">
+        <div className="rounded-xl border bg-card p-4 space-y-3 transition-colors hover:border-muted-foreground/20">
             {/* Header */}
             <div
                 className={cn("flex items-start justify-between gap-2", onSelectRoute && "cursor-pointer")}
@@ -370,11 +374,29 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
                 onOpenChange={setShowClockIn}
             />
 
+            {awaitingBooking && (
+                <MpesaPaymentDialog
+                    open={!!awaitingBooking}
+                    onOpenChange={(next) => !next && setAwaitingBooking(null)}
+                    booking={awaitingBooking}
+                    route={route}
+                    travelDate={selectedDate}
+                    onRetry={(booking) => {
+                        setAwaitingBooking(null)
+                        setRetryBooking(booking)
+                        setShowBooking(true)
+                    }}
+                />
+            )}
+
             {loadingVehicle && (
                 <>
                     <BookingSheet
                         open={showBooking}
-                        onOpenChange={setShowBooking}
+                        onOpenChange={(next) => {
+                            setShowBooking(next)
+                            if (!next) setRetryBooking(null)
+                        }}
                         side={isMobile ? "bottom" : "right"}
                         entry={loadingVehicle}
                         fare={route.fare}
@@ -382,6 +404,7 @@ function RouteQueueCard({ route, selectedDate, isToday, onSelectRoute }: RouteQu
                         onSubmit={(payload) => bookingMutation.mutateAsync(payload)}
                         route={route}
                         travelDate={selectedDate}
+                        retryBooking={retryBooking}
                     />
                     <ManifestSheet
                         open={showManifest}
@@ -470,20 +493,15 @@ function LoadingVehicleBlock({
     const pct = Math.min(100, capacity > 0 ? (seated / capacity) * 100 : 0)
 
     return (
-        <AnimatePresence mode="wait">
-            <motion.div
-                layout
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-                className={cn(
-                    "rounded-lg border p-3.5 space-y-3 transition-all relative overflow-hidden",
-                    isFull
-                        ? "bg-emerald-500/10 border-emerald-500/30"
-                        : "bg-amber-500/10 border-amber-500/20"
-                )}
-            >
+        <div
+            className={cn(
+                "rounded-lg border p-3.5 space-y-3 transition-colors relative overflow-hidden",
+                "animate-in fade-in slide-in-from-bottom-2 duration-300",
+                isFull
+                    ? "bg-emerald-500/10 border-emerald-500/30"
+                    : "bg-amber-500/10 border-amber-500/20"
+            )}
+        >
                 {/* Top row: plate, bay badge, elapsed */}
                 <div className="flex items-center justify-between gap-2">
                     <span className="flex items-center gap-2 min-w-0">
@@ -536,11 +554,12 @@ function LoadingVehicleBlock({
 
                 {/* Progress bar */}
                 <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                    <motion.div
-                        className={cn("h-full rounded-full transition-all", isFull ? "bg-emerald-500" : "bg-amber-500")}
-                        initial={{ width: 0 }}
-                        animate={{ width: `${pct}%` }}
-                        transition={{ duration: 0.5, ease: "easeOut" }}
+                    <div
+                        className={cn(
+                            "h-full rounded-full transition-[width] duration-500 ease-out",
+                            isFull ? "bg-emerald-500" : "bg-amber-500"
+                        )}
+                        style={{ width: `${pct}%` }}
                     />
                 </div>
 
@@ -610,969 +629,7 @@ function LoadingVehicleBlock({
                         </>
                     )}
                 </div>
-            </motion.div>
-        </AnimatePresence>
+        </div>
     )
 }
 
-// ─── Booking Sheet ──────────────────────────────────────────────────────────
-
-// ── BookingFormValues: one new optional field ────────────────────────────
-export interface BookingFormValues {
-    passengerName: string
-    passengerPhone: string
-    seats: number
-    paymentMethod: PaymentMethodType
-    seatNumbers: number[]
-    // Set when the clerk matched an already-paid C2B transaction instead of
-    // triggering a fresh STK prompt. Only ever set when seats === 1.
-    mpesaTransactionId?: string
-}
-
-
-interface BookingSheetProps {
-    open: boolean
-    onOpenChange: (open: boolean) => void
-    side: "bottom" | "right"
-    entry: QueueEntry
-    fare?: number
-    isSubmitting?: boolean
-    onSubmit: (payload: BookingFormValues) => Promise<Booking[]>
-    route?: { origin: string; destination: string; id: string }
-    travelDate: string
-}
-
-
-function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitting, onSubmit, route, travelDate }: BookingSheetProps) {
-    const capacity = entry.vehicle.seatingCapacity
-    const seated = entry.seatedCount ?? 0
-    const remaining = Math.max(0, capacity - seated)
-    const unitFare = fare ?? 0
-    const isFull = remaining === 0
-
-    const [name, setName] = useState("")
-    const [phone, setPhone] = useState("")
-    const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>(PaymentMethod.MPESA)
-    const [selectedSeats, setSelectedSeats] = useState<number[]>([])
-
-    const [mpesaMode, setMpesaMode] = useState<"prompt" | "manual">("prompt")
-    const [selectedTransactionId, setSelectedTransactionId] = useState<string | null>(null)
-
-    const queryClient = useQueryClient()
-
-    // Set once the prompt-mode booking record exists and we're waiting on
-    // the passenger's phone. null the rest of the time.
-    const [awaitingBooking, setAwaitingBooking] = useState<Booking | null>(null)
-    const [pollStartedAt, setPollStartedAt] = useState<number | null>(null)
-
-    const isAwaitingMpesa = !!awaitingBooking && awaitingBooking.paymentStatus === "PENDING"
-
-    const paymentStatusQuery = useQuery({
-        queryKey: ["payment-status", awaitingBooking?.id],
-        queryFn: () => getPaymentStatusForBookingRequest(awaitingBooking!.id),
-        enabled: isAwaitingMpesa,
-        refetchIntervalInBackground: true,
-        refetchInterval: (query) => {
-            const status = query.state.data?.status
-            if (status && status !== "PENDING" && status !== "PROCESSING") return false
-            if (pollStartedAt === null) return 3000
-            if (Date.now() - pollStartedAt > 180_000) return false
-            return 3000
-        },
-    })
-
-    const paymentResult = paymentStatusQuery.data
-    const paymentSucceeded = paymentResult?.status === "SUCCESS"
-    const paymentFailed = paymentResult?.status === "FAILED" || paymentResult?.status === "EXPIRED"
-    const paymentTimedOut =
-        isAwaitingMpesa &&
-        pollStartedAt !== null &&
-        !paymentSucceeded &&
-        !paymentFailed &&
-        Date.now() - pollStartedAt > 180_000 &&
-        !paymentStatusQuery.isFetching
-
-    // Same 175s reconcile-before-giving-up fallback as BookTicket.tsx
-    const reconcileMutation = useMutation({
-        mutationFn: () => reconcilePaymentRequest(awaitingBooking!.id),
-        onSuccess: (result) => {
-            queryClient.setQueryData(["payment-status", awaitingBooking?.id], result)
-        },
-    })
-
-    useEffect(() => {
-        if (
-            isAwaitingMpesa &&
-            pollStartedAt !== null &&
-            Date.now() - pollStartedAt > 175_000 &&
-            !paymentSucceeded &&
-            !paymentFailed &&
-            !reconcileMutation.isPending &&
-            !reconcileMutation.isSuccess
-        ) {
-            reconcileMutation.mutate()
-        }
-    }, [isAwaitingMpesa, pollStartedAt, paymentSucceeded, paymentFailed])
-
-    // Payment landed — close out. The booking record itself is already
-    // counted in the seat map (created as pending on submit), so this just
-    // needs to tell the clerk it's done.
-    useEffect(() => {
-        if (paymentSucceeded && awaitingBooking) {
-            toast.success("Payment received — booking confirmed")
-            queryClient.invalidateQueries({ queryKey: ["queue", route?.id, travelDate] })
-            onOpenChange(false)
-        }
-    }, [paymentSucceeded])
-
-    const seatMapQuery = useQuery({
-        queryKey: ["seat-map", route?.id, travelDate],
-        queryFn: () => getBookingSeatMapRequest(route!.id, travelDate),
-        enabled: open && !!route?.id,
-    })
-
-    const normalizedPhone = phone.replace(/\D/g, "")
-    const transactionsQuery = useQuery({
-        queryKey: ["mpesa-transactions", normalizedPhone],
-        queryFn: () => getMpesaTransactionsByPhoneRequest({ phone: normalizedPhone }),
-        enabled: open && paymentMethod === PaymentMethod.MPESA && mpesaMode === "manual" && normalizedPhone.length >= 9,
-    })
-
-    const unmatchedTransactions = (transactionsQuery.data ?? []).filter(
-        (t) => t.matchStatus === MpesaTransactionMatchStatus.UNMATCHED
-    )
-
-    useEffect(() => {
-        if (open) {
-            setName("")
-            setPhone("")
-            setPaymentMethod(PaymentMethod.MPESA)
-            setSelectedSeats([])
-            setMpesaMode("prompt")
-            setSelectedTransactionId(null)
-            setAwaitingBooking(null)
-            setPollStartedAt(null)
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open])
-    useEffect(() => {
-        setSelectedTransactionId(null)
-    }, [normalizedPhone, mpesaMode])
-
-    // Manual match = exactly 1 seat. Trim automatically so the clerk never
-    // hits a validation wall after selecting seats.
-    useEffect(() => {
-        if (mpesaMode === "manual" && selectedSeats.length > 1) {
-            setSelectedSeats([selectedSeats[0]])
-        }
-    }, [mpesaMode])
-
-    function toggleSeat(seat: number) {
-        if (mpesaMode === "manual") {
-            setSelectedSeats((prev) => (prev.includes(seat) ? [] : [seat]))
-            return
-        }
-        setSelectedSeats((prev) =>
-            prev.includes(seat) ? prev.filter((s) => s !== seat) : [...prev, seat]
-        )
-    }
-
-    const seats = selectedSeats.length
-    const total = unitFare * seats
-
-    const isManualMatch = paymentMethod === PaymentMethod.MPESA && mpesaMode === "manual"
-    const manualMatchValid = !isManualMatch || (seats === 1 && !!selectedTransactionId)
-
-    const canSubmit =
-        seats > 0 && phone.trim().length > 0 && !isSubmitting && !isFull && manualMatchValid
-
-    const handleSubmit = async () => {
-        if (!canSubmit) return
-        const isPromptFlow = paymentMethod === PaymentMethod.MPESA && mpesaMode === "prompt"
-        try {
-            const bookings = await onSubmit({
-                passengerName: name.trim(),
-                passengerPhone: phone.trim(),
-                seats,
-                paymentMethod,
-                seatNumbers: selectedSeats,
-                mpesaTransactionId: isManualMatch ? selectedTransactionId! : undefined,
-            })
-            if (isPromptFlow && bookings[0]) {
-                setAwaitingBooking(bookings[0])
-                setPollStartedAt(Date.now())
-            }
-            // Cash / manual match: parent's onSuccess already closed the sheet.
-        } catch {
-            // parent's onError already toasts; nothing more to do here.
-        }
-    }
-
-    function getSubmitIcon() {
-        if (isFull) return <XCircle className="size-4" />
-        if (paymentMethod === PaymentMethod.MPESA && mpesaMode === "prompt") {
-            return <Smartphone className="size-4" />
-        }
-        return <CheckCircle2 className="size-4" />
-    }
-
-    function getSubmitLabel() {
-        if (isFull) return "Vehicle Full"
-        if (paymentMethod === PaymentMethod.MPESA && mpesaMode === "prompt") {
-            return "Send Payment Prompt"
-        }
-        if (isManualMatch) return "Confirm & Match Payment"
-        return "Confirm Booking"
-    }
-
-
-
-
-    return (
-        <Sheet open={open} onOpenChange={onOpenChange}>
-            <SheetContent
-                side={side}
-                className={cn(
-                    side === "bottom" && "rounded-t-xl max-h-[85vh]",
-                    "flex flex-col p-0 gap-0"
-                )}
-            >
-                {/* ── Header ───────────────────────────────────────────── */}
-                <SheetHeader className="px-6 py-4 border-b space-y-0 shrink-0">
-                    <div className="flex items-center justify-between">
-                        <SheetTitle className="text-base font-bold">Book Passenger</SheetTitle>
-                    </div>
-                </SheetHeader>
-
-                {/* ── Form ─────────────────────────────────────────────── */}
-                <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-                    {/* Route context card */}
-                    <div className="rounded-lg border bg-muted/30 px-3 py-2.5 flex items-center justify-between">
-                        <div>
-                            <p className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wide mb-0.5">
-                                Route
-                            </p>
-                            <p className="text-sm font-semibold">
-                                {route ? `${route.origin} to ${route.destination}` : "—"}
-                            </p>
-                        </div>
-                        <div className="text-right">
-                            <p className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wide mb-0.5">
-                                Vehicle
-                            </p>
-                            <p className="text-sm font-mono font-bold text-primary">
-                                {entry.vehicle.numberPlate}
-                            </p>
-                        </div>
-                    </div>
-
-                    {awaitingBooking ? (
-                        <div className="flex flex-col items-center text-center gap-3 py-10">
-                            {paymentSucceeded ? (
-                                <CheckCircle2 className="size-10 text-emerald-500" />
-                            ) : paymentFailed || paymentTimedOut ? (
-                                <XCircle className="size-10 text-red-500" />
-                            ) : (
-                                <motion.div
-                                    animate={{ x: [-4, 4, -4] }}
-                                    transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
-                                >
-                                    <Van className="size-10 text-primary" />
-                                </motion.div>
-                            )}
-                            <div>
-                                <p className="text-sm font-semibold">
-                                    {paymentFailed || paymentTimedOut
-                                        ? "Payment didn't go through"
-                                        : "Waiting for M-Pesa..."}
-                                </p>
-                                <p className="text-xs text-muted-foreground/70 mt-1">
-                                    {paymentFailed
-                                        ? paymentResult?.errorMessage ?? "The payment failed. Try a different payment method."
-                                        : paymentTimedOut
-                                            ? "The prompt wasn't completed in time. Ask the passenger to check their phone, or try a different payment method."
-                                            : `Ask ${name.trim() || "the passenger"} to enter their M-Pesa PIN on their phone.`}
-                                </p>
-                            </div>
-                        </div>
-                    ) : (
-                        <>
-                            {/* Phone / Name */}
-                            <div className="space-y-3">
-                                <div className="space-y-1">
-                                    <Label htmlFor="passenger-phone" className="text-sm font-semibold">
-                                        Phone number <span className="text-destructive">*</span>
-                                    </Label>
-                                    <div className="relative">
-                                        <Phone className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground/50" />
-                                        <Input
-                                            id="passenger-phone"
-                                            value={phone}
-                                            onChange={(e) => setPhone(e.target.value)}
-                                            placeholder="07XX XXX XXX"
-                                            inputMode="tel"
-                                            required
-                                            disabled={isFull}
-                                            className="pl-9"
-                                        />
-                                    </div>
-                                    {phone && phone.length < 10 && (
-                                        <p className="text-xs text-destructive/70">Please enter a valid phone number</p>
-                                    )}
-                                </div>
-
-                                <div className="space-y-1">
-                                    <Label htmlFor="passenger-name" className="text-sm font-semibold">
-                                        Passenger name
-                                    </Label>
-                                    <div className="relative">
-                                        <Users className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground/50" />
-                                        <Input
-                                            id="passenger-name"
-                                            value={name}
-                                            onChange={(e) => setName(e.target.value)}
-                                            placeholder="Optional"
-                                            disabled={isFull}
-                                            className="pl-9"
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* Seat map */}
-                            {!isFull && (
-                                <div className="space-y-1.5">
-                                    <div className="flex items-center justify-between">
-                                        <Label className="text-sm font-semibold">
-                                            Select Seats <span className="text-destructive">*</span>
-                                        </Label>
-                                        <div className="flex items-center gap-2">
-                                            <Badge variant="outline" className="text-[10px] font-medium text-primary border-primary/30 bg-primary/5">
-                                                {capacity}-Seater
-                                            </Badge>
-                                            {mpesaMode === "manual" && (
-                                                <span className="text-[10px] font-medium text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 px-1.5 py-0.5 rounded">
-                                                    1 seat only
-                                                </span>
-                                            )}
-                                            {selectedSeats.length > 0 && mpesaMode !== "manual" && (
-                                                <button
-                                                    type="button"
-                                                    className="text-xs text-muted-foreground hover:text-foreground"
-                                                    onClick={() => setSelectedSeats([])}
-                                                >
-                                                    Clear
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-                                    {seatMapQuery.isLoading ? (
-                                        <Skeleton className="h-32 w-full rounded-xl" />
-                                    ) : (
-                                        <SeatPicker
-                                            seatsTotal={seatMapQuery.data?.seatsTotal ?? capacity}
-                                            takenSeatNumbers={seatMapQuery.data?.takenSeatNumbers ?? []}
-                                            selectedSeats={selectedSeats}
-                                            onToggle={toggleSeat}
-                                        />
-                                    )}
-                                </div>
-                            )}
-
-                            {/* Fare summary */}
-                            <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2.5">
-                                <span className="text-xs text-muted-foreground/70">
-                                    {seats} seat{seats === 1 ? "" : "s"} selected (KSh {unitFare.toLocaleString()} each)
-                                </span>
-                                <span className="text-lg font-bold text-primary">
-                                    KSh {total.toLocaleString()}
-                                </span>
-                            </div>
-
-                            {/* Payment — 3 flat pills. No nested toggles, no dialog. */}
-                            <div className="space-y-2">
-                                <Label className="text-sm font-semibold">Payment method</Label>
-                                <div className="flex gap-1.5 rounded-lg bg-muted p-1">
-                                    {/* Cash — inverted (white/light bg, green text) */}
-                                    <button
-                                        type="button"
-                                        onClick={() => { setPaymentMethod(PaymentMethod.CASH); setMpesaMode("prompt"); }}
-                                        disabled={isFull}
-                                        className={cn(
-                                            "flex-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50",
-                                            paymentMethod === PaymentMethod.CASH
-                                                ? "bg-background text-emerald-600 shadow-sm ring-1 ring-emerald-600/50"
-                                                : "text-muted-foreground hover:bg-background/50"
-                                        )}
-                                    >
-                                        <Wallet className="size-3.5" />
-                                        Cash
-                                    </button>
-
-                                    {/* M-Pesa STK — branded green */}
-                                    <button
-                                        type="button"
-                                        onClick={() => { setPaymentMethod(PaymentMethod.MPESA); setMpesaMode("prompt"); }}
-                                        disabled={isFull}
-                                        className={cn(
-                                            "flex-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50",
-                                            paymentMethod === PaymentMethod.MPESA && mpesaMode === "prompt"
-                                                ? "bg-emerald-600 text-white shadow-sm"
-                                                : "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
-                                        )}
-                                    >
-                                        <Smartphone className="size-3.5" />
-                                        M-Pesa
-                                    </button>
-
-                                    {/* Paybill / Already Paid — branded green, slightly smaller label */}
-                                    <button
-                                        type="button"
-                                        onClick={() => { setPaymentMethod(PaymentMethod.MPESA); setMpesaMode("manual"); }}
-                                        disabled={isFull}
-                                        className={cn(
-                                            "flex-1 rounded-md py-2 text-xs font-semibold flex items-center justify-center transition-all disabled:opacity-50",
-                                            paymentMethod === PaymentMethod.MPESA && mpesaMode === "manual"
-                                                ? "bg-emerald-600 text-white shadow-sm"
-                                                : "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
-                                        )}
-                                    >
-                                        Paybill/Till
-                                    </button>
-                                </div>
-
-                                {/* Inline manual match — replaces the old Dialog */}
-                                {mpesaMode === "manual" && (
-                                    <div className="space-y-2 pt-1">
-                                        {normalizedPhone.length < 9 ? (
-                                            <p className="text-xs text-muted-foreground/60 px-1">
-                                                Enter the passenger's phone number to find their payment.
-                                            </p>
-                                        ) : transactionsQuery.isLoading ? (
-                                            <div className="space-y-1.5">
-                                                <Skeleton className="h-10 w-full rounded-md" />
-                                                <Skeleton className="h-10 w-full rounded-md" />
-                                            </div>
-                                        ) : unmatchedTransactions.length === 0 ? (
-                                            <p className="text-xs text-muted-foreground/60 px-1">
-                                                No unmatched M-Pesa payments found for this number.
-                                            </p>
-                                        ) : (
-                                            <div className="space-y-1">
-                                                <p className="text-[11px] font-medium text-muted-foreground/70 px-1">
-                                                    Tap a payment to match
-                                                </p>
-                                                <div className="space-y-1.5">
-                                                    {unmatchedTransactions.map((t) => (
-                                                        <MpesaTransactionOption
-                                                            key={t.id}
-                                                            transaction={t}
-                                                            selected={selectedTransactionId === t.id}
-                                                            onSelect={() =>
-                                                                setSelectedTransactionId((prev) =>
-                                                                    prev === t.id ? null : t.id
-                                                                )
-                                                            }
-                                                        />
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
-
-                            {isFull && (
-                                <motion.div
-                                    initial={{ opacity: 0, y: 10 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    className="flex items-center gap-2 rounded-lg border-2 border-red-500/20 bg-red-500/5 px-4 py-3 text-red-600 dark:text-red-400"
-                                >
-                                    <XCircle className="size-5 shrink-0" />
-                                    <span className="text-sm">This vehicle is at full capacity. No more seats available.</span>
-                                </motion.div>
-                            )}
-                        </>
-                    )}
-                </div>
-
-                {/* ── Sticky Footer ────────────────────────────────────── */}
-                <SheetFooter className="px-6 py-4 border-t shrink-0">
-                    {awaitingBooking && !paymentFailed && !paymentTimedOut && !paymentSucceeded ? (
-                        <Button
-                            variant="outline"
-                            className="w-full h-11"
-                            onClick={() => onOpenChange(false)}
-                        >
-                            Close — booking stays pending
-                        </Button>
-                    ) : awaitingBooking && (paymentFailed || paymentTimedOut) ? (
-                        <Button
-                            className="w-full h-11"
-                            onClick={() => {
-                                setAwaitingBooking(null)
-                                setPollStartedAt(null)
-                            }}
-                        >
-                            Try Again
-                        </Button>
-                    ) : (
-                        <Button className="w-full h-11 gap-2" onClick={handleSubmit} disabled={!canSubmit}>
-                            {isSubmitting ? (
-                                <>
-                                    <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
-                                        <span className="inline-block">⏳</span>
-                                    </motion.span>
-                                    Booking...
-                                </>
-                            ) : (
-                                <>
-                                    {getSubmitIcon()}
-                                    {getSubmitLabel()}
-                                </>
-                            )}
-                        </Button>
-                    )}
-                </SheetFooter>
-            </SheetContent>
-        </Sheet>
-    )
-}
-
-// ─── Manifest Sheet ─────────────────────────────────────────────────────────
-
-export interface ManifestSheetProps {
-    open: boolean
-    onOpenChange: (open: boolean) => void
-    side: "bottom" | "right"
-    entry: QueueEntry
-    bookings: Booking[]
-    isLoading?: boolean
-    travelDate?: string
-    route?: { origin: string; destination: string, id: string }
-}
-
-const MANIFEST_STATUS_STYLE: Record<BookingStatus, string> = {
-    [BookingStatus.AWAITING_TRIP]: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
-    [BookingStatus.CONFIRMED]: "bg-primary/10 text-primary border-primary/20",
-    [BookingStatus.BOARDED]: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
-    [BookingStatus.CANCELLED]: "bg-muted text-muted-foreground border-transparent",
-    [BookingStatus.NO_SHOW]: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20",
-}
-
-// small helper — fare sometimes arrives as a decimal string from the API
-const toNumber = (v: unknown) => Number(v) || 0
-
-export function ManifestSheet({ open, onOpenChange, side, entry, bookings, isLoading, travelDate, route }: ManifestSheetProps) {
-    const capacity = entry.vehicle.seatingCapacity
-    const totalFare = bookings.reduce((sum, b) => sum + toNumber(b.fare), 0)
-    const isFull = bookings.length >= capacity
-    const queryClient = useQueryClient()
-    const [dispatchConfirmOpen, setDispatchConfirmOpen] = useState(false)
-
-    const manifestQueryKey = ["bookings", route?.id, travelDate,]
-
-    const statusMutation = useMutation({
-        mutationFn: ({ id, status }: { id: string; status: BookingStatus }) =>
-            updateBookingRequest(id, { status }),
-        onMutate: async ({ id, status }) => {
-            await queryClient.cancelQueries({ queryKey: manifestQueryKey })
-            const previous = queryClient.getQueryData<Booking[]>(manifestQueryKey)
-            queryClient.setQueryData<Booking[]>(manifestQueryKey, (old) =>
-                old?.map((b) => (b.id === id ? { ...b, status } : b))
-            )
-            return { previous }
-        },
-        onError: (_err, _vars, context) => {
-            queryClient.setQueryData(manifestQueryKey, context?.previous)
-            toast.error("Failed to update passenger status")
-        },
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: manifestQueryKey })
-        },
-    })
-
-    // No dedicated dispatch endpoint exists yet — this mirrors what the queue's
-    // own advance action does (updateQueueEntryRequest → DISPATCHED), just run
-    // from inside the manifest. It also bulk-boards any still-undecided
-    // (CONFIRMED) bookings first, since dispatching implies "everyone who's
-    // going, is in." NO_SHOW/CANCELLED bookings are left untouched.
-    // NOTE: these are two separate network calls, not one atomic backend
-    // transaction — if the queue-entry update fails after bookings were already
-    // marked boarded, the passengers stay boarded but the vehicle stays in
-    // BOARDING. Worth a real POST /queue-entries/:id/dispatch endpoint later
-    // that does both server-side in one transaction.
-    const dispatchMutation = useMutation({
-        mutationFn: async () => {
-            const undecided = bookings.filter((b) => b.status === BookingStatus.CONFIRMED)
-            if (undecided.length > 0) {
-                await Promise.all(
-                    undecided.map((b) => updateBookingRequest(b.id, { status: BookingStatus.BOARDED }))
-                )
-            }
-            return updateQueueEntryRequest(entry.id, { status: QueueEntryStatus.DISPATCHED })
-        },
-        onSuccess: () => {
-            toast.success("Vehicle dispatched")
-            queryClient.invalidateQueries({ queryKey: manifestQueryKey })
-            queryClient.invalidateQueries({ queryKey: ["queue", route?.id, travelDate] })
-            setDispatchConfirmOpen(false)
-            onOpenChange(false)
-        },
-        onError: () => {
-            toast.error("Failed to dispatch vehicle")
-        },
-    })
-
-    const formattedDate = travelDate
-        ? new Date(travelDate).toLocaleDateString("en-GB", {
-            weekday: "long",
-            day: "numeric",
-            month: "long",
-            year: "numeric",
-        })
-        : null
-
-    const undecidedCount = bookings.filter((b) => b.status === BookingStatus.CONFIRMED).length
-    const boardedCount = bookings.filter((b) => b.status === BookingStatus.BOARDED).length
-    const noShowCount = bookings.filter((b) => b.status === BookingStatus.NO_SHOW).length
-
-    return (
-        <>
-            <Sheet open={open} onOpenChange={onOpenChange}>
-                <SheetContent
-                    side={side}
-                    className={cn(
-                        side === "bottom" && "rounded-t-xl max-h-[85vh]",
-                        "flex flex-col px-4 sm:px-6"
-                    )}
-                >
-                    <SheetHeader className="space-y-3 pb-3 border-b">
-                        <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                                <SheetTitle className="flex items-center gap-2 text-base">
-                                    <ClipboardList className="size-4 text-muted-foreground/70 shrink-0" />
-                                    Manifest
-                                </SheetTitle>
-                                <p className="text-sm font-mono font-medium text-foreground/80 mt-0.5">
-                                    {entry.vehicle.numberPlate}
-                                </p>
-                            </div>
-                            {isFull ? (
-                                <motion.div
-                                    initial={{ scale: 0 }}
-                                    animate={{ scale: 1 }}
-                                    transition={{ duration: 0.5, type: "spring" }}
-                                >
-                                    <Badge className="bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border-emerald-500/30 gap-1 shrink-0">
-                                        <PartyPopper className="size-3" />
-                                        Full House
-                                    </Badge>
-                                </motion.div>
-                            ) : (
-                                <Badge variant="outline" className="text-[10px] shrink-0">
-                                    {Math.max(0, capacity - bookings.length)} seat{capacity - bookings.length === 1 ? "" : "s"} left
-                                </Badge>
-                            )}
-                        </div>
-
-                        {route && (
-                            <p className="flex items-center gap-1.5 text-sm font-medium text-foreground/80">
-                                <MapPin className="size-3.5 text-muted-foreground/50" />
-                                {route.origin}
-                                <span className="text-muted-foreground/40">→</span>
-                                {route.destination}
-                            </p>
-                        )}
-
-                        {formattedDate && (
-                            <p className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
-                                <ClockIcon className="size-3" />
-                                {formattedDate}
-                            </p>
-                        )}
-
-                        <div className="grid grid-cols-2 gap-2 pt-1">
-                            <div className="rounded-md bg-muted/40 px-2.5 py-2">
-                                <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wide">Passengers</p>
-                                <p className="text-sm font-semibold mt-0.5">{bookings.length}<span className="text-muted-foreground/50 font-normal">/{capacity}</span></p>
-                            </div>
-                            <div className="rounded-md bg-muted/40 px-2.5 py-2">
-                                <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wide">Collected</p>
-                                <p className="text-sm font-semibold mt-0.5">KSh {totalFare.toLocaleString()}</p>
-                            </div>
-                        </div>
-                    </SheetHeader>
-
-                    {/* ── Passenger list ───────────────────────────────────── */}
-                    <div className="flex-1 overflow-y-auto flex flex-col">
-                        {/* Sticky column header */}
-                        {!isLoading && bookings.length > 0 && (
-                            <div className="flex items-center gap-3 py-2 border-b sticky top-0 bg-background z-10">
-                                <div className="w-8 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wide text-center shrink-0">#</div>
-                                <div className="flex-1 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wide">Passenger Info</div>
-                                <div className="w-24 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wide text-center shrink-0">Status</div>
-                                <div className="w-16 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wide text-right shrink-0">Actions</div>
-                            </div>
-                        )}
-
-                        {isLoading ? (
-                            <div className="space-y-2 py-2">
-                                {[1, 2, 3, 4].map((i) => (
-                                    <Skeleton key={i} className="h-14 w-full rounded-md" />
-                                ))}
-                            </div>
-                        ) : bookings.length === 0 ? (
-                            <motion.div
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                className="py-16 text-center"
-                            >
-                                <ClipboardList className="size-8 text-muted-foreground/20 mx-auto mb-2" />
-                                <p className="text-sm text-muted-foreground/60">No passengers booked yet</p>
-                                <p className="text-xs text-muted-foreground/40 mt-1">Bookings will appear here</p>
-                            </motion.div>
-                        ) : (
-                            <AnimatePresence mode="popLayout">
-                                {bookings.map((b, index) => {
-                                    const isPending = statusMutation.isPending && statusMutation.variables?.id === b.id
-                                    const isDecided =
-                                        b.status === BookingStatus.BOARDED ||
-                                        b.status === BookingStatus.NO_SHOW ||
-                                        b.status === BookingStatus.CANCELLED
-
-                                    return (
-                                        <motion.div
-                                            key={b.id}
-                                            initial={{ opacity: 0, x: -20 }}
-                                            animate={{ opacity: 1, x: 0 }}
-                                            transition={{ delay: index * 0.05 }}
-                                            exit={{ opacity: 0, x: 20 }}
-                                            className="flex items-center gap-3 min-h-[56px] py-3 border-b last:border-0 hover:bg-muted/30 transition-colors group"
-                                        >
-                                            {/* # */}
-                                            <div className="w-8 shrink-0 text-sm font-mono text-muted-foreground/70 text-center">
-                                                {String(index + 1).padStart(2, "0")}
-                                            </div>
-
-                                            {/* Passenger Info */}
-                                            {/* Passenger Info */}
-                                            <div className="flex-1 min-w-0 flex flex-col justify-center">
-                                                <span
-                                                    className={cn(
-                                                        "text-sm font-semibold truncate",
-                                                        !b.passengerName && "italic text-foreground/70"
-                                                    )}
-                                                >
-                                                    {b.passengerName || "Walk-in"}
-                                                </span>
-
-                                                {b.passengerPhone ? (
-                                                    <a
-                                                        href={`tel:${b.passengerPhone}`}
-                                                        onClick={(e) => e.stopPropagation()}
-                                                        className="text-[11px] font-mono text-muted-foreground/70 underline underline-offset-2 decoration-muted-foreground/30 hover:text-primary hover:decoration-primary/50 transition-colors truncate w-fit"
-                                                        title="Call passenger"
-                                                    >
-                                                        {b.passengerPhone}
-                                                    </a>
-                                                ) : (
-                                                    <span className="text-[11px] font-mono text-muted-foreground/50 truncate">
-                                                        No Phone
-                                                    </span>
-                                                )}
-
-                                                {b.seatNumber != null && (
-                                                    <span className="text-[11px] text-muted-foreground/60">
-                                                        Seat {b.seatNumber}
-                                                    </span>
-                                                )}
-                                            </div>
-
-                                            {/* Status */}
-                                            <div className="w-24 shrink-0 flex justify-center">
-                                                <Badge
-                                                    variant="outline"
-                                                    className={cn(
-                                                        "text-[10px] h-6 px-2 whitespace-nowrap",
-                                                        MANIFEST_STATUS_STYLE[b.status]
-                                                    )}
-                                                >
-                                                    {b.status === BookingStatus.BOARDED ? (
-                                                        <CheckCircle2 className="size-3 mr-1" />
-                                                    ) : b.status === BookingStatus.NO_SHOW ? (
-                                                        <XCircle className="size-3 mr-1" />
-                                                    ) : (
-                                                        <ClockIcon className="size-3 mr-1" />
-                                                    )}
-                                                    {b.status.replace("_", " ")}
-                                                </Badge>
-                                            </div>
-
-                                            {/* Actions */}
-                                            <div className="w-16 shrink-0 flex items-center justify-end">
-                                                {!isDecided && (
-                                                    <>
-                                                        <Button
-                                                            type="button"
-                                                            size="icon"
-                                                            variant="ghost"
-                                                            className="h-8 w-8 rounded-full text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
-                                                            disabled={isPending}
-                                                            title="Check in"
-                                                            aria-label="Mark boarded"
-                                                            onClick={() =>
-                                                                statusMutation.mutate({ id: b.id, status: BookingStatus.BOARDED })
-                                                            }
-                                                        >
-                                                            <CheckCircle2 className="size-4" />
-                                                        </Button>
-                                                        <span className="text-muted-foreground/30 text-xs select-none">|</span>
-                                                        <Button
-                                                            type="button"
-                                                            size="icon"
-                                                            variant="ghost"
-                                                            className="h-8 w-8 rounded-full text-red-500 hover:text-red-600 hover:bg-red-500/10"
-                                                            disabled={isPending}
-                                                            title="Mark no-show"
-                                                            aria-label="Mark no-show"
-                                                            onClick={() =>
-                                                                statusMutation.mutate({ id: b.id, status: BookingStatus.NO_SHOW })
-                                                            }
-                                                        >
-                                                            <XCircle className="size-4" />
-                                                        </Button>
-                                                    </>
-                                                )}
-
-                                                {(b.status === BookingStatus.BOARDED || b.status === BookingStatus.NO_SHOW) && (
-                                                    <Button
-                                                        type="button"
-                                                        size="icon"
-                                                        variant="ghost"
-                                                        className="h-8 w-8 rounded-full text-muted-foreground/50 hover:text-foreground"
-                                                        disabled={isPending}
-                                                        title="Undo — mark confirmed again"
-                                                        aria-label="Undo"
-                                                        onClick={() =>
-                                                            statusMutation.mutate({ id: b.id, status: BookingStatus.CONFIRMED })
-                                                        }
-                                                    >
-                                                        <Undo2 className="size-3.5" />
-                                                    </Button>
-                                                )}
-                                            </div>
-                                        </motion.div>
-                                    )
-                                })}
-                            </AnimatePresence>
-                        )}
-                    </div>
-
-                    {/* ── Footer summary + dispatch ────────────────────────── */}
-                    {bookings.length > 0 && (
-                        <div className="border-t pt-3 -mx-6 px-6 bg-muted/20 space-y-3">
-                            <div className="flex items-center justify-between py-1">
-                                <div>
-                                    <p className="text-xs text-muted-foreground/60">Total Passengers</p>
-                                    <p className="text-base font-semibold">{bookings.length}</p>
-                                </div>
-                                <div className="text-right">
-                                    <p className="text-xs text-muted-foreground/60">Total Revenue</p>
-                                    <p className="text-base font-bold text-primary flex items-center gap-1 justify-end">
-                                        <Banknote className="size-4" />
-                                        KSh {totalFare.toLocaleString()}
-                                    </p>
-                                </div>
-                            </div>
-
-                            {entry.status === QueueEntryStatus.DISPATCHED ? (
-                                <div className="flex items-center justify-center gap-1.5 rounded-md border border-dashed py-2.5 text-xs text-muted-foreground/60">
-                                    <Truck className="size-3.5" />
-                                    Vehicle already dispatched
-                                </div>
-                            ) : (
-                                <Button
-                                    type="button"
-                                    className="w-full h-11 gap-2 mb-3"
-                                    onClick={() => setDispatchConfirmOpen(true)}
-                                    disabled={dispatchMutation.isPending}
-                                >
-                                    <Truck className="size-4" />
-                                    Dispatch Vehicle
-                                </Button>
-                            )}
-                        </div>
-                    )}
-                </SheetContent>
-            </Sheet>
-
-            {/* ── Dispatch confirmation ───────────────────────────────── */}
-            <AlertDialog open={dispatchConfirmOpen} onOpenChange={setDispatchConfirmOpen}>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Dispatch {entry.vehicle.numberPlate}?</AlertDialogTitle>
-                        <AlertDialogDescription >
-                            <div className="space-y-2">
-                                <p>
-                                    {boardedCount} boarded, {undecidedCount} awaiting, {noShowCount} no-show.
-                                </p>
-                                {undecidedCount > 0 && (
-                                    <p>
-                                        The {undecidedCount} awaiting passenger{undecidedCount === 1 ? "" : "s"} will be marked boarded automatically.
-                                    </p>
-                                )}
-                                <p>This will remove the vehicle from the queue and cannot be undone.</p>
-                            </div>
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel disabled={dispatchMutation.isPending}>Cancel</AlertDialogCancel>
-                        <AlertDialogAction
-                            onClick={(e) => {
-                                e.preventDefault()
-                                dispatchMutation.mutate()
-                            }}
-                            disabled={dispatchMutation.isPending}
-                        >
-                            {dispatchMutation.isPending ? "Dispatching…" : "Dispatch"}
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-        </>
-    )
-}
-
-
-// ── small presentational helper for one transaction row ──────────────────
-function MpesaTransactionOption({
-    transaction,
-    selected,
-    onSelect,
-}: {
-    transaction: MpesaTransaction
-    selected: boolean
-    onSelect: () => void
-}) {
-    return (
-        <button
-            type="button"
-            onClick={onSelect}
-            className={cn(
-                "w-full flex items-center justify-between rounded-md border px-3 py-2 text-left transition-colors",
-                selected
-                    ? "border-primary bg-primary/5"
-                    : "border-transparent bg-background hover:border-muted-foreground/20"
-            )}
-        >
-            <div className="min-w-0">
-                <p className="text-sm font-semibold">KSh {Number(transaction.amount).toLocaleString()}</p>
-                <p className="text-[11px] text-muted-foreground/60 truncate">
-                    {transaction.mpesaReceiptNumber} · {new Date(transaction.transactionTime).toLocaleString()}
-                </p>
-            </div>
-            {selected && <CheckCircle2 className="size-4 text-primary shrink-0" />}
-        </button>
-    )
-}

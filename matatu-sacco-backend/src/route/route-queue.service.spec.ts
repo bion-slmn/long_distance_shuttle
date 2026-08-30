@@ -25,6 +25,7 @@ function mockQueryBuilder(overrides: Partial<Record<string, any>> = {}) {
         addSelect: jest.fn().mockReturnThis(),
         from: jest.fn().mockReturnThis(),
         setLock: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
         getOne: jest.fn().mockResolvedValue(null),
         getCount: jest.fn().mockResolvedValue(0),
         getMany: jest.fn().mockResolvedValue([]),
@@ -554,7 +555,9 @@ describe('RouteQueueService', () => {
             queueEntryRepository.createQueryBuilder!.mockReturnValue(qb);
 
             const seatedQb = mockQueryBuilder({
-                getRawMany: jest.fn().mockResolvedValue([{ queueEntryId: 'qe-1', count: '7' }]),
+                getRawMany: jest
+                    .fn()
+                    .mockResolvedValue([{ queueEntryId: 'qe-1', seated: '7', held: '0' }]),
             });
             queueEntryRepository.manager.createQueryBuilder = jest.fn().mockReturnValue(seatedQb);
 
@@ -562,6 +565,41 @@ describe('RouteQueueService', () => {
 
             expect(result[0].seatedCount).toBe(7);
             expect(result[1].seatedCount).toBeUndefined();
+        });
+
+        // A conductor deciding whether to dispatch has to be able to tell the
+        // two apart: paid seats are gone, held seats may still evaporate.
+        it('reports paid and in-flight seats separately for a BOARDING entry', async () => {
+            const entries = [{ id: 'qe-1', status: QueueEntryStatus.BOARDING }];
+            const qb = mockQueryBuilder({ getMany: jest.fn().mockResolvedValue(entries) });
+            queueEntryRepository.createQueryBuilder!.mockReturnValue(qb);
+
+            const seatedQb = mockQueryBuilder({
+                getRawMany: jest
+                    .fn()
+                    .mockResolvedValue([{ queueEntryId: 'qe-1', seated: '13', held: '3' }]),
+            });
+            queueEntryRepository.manager.createQueryBuilder = jest.fn().mockReturnValue(seatedQb);
+
+            const result = await service.findAllQueueEntries();
+
+            expect(result[0].seatedCount).toBe(13);
+            expect(result[0].heldCount).toBe(3);
+        });
+
+        it('defaults both counts to 0 for a BOARDING entry with no bookings', async () => {
+            const entries = [{ id: 'qe-1', status: QueueEntryStatus.BOARDING }];
+            const qb = mockQueryBuilder({ getMany: jest.fn().mockResolvedValue(entries) });
+            queueEntryRepository.createQueryBuilder!.mockReturnValue(qb);
+
+            queueEntryRepository.manager.createQueryBuilder = jest
+                .fn()
+                .mockReturnValue(mockQueryBuilder());
+
+            const result = await service.findAllQueueEntries();
+
+            expect(result[0].seatedCount).toBe(0);
+            expect(result[0].heldCount).toBe(0);
         });
 
         it('skips the seated-count query entirely when there are no BOARDING entries', async () => {

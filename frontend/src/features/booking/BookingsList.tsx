@@ -1,5 +1,5 @@
 // src/features/booking/BookingsList.tsx
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getBookingsRequest, type Booking, type BookingStatus } from "@/api/bookingApi";
 import { getPaymentStatusForBookingRequest } from "@/api/paymentApi";
@@ -40,19 +40,44 @@ import {
     ClipboardList,
     SlidersHorizontal,
     ChevronDown,
+    Search,
 } from "lucide-react";
 import { RouteCombobox } from "../routes/RouteCombobox";
 import { useVehicleNumberPlate } from "@/hooks/useVehicleNumberPlate";
 import { cn } from "@/lib/utils";
 
+// toISOString() is UTC: between midnight and 03:00 in Nairobi (UTC+3) it
+// still reads as yesterday, which would quietly show the wrong day now that
+// the list defaults to "today".
+function toLocalDateString(d: Date): string {
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${month}-${day}`;
+}
+
 function todayString(): string {
-    return new Date().toISOString().slice(0, 10);
+    return toLocalDateString(new Date());
 }
 
 function daysAgoString(days: number): string {
     const d = new Date();
     d.setDate(d.getDate() - days);
-    return d.toISOString().slice(0, 10);
+    return toLocalDateString(d);
+}
+
+// Quick ranges; `days` is how far back from today the range starts.
+const RANGE_PRESETS = [
+    { label: "Today", days: 0 },
+    { label: "7 days", days: 6 },
+    { label: "30 days", days: 29 },
+] as const;
+
+function formatTime(iso: string | null): string {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleTimeString("en-KE", {
+        hour: "2-digit",
+        minute: "2-digit",
+    });
 }
 
 function formatDateTime(iso: string | null): string {
@@ -63,6 +88,18 @@ function formatDateTime(iso: string | null): string {
         hour: "2-digit",
         minute: "2-digit",
     });
+}
+
+// An M-Pesa booking whose hold has lapsed while still PENDING can no longer
+// resolve: the reconcile ladder force-expires a payment three minutes after
+// the STK push, so anything unpaid past holdExpiresAt is dead, not in flight.
+// A null expiry on a PENDING M-Pesa row means the same thing — legacy rows
+// predate the column and are treated as already lapsed.
+function isHoldLapsed(booking: Booking): boolean {
+    if (booking.paymentMethod !== "MPESA") return false;
+    if (booking.paymentStatus !== "PENDING") return false;
+    if (!booking.holdExpiresAt) return true;
+    return new Date(booking.holdExpiresAt).getTime() < Date.now();
 }
 
 function statusBadge(status: BookingStatus) {
@@ -124,6 +161,7 @@ function BookingDetailDialog({
     if (!booking) return null;
 
     const payment = paymentQuery.data;
+    const lapsed = isHoldLapsed(booking);
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -206,7 +244,7 @@ function BookingDetailDialog({
                     </div>
                 </div>
 
-                {/* ── M-Pesa failure reason, if any ── */}
+                {/* ── M-Pesa payment state ── */}
                 {booking.paymentMethod === "MPESA" && (
                     <>
                         {paymentQuery.isLoading && <Skeleton className="h-14 w-full" />}
@@ -219,11 +257,33 @@ function BookingDetailDialog({
                                 </div>
                             </div>
                         )}
-                        {payment?.status === "PROCESSING" && (
+                        {/* A PROCESSING payment past its hold isn't "in flight" — nothing
+                            can resolve it any more, so saying "waiting" sends the clerk
+                            off to wait for something that will never arrive. */}
+                        {payment?.status === "PROCESSING" && !lapsed && (
                             <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5">
                                 <p className="text-xs text-blue-700">
                                     STK push sent — waiting for the passenger to complete it.
                                 </p>
+                            </div>
+                        )}
+                        {lapsed && (
+                            <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 flex items-start gap-2">
+                                <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                                <div>
+                                    <p className="text-sm font-medium text-amber-800">
+                                        Payment never completed
+                                    </p>
+                                    <p className="text-xs text-amber-700 mt-0.5">
+                                        The hold lapsed{" "}
+                                        {booking.holdExpiresAt
+                                            ? `at ${formatDateTime(booking.holdExpiresAt)}`
+                                            : "some time ago"}
+                                        {" "}and seat {booking.seatNumber ?? "—"} has been released
+                                        for re-sale. Take cash or re-send the STK push before
+                                        letting this passenger board.
+                                    </p>
+                                </div>
                             </div>
                         )}
                     </>
@@ -235,10 +295,17 @@ function BookingDetailDialog({
 
 
 function BookingCard({ booking, onSelect }: { booking: Booking; onSelect: (b: Booking) => void }) {
+    const lapsed = isHoldLapsed(booking);
+
     return (
         <button
             onClick={() => onSelect(booking)}
-            className="w-full rounded-lg border border-border p-3 text-left transition-all hover:border-primary hover:bg-primary/5 active:scale-[0.98]"
+            className={cn(
+                "w-full rounded-lg border p-3 text-left transition-all hover:border-primary hover:bg-primary/5 active:scale-[0.98]",
+                // CONFIRMED + unpaid looks identical to a real sale otherwise —
+                // and this is the row that costs the sacco money.
+                lapsed ? "border-amber-400 bg-amber-50/50" : "border-border",
+            )}
         >
             {/* ── Top row: route + amount, always side by side ── */}
             <div className="flex items-start justify-between gap-2">
@@ -266,11 +333,21 @@ function BookingCard({ booking, onSelect }: { booking: Booking; onSelect: (b: Bo
                     <Calendar className="h-3 w-3" />
                     {booking.travelDate}
                 </span>
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    {formatTime(booking.createdAt)}
+                </span>
                 {statusBadge(booking.status)}
                 {booking.paymentMethod === "MPESA" ? (
-                    <Badge variant="outline" className="text-[10px] gap-1 px-1.5">
+                    <Badge
+                        variant="outline"
+                        className={cn(
+                            "text-[10px] gap-1 px-1.5",
+                            lapsed && "border-amber-400 bg-amber-100 text-amber-800",
+                        )}
+                    >
                         <Smartphone className="h-2.5 w-2.5" />
-                        {booking.paymentStatus}
+                        {lapsed ? "UNPAID" : booking.paymentStatus}
                     </Badge>
                 ) : (
                     <Badge variant="outline" className="text-[10px] gap-1 px-1.5">
@@ -291,9 +368,12 @@ export default function BookingsList() {
     const [saccoId, setSaccoId] = useState<string | undefined>(undefined);
     const [routeId, setRouteId] = useState<string | undefined>(undefined);
     const [vehicleId, setVehicleId] = useState<string | undefined>(undefined);
-    const [from, setFrom] = useState(daysAgoString(7));
+    // Today only by default — an active shuttle books enough in one day that a
+    // week-long range buries what the clerk actually just did.
+    const [from, setFrom] = useState(todayString());
     const [to, setTo] = useState(todayString());
     const [status, setStatus] = useState<BookingStatus | "ALL">("ALL");
+    const [search, setSearch] = useState("");
     const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
     const [showFilters, setShowFilters] = useState(false);
 
@@ -311,7 +391,23 @@ export default function BookingsList() {
         staleTime: 15 * 1000,
     });
 
-    const bookings = bookingsQuery.data ?? [];
+    // Newest first: the booking a clerk needs is nearly always the one just
+    // made. Sorted here rather than in the API because findAll() is shared
+    // with the manifest, which wants its rows oldest-first.
+    const bookings = useMemo(() => {
+        const rows = [...(bookingsQuery.data ?? [])].sort((a, b) =>
+            b.createdAt.localeCompare(a.createdAt),
+        );
+        const q = search.trim().toLowerCase();
+        if (!q) return rows;
+        return rows.filter(
+            (b) =>
+                b.passengerName.toLowerCase().includes(q) ||
+                b.passengerPhone.includes(q) ||
+                b.id.slice(0, 6).toLowerCase().includes(q) ||
+                (b.mpesaReceiptNumber?.toLowerCase().includes(q) ?? false),
+        );
+    }, [bookingsQuery.data, search]);
 
     const totalFare = bookings
         .filter((b) => b.paymentStatus === "PAID")
@@ -360,6 +456,44 @@ export default function BookingsList() {
                             </p>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            {/* Quick ranges + search — the two things reached for most often, so
+                they stay out of the collapsible filter drawer. */}
+            <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex rounded-lg border border-border p-0.5">
+                    {RANGE_PRESETS.map((preset) => {
+                        const active = from === daysAgoString(preset.days) && to === todayString();
+                        return (
+                            <button
+                                key={preset.label}
+                                type="button"
+                                onClick={() => {
+                                    setFrom(daysAgoString(preset.days));
+                                    setTo(todayString());
+                                }}
+                                className={cn(
+                                    "px-2.5 py-1 text-xs font-medium rounded-md transition-colors",
+                                    active
+                                        ? "bg-primary text-primary-foreground"
+                                        : "text-muted-foreground hover:text-foreground",
+                                )}
+                            >
+                                {preset.label}
+                            </button>
+                        );
+                    })}
+                </div>
+
+                <div className="relative flex-1 min-w-[10rem]">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                    <Input
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Name, phone, receipt or #ID"
+                        className="h-9 pl-8"
+                    />
                 </div>
             </div>
 
@@ -438,11 +572,16 @@ export default function BookingsList() {
                 </div>
             ) : bookings.length === 0 ? (
                 <div className="bg-muted/30 rounded-lg px-4 py-8 text-center">
-                    <p className="text-sm text-muted-foreground">No bookings in this range.</p>
+                    <p className="text-sm text-muted-foreground">
+                        {search.trim()
+                            ? `No booking matches "${search.trim()}" in this range.`
+                            : "No bookings in this range."}
+                    </p>
                 </div>
             ) : (
                 <>
-                    <BookingsCharts bookings={bookings} />
+                    {/* A one-day range is a single bar — not worth the space. */}
+                    {from !== to && <BookingsCharts bookings={bookings} />}
                     <div className="space-y-2">
                         {bookings.map((booking) => (
                             <BookingCard key={booking.id} booking={booking} onSelect={setSelectedBooking} />

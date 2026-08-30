@@ -58,7 +58,7 @@ export default function AuthLayout({
                                 <Bus className="size-8" />
                             </div>
                             <h1 className="text-4xl xl:text-5xl font-bold tracking-tight">
-                                ShuttleOps
+                                Shuttlehub
                             </h1>
                         </div>
                         <p className="text-lg text-primary-foreground/80 font-light leading-relaxed max-w-sm">
@@ -109,16 +109,7 @@ export default function AuthLayout({
                     "w-full max-w-md space-y-6 transition-all duration-700 delay-100",
                     mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"
                 )}>
-                    {/* Mobile Header */}
-                    <div className="lg:hidden text-center space-y-2">
-                        <div className="flex items-center justify-center gap-2">
-                            <Bus className="size-6 text-primary" />
-                            <h1 className="text-2xl font-bold">ShuttleOps</h1>
-                        </div>
-                        <p className="text-sm text-muted-foreground">
-                            Modern SACCO Operations Management
-                        </p>
-                    </div>
+
 
                     {/* Form Header */}
                     <div className="space-y-1.5">

@@ -22,6 +22,7 @@ import { HealthModule } from './health/health.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { EmailModule } from './email/email.module';
 import { ReceiptModule } from './receipt/receipt.module';
+import { BullmqModule } from './redis/bullmq.module';
 
 @Module({
   imports: [
@@ -71,6 +72,7 @@ import { ReceiptModule } from './receipt/receipt.module';
     RouteModule,
     TripModule,
     RedisModule,
+    BullmqModule,
     PaymentModule,
     MetricsModule, HealthModule, EmailModule, ReceiptModule,
   ],

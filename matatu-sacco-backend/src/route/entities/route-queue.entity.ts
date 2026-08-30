@@ -45,10 +45,10 @@ export class RouteQueue {
     @OneToMany(() => QueueEntry, (entry) => entry.routeQueue)
     declare entries: QueueEntry[];
 
-    @CreateDateColumn({ type: 'timestamp' })
+    @CreateDateColumn({ type: 'timestamptz' })
     declare createdAt: Date;
 
-    @UpdateDateColumn({ type: 'timestamp' })
+    @UpdateDateColumn({ type: 'timestamptz' })
     declare updatedAt: Date;
 
     @BeforeInsert()

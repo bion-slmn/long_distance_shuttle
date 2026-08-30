@@ -69,6 +69,6 @@ export class MpesaTransaction {
     @Column({ type: 'jsonb' })
     declare rawPayload: Record<string, any>;
 
-    @CreateDateColumn()
+    @CreateDateColumn({ type: 'timestamptz' })
     declare receivedAt: Date;
 }

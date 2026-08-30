@@ -14,7 +14,7 @@ import { QueueEntry, QueueEntryStatus } from './entities/queue-entry.entity';
 import { CreateQueueDto } from './dto/create-route.dto';
 import { UpdateQueueDto } from './dto/update-route.dto';
 import { BookingService } from 'src/booking/booking.service';
-import { BookingStatus } from 'src/booking/entities/booking.entity';
+import { BookingStatus, PaymentStatus } from 'src/booking/entities/booking.entity';
 import { RouteService } from './route.service';
 import { TripService } from 'src/trip/trip.service';
 
@@ -355,10 +355,11 @@ export class RouteQueueService {
 
     async findAllQueueEntries(filters?: {
         routeId?: string;
+        routeIds?: string[]; // batched form of routeId — one request for N routes
         status?: QueueEntryStatus;
         date?: Date;
         assignedStage?: string; // ← new
-    }): Promise<(QueueEntry & { seatedCount?: number })[]> {
+    }): Promise<(QueueEntry & { seatedCount?: number; heldCount?: number })[]> {
         const queueDate = this.toDateString(filters?.date ?? new Date());
 
         const qb = this.queueEntryRepository
@@ -370,6 +371,9 @@ export class RouteQueueService {
 
         if (filters?.routeId) {
             qb.andWhere('rq.routeId = :routeId', { routeId: filters.routeId });
+        }
+        if (filters?.routeIds?.length) {
+            qb.andWhere('rq.routeId IN (:...routeIds)', { routeIds: filters.routeIds });
         }
         if (filters?.status) {
             qb.andWhere('qe.status = :status', { status: filters.status });
@@ -392,7 +396,11 @@ export class RouteQueueService {
             Object.assign(e, {
                 seatedCount:
                     e.status === QueueEntryStatus.BOARDING
-                        ? seatedCounts.get(e.id) ?? 0
+                        ? seatedCounts.get(e.id)?.seated ?? 0
+                        : undefined,
+                heldCount:
+                    e.status === QueueEntryStatus.BOARDING
+                        ? seatedCounts.get(e.id)?.held ?? 0
                         : undefined,
             }),
         );
@@ -401,25 +409,41 @@ export class RouteQueueService {
     // Single joined query: queueEntry -> trip -> booking, grouped by
     // queueEntryId. Replaces what would otherwise be a per-entry round trip
     // through TripService then BookingService for each boarding vehicle.
+    // Seated and held are counted separately and deliberately. A conductor
+    // deciding whether to dispatch needs to know that 13 seats are paid for
+    // and 3 are mid-payment — a flat 16/16 would have them leave with three
+    // empty seats when those payments fall through, and a flat 13 would have
+    // them oversell the three that are about to land.
+    //
+    // The hold predicate is evaluated in SQL against NOW(), so a lapsed hold
+    // simply stops being counted — nothing has to run for this to be right.
     private async getSeatedCountsByQueueEntry(
         queueEntryIds: string[],
-    ): Promise<Map<string, number>> {
+    ): Promise<Map<string, { seated: number; held: number }>> {
         if (queueEntryIds.length === 0) return new Map();
 
         const rows = await this.queueEntryRepository.manager
             .createQueryBuilder()
             .select('trip."queueEntryId"', 'queueEntryId')
-            .addSelect('COUNT(booking.id)', 'count')
+            .addSelect(`COUNT(booking.id) FILTER (WHERE booking."paymentStatus" = :paid)`, 'seated')
+            .addSelect(`COUNT(booking.id) FILTER (WHERE booking."paymentStatus" <> :paid)`, 'held')
             .from('trips', 'trip')
             .innerJoin('bookings', 'booking', 'booking."tripId" = trip.id')
             .where('trip."queueEntryId" IN (:...ids)', { ids: queueEntryIds })
             .andWhere('booking.status IN (:...statuses)', {
                 statuses: [BookingStatus.CONFIRMED, BookingStatus.BOARDED],
             })
+            .andWhere(`(booking."paymentStatus" = :paid OR booking."holdExpiresAt" > NOW())`)
+            .setParameter('paid', PaymentStatus.PAID)
             .groupBy('trip."queueEntryId"')
-            .getRawMany<{ queueEntryId: string; count: string }>();
+            .getRawMany<{ queueEntryId: string; seated: string; held: string }>();
 
-        return new Map(rows.map((r) => [r.queueEntryId, parseInt(r.count, 10)]));
+        return new Map(
+            rows.map((r) => [
+                r.queueEntryId,
+                { seated: parseInt(r.seated, 10), held: parseInt(r.held, 10) },
+            ]),
+        );
     }
 
     async findAvailableVehiclesForRoute(

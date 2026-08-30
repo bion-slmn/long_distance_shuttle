@@ -62,9 +62,9 @@ export class SaccoSettings {
   @Column({ default: false })
   declare mpesaConfigured: boolean; // true only once all required fields are set
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   declare createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   declare updatedAt: Date;
 }

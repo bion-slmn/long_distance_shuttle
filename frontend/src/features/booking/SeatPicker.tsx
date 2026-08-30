@@ -15,6 +15,15 @@
 // never by replacing the number, so a clerk can still tell which seats
 // they've picked after tapping them.
 //
+// An occupied seat is one of two things, and the difference matters to a
+// clerk standing at the stage:
+//   TAKEN — paid for, gone for good.
+//   HELD  — someone's M-Pesa prompt is still in flight. Blocked right now,
+//           but it frees itself when the hold lapses, so the cell shows the
+//           time remaining instead of a permanent strike-through. A clerk
+//           who can see "0:42" knows to wait rather than turn a passenger
+//           away or start hunting for another vehicle.
+//
 // Quantity is no longer a separate control anywhere upstream — however
 // many seats the clerk taps here IS the seat count for the booking. There's
 // no cap to pass in: a taken seat is simply unclickable, so the picker can
@@ -38,8 +47,10 @@
 // free inside the locked transaction, so a stale selection here just
 // surfaces as a ConflictException on submit, not silent overbooking.
 
-import { Check } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SeatState, type SeatMapSeat } from "@/api/bookingApi";
 
 // lucide-react has no built-in steering-wheel icon — this is a small
 // hand-drawn stand-in kept in the same visual language as lucide's set
@@ -96,6 +107,10 @@ function buildSeatGrid(seatsTotal: number): SeatCell[] {
 export interface SeatPickerProps {
     seatsTotal: number;
     takenSeatNumbers: number[];
+    // Per-seat detail from getSeatMap. Optional so callers that haven't been
+    // updated still render correctly — without it every occupied seat falls
+    // back to the old undifferentiated "taken" look.
+    seats?: SeatMapSeat[];
     // Whichever seats the clerk has tapped so far — this list's length IS
     // the seat count for the booking, there's no separate quantity input.
     selectedSeats: number[];
@@ -103,13 +118,34 @@ export interface SeatPickerProps {
     disabled?: boolean;
 }
 
+/** mm:ss left on a hold, or null once it has lapsed. */
+function holdRemaining(holdExpiresAt: string | null, now: number): string | null {
+    if (!holdExpiresAt) return null;
+    const seconds = Math.floor((new Date(holdExpiresAt).getTime() - now) / 1000);
+    if (seconds <= 0) return null;
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 export function SeatPicker({
     seatsTotal,
     takenSeatNumbers,
+    seats,
     selectedSeats,
     onToggle,
     disabled = false,
 }: SeatPickerProps) {
+    // Ticks only while at least one seat is actually held, so a grid of sold
+    // and free seats costs no timer at all.
+    const hasHolds = !!seats?.some((s) => s.state === SeatState.HELD);
+    const [now, setNow] = useState(() => Date.now());
+    useEffect(() => {
+        if (!hasHolds) return;
+        const id = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(id);
+    }, [hasHolds]);
+
     if (!seatsTotal) {
         return (
             <p className="text-xs text-muted-foreground text-center py-4">
@@ -118,8 +154,11 @@ export function SeatPicker({
         );
     }
 
+    // takenSeatNumbers stays the source of truth for "is this clickable" —
+    // sold and held both block a booking. `seats` only adds the reason why.
     const taken = new Set(takenSeatNumbers);
     const selected = new Set(selectedSeats);
+    const bySeat = new Map((seats ?? []).map((s) => [s.seatNumber, s]));
     const cells = buildSeatGrid(seatsTotal);
 
     function handleClick(cell: SeatCell) {
@@ -151,6 +190,9 @@ export function SeatPicker({
 
                     const isTaken = taken.has(cell.number);
                     const isSelected = selected.has(cell.number);
+                    const detail = bySeat.get(cell.number);
+                    const isHeld = isTaken && detail?.state === SeatState.HELD;
+                    const remaining = isHeld ? holdRemaining(detail!.holdExpiresAt, now) : null;
 
                     return (
                         <button
@@ -158,25 +200,53 @@ export function SeatPicker({
                             type="button"
                             disabled={isTaken || disabled}
                             onClick={() => handleClick(cell)}
-                            title={isTaken ? `Seat ${cell.number} — taken` : `Seat ${cell.number}`}
+                            title={
+                                isHeld
+                                    ? `Seat ${cell.number} — payment in progress${remaining ? `, frees in ${remaining}` : ""}`
+                                    : isTaken
+                                        ? `Seat ${cell.number} — taken`
+                                        : `Seat ${cell.number}`
+                            }
                             className={cn(
                                 "h-12 rounded-lg border flex items-center justify-center relative overflow-hidden transition-all font-semibold text-base",
-                                isTaken
-                                    ? "bg-destructive/10 border-destructive/40 text-destructive/60 cursor-not-allowed"
-                                    : isSelected
-                                        ? "bg-primary border-primary text-primary-foreground shadow-sm"
-                                        : "bg-background border-border text-foreground hover:border-primary transition-colors"
+                                isHeld
+                                    ? "bg-amber-500/10 border-amber-500/50 border-dashed text-amber-700 dark:text-amber-400 cursor-not-allowed"
+                                    : isTaken
+                                        ? "bg-destructive/10 border-destructive/40 text-destructive/60 cursor-not-allowed"
+                                        : isSelected
+                                            ? "bg-primary border-primary text-primary-foreground shadow-sm"
+                                            : "bg-background border-border text-foreground hover:border-primary transition-colors"
                             )}
                         >
-                            <span className={cn("relative z-10", isTaken && "opacity-50")}>
-                                {cell.number}
-                            </span>
+                            {isHeld ? (
+                                // The countdown replaces the seat number only
+                                // while it's genuinely counting — a lapsed or
+                                // missing expiry falls back to the number.
+                                <span className="relative z-10 flex flex-col items-center leading-none">
+                                    <span className={cn(remaining ? "text-[11px]" : "text-base")}>
+                                        {cell.number}
+                                    </span>
+                                    {remaining && (
+                                        <span className="text-[10px] font-mono tabular-nums opacity-80 mt-0.5">
+                                            {remaining}
+                                        </span>
+                                    )}
+                                </span>
+                            ) : (
+                                <span className={cn("relative z-10", isTaken && "opacity-50")}>
+                                    {cell.number}
+                                </span>
+                            )}
 
                             {isSelected && (
                                 <Check className="absolute -bottom-1 -right-1 size-6 opacity-30" strokeWidth={3} />
                             )}
 
-                            {isTaken && (
+                            {isHeld && !remaining && (
+                                <Clock className="absolute -bottom-1 -right-1 size-5 opacity-25" strokeWidth={3} />
+                            )}
+
+                            {isTaken && !isHeld && (
                                 <div className="absolute inset-0 flex items-center justify-center">
                                     <div className="w-full h-px bg-destructive rotate-45" />
                                 </div>
@@ -204,6 +274,14 @@ export function SeatPicker({
                     </div>
                     <span className="text-xs text-muted-foreground">Taken</span>
                 </div>
+                {hasHolds && (
+                    <div className="flex items-center gap-2">
+                        <div className="w-4 h-4 rounded-sm bg-amber-500/10 border border-dashed border-amber-500/50 flex items-center justify-center">
+                            <Clock className="size-2.5 text-amber-700 dark:text-amber-400" />
+                        </div>
+                        <span className="text-xs text-muted-foreground">Paying</span>
+                    </div>
+                )}
                 <div className="flex items-center gap-2">
                     <div className="w-4 h-4 rounded-sm bg-amber-400/20 border border-amber-400/50 flex items-center justify-center">
                         <SteeringWheelIcon className="size-2.5 text-amber-700 dark:text-amber-400" />

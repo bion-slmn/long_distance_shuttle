@@ -12,6 +12,7 @@ import {
   PaymentReferenceType,
 } from './entities/payment.entity';
 import { MpesaService } from './mpesa/mpesa.service';
+import { getQueueToken } from '@nestjs/bullmq';
 
 type MockRepo<T = any> = Partial<Record<keyof Repository<T>, jest.Mock>>;
 
@@ -19,6 +20,7 @@ const createMockRepo = (): MockRepo<Payment> => ({
   create: jest.fn(),
   save: jest.fn(),
   findOne: jest.fn(),
+  update: jest.fn(),
   createQueryBuilder: jest.fn(),
 });
 
@@ -27,6 +29,7 @@ describe('PaymentService', () => {
   let paymentRepository: MockRepo<Payment>;
   let mpesaService: Partial<Record<keyof MpesaService, jest.Mock>>;
   let eventEmitter: Partial<Record<keyof EventEmitter2, jest.Mock>>;
+  let reconcileQueue: { add: jest.Mock };
 
   const basePayment = (overrides: Partial<Payment> = {}): Payment =>
     ({
@@ -61,6 +64,9 @@ describe('PaymentService', () => {
     eventEmitter = {
       emit: jest.fn(),
     };
+    reconcileQueue = {
+      add: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -68,6 +74,7 @@ describe('PaymentService', () => {
         { provide: getRepositoryToken(Payment), useValue: paymentRepository },
         { provide: MpesaService, useValue: mpesaService },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: getQueueToken('payment-reconcile'), useValue: reconcileQueue },
       ],
     }).compile();
 
@@ -390,6 +397,10 @@ describe('PaymentService', () => {
 
   // ─── reconcileStuckPayment ───────────────────────────────────────────
   describe('reconcileStuckPayment', () => {
+    // Comfortably past RECONCILE_GRACE_MS, so a query result is allowed to be
+    // read as conclusive.
+    const staleInitiatedAt = () => new Date(Date.now() - 10 * 60_000);
+
     it('returns early if payment is not PROCESSING', async () => {
       const payment = basePayment({ status: PaymentStatus.SUCCESS });
       paymentRepository.findOne!.mockResolvedValue(payment);
@@ -446,10 +457,11 @@ describe('PaymentService', () => {
       expect(result.status).toBe(PaymentStatus.PROCESSING);
     });
 
-    it('leaves payment PROCESSING when resultDesc text-matches "being processed" even with a different code', async () => {
+    it('leaves payment PROCESSING for an unrecognised code even after the grace window', async () => {
       const payment = basePayment({
         status: PaymentStatus.PROCESSING,
         checkoutRequestId: 'ws_CO_123',
+        initiatedAt: staleInitiatedAt(),
       });
       paymentRepository.findOne!.mockResolvedValue(payment);
       mpesaService.queryStkStatus!.mockResolvedValue({
@@ -463,10 +475,33 @@ describe('PaymentService', () => {
       expect(result.status).toBe(PaymentStatus.PROCESSING);
     });
 
-    it('marks FAILED and emits payment.failed for any other resultCode', async () => {
+    // Daraja's in-flight answer carries no ResultCode at all. This is the
+    // exact shape that used to be read as a failure and cancel the booking.
+    it('leaves payment PROCESSING when Daraja returns no usable ResultCode', async () => {
       const payment = basePayment({
         status: PaymentStatus.PROCESSING,
         checkoutRequestId: 'ws_CO_123',
+        initiatedAt: staleInitiatedAt(),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      mpesaService.queryStkStatus!.mockResolvedValue({
+        resultCode: null,
+        resultDesc: 'The transaction is being processed',
+        errorCode: '500.001.1001',
+      });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(paymentRepository.save).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(result.status).toBe(PaymentStatus.PROCESSING);
+    });
+
+    it('marks FAILED and emits payment.failed for a terminal code after the grace window', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: staleInitiatedAt(),
       });
       paymentRepository.findOne!.mockResolvedValue(payment);
       paymentRepository.save!.mockImplementation(async (p) => p);
@@ -483,9 +518,137 @@ describe('PaymentService', () => {
         expect.objectContaining({ paymentId: payment.id, reason: 'Request cancelled by user' }),
       );
     });
+
+    // A clerk pressing "check now" seconds after the push must never be able
+    // to cancel a booking the passenger is still paying for. A real
+    // cancellation reaches us on the callback, which is authoritative.
+    it('does NOT mark FAILED for a terminal code inside the grace window', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: new Date(), // pushed just now
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      mpesaService.queryStkStatus!.mockResolvedValue({
+        resultCode: 1032,
+        resultDesc: 'Request cancelled by user',
+      });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(paymentRepository.save).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(result.status).toBe(PaymentStatus.PROCESSING);
+    });
+
+    it('falls back to createdAt for the grace window when initiatedAt is null', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: null,
+        createdAt: new Date(),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      mpesaService.queryStkStatus!.mockResolvedValue({
+        resultCode: 1032,
+        resultDesc: 'Request cancelled by user',
+      });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(result.status).toBe(PaymentStatus.PROCESSING);
+    });
   });
 
   // ─── reconcileByBookingId ────────────────────────────────────────────
+  // ─── forceExpireIfStillProcessing ────────────────────────────────────
+  // The last rung of the reconcile ladder, and the only thing standing
+  // between a silent M-Pesa timeout and a booking that holds its seat
+  // forever. It has to be a conditional transition: by the time it fires,
+  // the real callback may already have landed.
+  describe('forceExpireIfStillProcessing', () => {
+    it('expires a still-PROCESSING payment and emits payment.failed', async () => {
+      const expired = basePayment({
+        status: PaymentStatus.EXPIRED,
+        resultDesc: 'No confirmation received from M-Pesa within the expected window.',
+      });
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
+      paymentRepository.findOne!.mockResolvedValue(expired);
+
+      const result = await service.forceExpireIfStillProcessing('payment-1');
+
+      expect(result.status).toBe(PaymentStatus.EXPIRED);
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.failed',
+        expect.objectContaining({
+          paymentId: 'payment-1',
+          referenceType: PaymentReferenceType.BOOKING,
+          referenceId: 'booking-1',
+        }),
+      );
+    });
+
+    it('only transitions out of PROCESSING, never stomping a resolved status', async () => {
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
+      paymentRepository.findOne!.mockResolvedValue(
+        basePayment({ status: PaymentStatus.EXPIRED }),
+      );
+
+      await service.forceExpireIfStillProcessing('payment-1');
+
+      // The PROCESSING guard lives in the WHERE clause, not in a read-then-write
+      // — two workers racing here must not both expire the same payment.
+      expect(paymentRepository.update).toHaveBeenCalledWith(
+        { id: 'payment-1', status: PaymentStatus.PROCESSING },
+        expect.objectContaining({ status: PaymentStatus.EXPIRED }),
+      );
+    });
+
+    it('stays silent when the callback won the race (affected = 0)', async () => {
+      const succeeded = basePayment({
+        status: PaymentStatus.SUCCESS,
+        mpesaReceiptNumber: 'NLJ7RT61SV',
+      });
+      paymentRepository.update!.mockResolvedValue({ affected: 0 });
+      paymentRepository.findOne!.mockResolvedValue(succeeded);
+
+      const result = await service.forceExpireIfStillProcessing('payment-1');
+
+      // Emitting here would cancel a booking the passenger actually paid for.
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(result.status).toBe(PaymentStatus.SUCCESS);
+    });
+
+    it('stamps completedAt so the payment is not re-swept forever', async () => {
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
+      paymentRepository.findOne!.mockResolvedValue(
+        basePayment({ status: PaymentStatus.EXPIRED }),
+      );
+
+      await service.forceExpireIfStillProcessing('payment-1');
+
+      expect(paymentRepository.update).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ completedAt: expect.any(Date) }),
+      );
+    });
+
+    it('carries a human-readable reason through to the failure event', async () => {
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
+      paymentRepository.findOne!.mockResolvedValue(
+        basePayment({
+          status: PaymentStatus.EXPIRED,
+          resultDesc: 'No confirmation received from M-Pesa within the expected window.',
+        }),
+      );
+
+      await service.forceExpireIfStillProcessing('payment-1');
+
+      const [, event] = (eventEmitter.emit as jest.Mock).mock.calls[0];
+      expect(event.reason).toMatch(/no confirmation received/i);
+    });
+  });
+
   describe('reconcileByBookingId', () => {
     it('throws NotFoundException if no payment exists for the booking', async () => {
       paymentRepository.findOne!.mockResolvedValue(null);

@@ -141,15 +141,27 @@ export class RouteController {
 
   // ── GET /routes/queue ────────────────────────────────────────────────────
   // Example: GET /routes/queue?routeId=uuid&status=WAITING&date=2026-07-09
+  //
+  // `routeIds` is the batched form of `routeId`: a comma-separated list, so a
+  // dashboard showing N routes costs one request instead of N. Clients on slow
+  // mobile links pay per round trip, not per row.
+  // Example: GET /routes/queue?routeIds=uuid-a,uuid-b&date=2026-07-09
   @Get('queue')
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
   findAllQueueEntries(
     @Query('routeId') routeId?: string,
     @Query('status') status?: QueueEntryStatus,
     @Query('date') dateString?: string,
+    @Query('routeIds') routeIdsCsv?: string,
   ) {
+    const routeIds = routeIdsCsv
+      ?.split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+
     return this.routeQueueService.findAllQueueEntries({
       routeId,
+      routeIds: routeIds?.length ? routeIds : undefined,
       status,
       date: dateString ? new Date(dateString) : undefined,
     });

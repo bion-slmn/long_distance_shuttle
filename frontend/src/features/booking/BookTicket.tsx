@@ -449,7 +449,6 @@ export default function BookTicket() {
         queryFn: () => getBookingAvailabilityRequest(selectedRoute!.routeId, travelDate),
         enabled: !!selectedRoute,
         staleTime: 15 * 1000,
-        refetchInterval: step === "details" ? 15 * 1000 : false,
     });
 
     const bookingMutation = useMutation({

@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Opens the DNS + TCP + TLS handshake to the API in parallel with the JS
+         download instead of after it. On a 3G link that handshake is 600-900ms
+         that would otherwise be spent idle. -->
+    <link rel="preconnect" href="%VITE_API_URL%" crossorigin />
+    <link rel="dns-prefetch" href="%VITE_API_URL%" />
+
+    <!-- Starts the font download immediately rather than after the CSS parses. -->
+    <link
+      rel="preload"
+      href="/fonts/geist-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+
     <title>frontend</title>
   </head>
   <body>

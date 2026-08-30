@@ -72,8 +72,9 @@ import { QueueClockInDialog } from "./QueueClockInDialog"
 import { useElapsedTime } from "@/hooks/useElapsedTime"
 import { SaccoCombobox } from "../sacco/SaccoCombobox"
 import { useSaccoName } from "@/hooks/useSaccoName"
-import { RouteQueueCards, ManifestSheet } from "./RouteQueueCards"
+import { ManifestSheet } from "./ManifestSheet"
 import { useVehicleManifest } from "@/hooks/useVehicleMainfest"
+import { useRouteQueues, invalidateQueues } from "@/hooks/useRouteQueues"
 
 interface RouteQueueViewProps {
     routeId?: string
@@ -194,71 +195,59 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
         queryKey: queueQueryKey,
         queryFn: () => getQueueEntriesRequest({ routeId: selectedRouteId, date: selectedDate }),
         enabled: !!selectedRouteId,
-        refetchInterval: isToday ? 15_000 : false,
     })
 
-    // Fetch queue counts for all routes (dashboard view)
-    const { data: allQueueData, isLoading: countsLoading } = useQuery({
-        queryKey: ["queue", "all", "counts", selectedDate, saccoFilter],
-        queryFn: async () => {
-            if (!allRoutes) return []
+    // Queue counts for every route in ONE request, then counted in memory.
+    // This used to be a Promise.all of one request per route, which on a slow
+    // link meant the overview page was gated on the slowest of N round trips.
+    const countRouteIds = useMemo(() => (allRoutes ?? []).map((r) => r.id), [allRoutes])
+    const { entriesByRoute, isLoading: countsLoading } = useRouteQueues(
+        countRouteIds,
+        selectedDate,
+        // Overview mode only — with a route selected the detail query below
+        // already covers what's on screen.
+        !selectedRouteId,
+    )
 
-            // Filter routes by sacco if filter is applied
-            const filteredRoutes = saccoFilter
-                ? allRoutes.filter(route => route.saccoId === saccoFilter)
-                : allRoutes
+    const allQueueData = useMemo(() => {
+        const routes = saccoFilter
+            ? (allRoutes ?? []).filter((route) => route.saccoId === saccoFilter)
+            : allRoutes ?? []
 
-            const counts = await Promise.all(
-                filteredRoutes.map(async (route) => {
-                    try {
-                        const entries = await getQueueEntriesRequest({
-                            routeId: route.id,
-                            date: selectedDate
-                        })
-                        return {
-                            routeId: route.id,
-                            waiting: entries.filter(e => e.status === QueueEntryStatus.WAITING).length,
-                            boarding: entries.filter(e => e.status === QueueEntryStatus.BOARDING).length,
-                            dispatched: entries.filter(e => e.status === QueueEntryStatus.DISPATCHED).length,
-                            total: entries.length,
-                        }
-                    } catch {
-                        return {
-                            routeId: route.id,
-                            waiting: 0,
-                            boarding: 0,
-                            dispatched: 0,
-                            total: 0,
-                        }
-                    }
-                })
-            )
-            return counts
-        },
-        enabled: !!allRoutes && !selectedRouteId,
-        staleTime: 30 * 1000,
-        refetchInterval: isToday ? 30_000 : false,
-    })
+        return routes.map((route) => {
+            const routeEntries = entriesByRoute.get(route.id) ?? []
+            return {
+                routeId: route.id,
+                waiting: routeEntries.filter((e) => e.status === QueueEntryStatus.WAITING).length,
+                boarding: routeEntries.filter((e) => e.status === QueueEntryStatus.BOARDING).length,
+                dispatched: routeEntries.filter((e) => e.status === QueueEntryStatus.DISPATCHED).length,
+                total: routeEntries.length,
+            }
+        })
+    }, [allRoutes, saccoFilter, entriesByRoute])
 
     const statusMutation = useMutation({
         mutationFn: ({ id, status }: { id: string; status: QueueEntryStatus }) =>
             updateQueueEntryRequest(id, { status }),
+        // Written across every queue cache entry — this route's detail list and
+        // the batched grid the dashboard renders from — so the move shows up
+        // wherever the clerk looks next without waiting for a refetch.
         onMutate: async ({ id, status }) => {
-            await queryClient.cancelQueries({ queryKey: queueQueryKey })
-            const previous = queryClient.getQueryData<QueueEntry[]>(queueQueryKey)
+            await queryClient.cancelQueries({ queryKey: ["queue"] })
+            const previous = queryClient.getQueriesData<QueueEntry[]>({ queryKey: ["queue"] })
 
-            queryClient.setQueryData<QueueEntry[]>(queueQueryKey, (old) =>
+            queryClient.setQueriesData<QueueEntry[]>({ queryKey: ["queue"] }, (old) =>
                 old?.map((e) => (e.id === id ? { ...e, status } : e))
             )
 
             return { previous }
         },
         onError: (_err, _vars, context) => {
-            queryClient.setQueryData(queueQueryKey, context?.previous)
+            context?.previous.forEach(([key, data]) => queryClient.setQueryData(key, data))
             toast.error("Failed to update queue status")
         },
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: queueQueryKey })
+            invalidateQueues(queryClient)
         },
     })
 
@@ -266,7 +255,7 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
         mutationFn: (id: string) => removeVehicleFromQueueRequest(id),
         onSuccess: () => {
             toast.success("Vehicle removed from queue")
-            queryClient.invalidateQueries({ queryKey: queueQueryKey })
+            invalidateQueues(queryClient)
         },
         onError: () => {
             toast.error("Failed to remove vehicle from queue")

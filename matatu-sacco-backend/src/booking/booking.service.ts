@@ -24,6 +24,7 @@ import {
 import { SaccoSettingsService } from 'src/sacco/sacco-settings.service';
 import { SaccoSettings } from 'src/sacco/entities/sacco-settings.entity';
 import { MpesaTransaction, MpesaTransactionMatchStatus } from 'src/payment/entities/mpesa.entity';
+import { SEAT_HOLD_MS } from 'src/payment/payment-reconcile.constants';
 
 export interface UniquePassengerStats {
   saccoId: string | null;
@@ -55,6 +56,13 @@ interface BookingCreationContext {
   source: BookingSource;
 }
 
+// A seat is unbookable for one of two different reasons, and collapsing them
+// into a single "taken" is what made an in-flight payment look like a sale.
+export enum SeatState {
+  TAKEN = 'TAKEN', // paid for — occupied permanently
+  HELD = 'HELD',   // payment in flight — occupied until holdExpiresAt passes
+}
+
 // Shape returned by getAvailability — includes the sacco's pre-booking
 // settings so the frontend can render limits/copy (e.g. "pre-booking closes
 // at 10:00", "3 seats left of 16 pre-bookable today") without a second
@@ -64,8 +72,9 @@ export interface AvailabilityResult {
   travelDate: string;
   hasOpenTrip: boolean;
   seatsTotal: number | null;
-  seatsBooked: number;
-  seatsAvailable: number | null;
+  seatsBooked: number;    // SOLD only — paid. Excludes in-flight holds.
+  seatsHeld: number;      // claimed by a payment still in flight
+  seatsAvailable: number | null; // neither sold nor held — bookable right now
   awaitingTripCount: number; // pre-bookings queued for the next vehicle
   preBooking: {
     enabled: boolean;
@@ -115,6 +124,15 @@ export class BookingService {
     return result;
   }
 
+  // A seat claimed by an in-flight M-Pesa payment is held, not sold. The
+  // expiry is stored as an absolute timestamp and always compared against the
+  // DATABASE's NOW(), so two app instances can never disagree about whether a
+  // hold has lapsed — that is the property that made a Redis TTL tempting,
+  // obtained here without a second source of truth.
+  private newHoldExpiry(): Date {
+    return new Date(Date.now() + SEAT_HOLD_MS);
+  }
+
   private initialPaymentStatus(dto: CreateBookingDto): PaymentStatus {
     if (dto.paymentMethod === PaymentMethod.CASH) return PaymentStatus.PAID;
     if (dto.paymentMethod === PaymentMethod.MPESA && dto.mpesaTransactionId) return PaymentStatus.PAID;
@@ -127,6 +145,9 @@ export class BookingService {
     dto: CreateBookingDto,
     source: BookingSource = BookingSource.CLERK,
   ): Promise<Booking> {
+    if (dto.bookingId) {
+      return this.retryPayment(dto.bookingId, dto);
+    }
     const route = await this.getRouteOrThrow(dto.routeId);
     const travelDate = dto.travelDate ?? this.toDateString(new Date());
     this.validatePreferredWindow(travelDate, dto.preferredBoardingFrom, dto.preferredBoardingTo);
@@ -155,6 +176,56 @@ export class BookingService {
     }
 
     return savedBooking;
+  }
+
+  // ── Retry: reuse the existing failed/pending booking rather than
+  // creating a new row and a new seat claim. Only valid while the booking
+  // hasn't already succeeded, boarded, or been cancelled outright.
+  private async retryPayment(bookingId: string, dto: CreateBookingDto): Promise<Booking> {
+    const booking = await this.findOne(bookingId); // includes route relation
+
+    if (booking.paymentStatus === PaymentStatus.PAID) {
+      return booking; // already succeeded — never re-charge on a stale retry click
+    }
+    if (booking.status === BookingStatus.CANCELLED) {
+      throw new BadRequestException('This booking was cancelled and can no longer be retried.');
+    }
+    if (booking.status === BookingStatus.BOARDED) {
+      throw new BadRequestException('This booking has already boarded.');
+    }
+
+    // A retry re-opens the payment window, so the seat hold restarts from now
+    // rather than inheriting the original booking's already-spent clock. Cash
+    // and pre-matched C2B resolve to PAID below and hold the seat outright, so
+    // they carry no expiry at all.
+    const isStkRetry = dto.paymentMethod === PaymentMethod.MPESA && !dto.mpesaTransactionId;
+
+    booking.paymentStatus = PaymentStatus.PENDING;
+    booking.paymentMethod = dto.paymentMethod; // clerk may switch method on retry (e.g. STK -> Paybill)
+    booking.holdExpiresAt = isStkRetry ? this.newHoldExpiry() : null;
+    const saved = await this.bookingRepository.save(booking);
+
+    if (dto.paymentMethod === PaymentMethod.CASH) {
+      await this.bookingRepository.manager.transaction((manager) =>
+        this.recordCashPaymentInTransaction(manager, saved, saved.route),
+      );
+      saved.paymentStatus = PaymentStatus.PAID;
+      saved.holdExpiresAt = null; // sold outright — no longer a hold
+      return this.bookingRepository.save(saved);
+    }
+
+    if (dto.paymentMethod === PaymentMethod.MPESA && dto.mpesaTransactionId) {
+      await this.bookingRepository.manager.transaction((manager) =>
+        this.matchMpesaTransactionInTransaction(manager, saved, dto.mpesaTransactionId!),
+      );
+      saved.paymentStatus = PaymentStatus.PAID;
+      saved.holdExpiresAt = null; // sold outright — no longer a hold
+      return this.bookingRepository.save(saved);
+    }
+
+    // Fresh STK prompt for the same booking/seat.
+    await this.triggerMpesaPayment(saved);
+    return saved;
   }
 
   // ── createBookingInTransaction: add the match step alongside the cash step
@@ -354,21 +425,59 @@ export class BookingService {
       .getOne();
   }
 
-  // Seat numbers currently held by real (non-cancelled) occupants of a trip.
-  // Shared by trySeatOnTrip (inside the locked transaction) and
-  // getAvailability (plain read) — same query, two callers, one source of
-  // truth for "what's taken."
-  private async getTakenSeatNumbers(manager: EntityManager, tripId: string): Promise<number[]> {
+  // Seats currently occupied on a trip, and on what basis.
+  //
+  // Two ways a seat is occupied, and the difference matters:
+  //   SOLD  — paymentStatus PAID. Occupied permanently.
+  //   HELD  — payment still in flight. Occupied only while holdExpiresAt is
+  //           in the future, compared against the DATABASE's NOW().
+  //
+  // Because the hold is a predicate on the row rather than a state some job
+  // has to transition, an expired hold stops blocking the seat the instant
+  // the clock passes it — no sweeper, no queue, nothing to fire. A lost
+  // BullMQ job or a Redis outage delays the *booking's* cleanup, never the
+  // seat's release.
+  //
+  // Legacy rows predating holdExpiresAt have it null, which reads as "already
+  // lapsed" — exactly right, since those payments can no longer succeed.
+  private async getOccupiedSeats(
+    manager: EntityManager,
+    tripId: string,
+  ): Promise<{ seatNumber: number; held: boolean; holdExpiresAt: Date | null }[]> {
     const rows = await manager
       .createQueryBuilder(Booking, 'b')
       .select('b.seatNumber', 'seatNumber')
+      .addSelect('b.paymentStatus', 'paymentStatus')
+      .addSelect('b.holdExpiresAt', 'holdExpiresAt')
       .where('b.tripId = :tripId', { tripId })
       .andWhere('b.status IN (:...statuses)', {
         statuses: [BookingStatus.CONFIRMED, BookingStatus.BOARDED],
       })
-      .getRawMany<{ seatNumber: number }>();
+      .andWhere('(b.paymentStatus = :paid OR b.holdExpiresAt > NOW())', {
+        paid: PaymentStatus.PAID,
+      })
+      .getRawMany<{ seatNumber: number; paymentStatus: PaymentStatus; holdExpiresAt: Date | null }>();
 
-    return rows.map((r) => r.seatNumber);
+    return rows.map((r) => ({
+      seatNumber: r.seatNumber,
+      held: r.paymentStatus !== PaymentStatus.PAID,
+      holdExpiresAt: r.holdExpiresAt,
+    }));
+  }
+
+  // "Which seat numbers can't be handed out right now" — sold and held alike,
+  // since both block a new booking. This is the blocking question; counting
+  // how full a vehicle actually is is a different one, and deliberately does
+  // NOT use this (see getAvailability / getSeatedCountsByQueueEntry).
+  //
+  // NOTE: this is only safe against double-booking because every caller that
+  // goes on to claim a seat does so while holding the pessimistic_write lock
+  // on the trip row taken by findLockedOpenTrip. There is no unique index
+  // backing it up — a partial index can't reference NOW() — so any new seat
+  // assignment path MUST take that lock.
+  private async getTakenSeatNumbers(manager: EntityManager, tripId: string): Promise<number[]> {
+    const seats = await this.getOccupiedSeats(manager, tripId);
+    return seats.map((s) => s.seatNumber);
   }
 
   // A clerk asked for a specific seat. Validate it's a real seat on this
@@ -441,6 +550,10 @@ export class BookingService {
       source,
       paymentMethod: dto.paymentMethod,
       paymentStatus,
+      // PENDING here means an STK push is about to go out, so the seat is
+      // claimed but not sold — start the hold clock. Cash and pre-matched C2B
+      // arrive PAID and hold the seat outright, with no expiry.
+      holdExpiresAt: paymentStatus === PaymentStatus.PENDING ? this.newHoldExpiry() : null,
       createdByUserId: dto.createdByUserId ?? null,
       preferredBoardingFrom: dto.preferredBoardingFrom ?? null,
       preferredBoardingTo: dto.preferredBoardingTo ?? null,
@@ -474,6 +587,10 @@ export class BookingService {
       source,
       paymentMethod: dto.paymentMethod,
       paymentStatus,
+      // No seat to hold yet, but the clock still runs: assignPendingBookingsToTrip
+      // only picks up PAID bookings, so this is what marks the pre-booking as
+      // still-live rather than abandoned.
+      holdExpiresAt: paymentStatus === PaymentStatus.PENDING ? this.newHoldExpiry() : null,
       createdByUserId: dto.createdByUserId ?? null,
       preferredBoardingFrom: dto.preferredBoardingFrom ?? null,
       preferredBoardingTo: dto.preferredBoardingTo ?? null,
@@ -604,6 +721,7 @@ export class BookingService {
   ): Promise<Booking> {
     const booking = await this.findOne(id);
     booking.paymentStatus = PaymentStatus.PAID;
+    booking.holdExpiresAt = null; // paid — the seat is sold, not held
     if (receiptOrRef.mpesaReceiptNumber) {
       booking.mpesaReceiptNumber = receiptOrRef.mpesaReceiptNumber;
     }
@@ -625,6 +743,7 @@ export class BookingService {
     const booking = await this.findOne(id);
     booking.paymentStatus = PaymentStatus.FAILED;
     booking.status = BookingStatus.CANCELLED; // ← payment never completed — this booking never happened
+    booking.holdExpiresAt = null; // release the seat now rather than waiting out the clock
     this.logger.warn(`Payment failed for booking ${id} — marked CANCELLED`);
     return this.bookingRepository.save(booking);
   }
@@ -736,6 +855,7 @@ export class BookingService {
     hasOpenTrip: boolean;
     seatsTotal: number | null;
     takenSeatNumbers: number[];
+    seats: { seatNumber: number; state: SeatState; holdExpiresAt: Date | null }[];
   }> {
     const date = travelDate ?? this.toDateString(new Date());
 
@@ -743,14 +863,24 @@ export class BookingService {
       where: { routeId, travelDate: date, status: TripStatus.BOARDING },
     });
 
-    const takenSeatNumbers = openTrip
-      ? await this.getTakenSeatNumbers(this.bookingRepository.manager, openTrip.id)
+    const occupied = openTrip
+      ? await this.getOccupiedSeats(this.bookingRepository.manager, openTrip.id)
       : [];
 
     return {
       hasOpenTrip: !!openTrip,
       seatsTotal: openTrip?.vehicleCapacity ?? null,
-      takenSeatNumbers,
+      // Unchanged shape for existing callers: everything unbookable, sold or
+      // held, exactly as before.
+      takenSeatNumbers: occupied.map((s) => s.seatNumber),
+      // The same seats with the distinction the old shape threw away, so the
+      // picker can render a held seat as pending-with-a-countdown rather than
+      // as an indistinguishable sold seat.
+      seats: occupied.map((s) => ({
+        seatNumber: s.seatNumber,
+        state: s.held ? SeatState.HELD : SeatState.TAKEN,
+        holdExpiresAt: s.holdExpiresAt,
+      })),
     };
   }
 
@@ -770,15 +900,15 @@ export class BookingService {
       where: { routeId, travelDate: date, status: TripStatus.BOARDING },
     });
 
-    const seatedCount = openTrip
-      ? await this.bookingRepository
-        .createQueryBuilder('b')
-        .where('b.tripId = :tripId', { tripId: openTrip.id })
-        .andWhere('b.status IN (:...statuses)', {
-          statuses: [BookingStatus.CONFIRMED, BookingStatus.BOARDED],
-        })
-        .getCount()
-      : 0;
+    // One read, two answers. seatsBooked is "how many seats did we actually
+    // sell" — a held seat is not a sale and must not inflate it. seatsAvailable
+    // is "what can I still hand out", which a held seat DOES reduce. Deriving
+    // both from the same rows keeps them from drifting apart.
+    const occupied = openTrip
+      ? await this.getOccupiedSeats(this.bookingRepository.manager, openTrip.id)
+      : [];
+    const heldCount = occupied.filter((s) => s.held).length;
+    const seatedCount = occupied.length - heldCount;
 
     const awaitingCount = await this.bookingRepository
       .createQueryBuilder('b')
@@ -807,7 +937,10 @@ export class BookingService {
       hasOpenTrip: !!openTrip,
       seatsTotal: openTrip?.vehicleCapacity ?? null,
       seatsBooked: seatedCount,
-      seatsAvailable: openTrip ? openTrip.vehicleCapacity - seatedCount : null,
+      seatsHeld: heldCount,
+      seatsAvailable: openTrip
+        ? openTrip.vehicleCapacity - occupied.length
+        : null,
       awaitingTripCount: awaitingCount, // pre-bookings queued for the next vehicle
       preBooking: {
         enabled: settings.preBookingEnabled,
@@ -870,37 +1003,52 @@ export class BookingService {
     const start = this.toDateString(startDate);
     const end = this.toDateString(endDate);
 
+    // Grouped by sacco as well as date, because commission is a per-sacco
+    // setting: a platform-wide trend has to weight each sacco's slice of a
+    // day's revenue by that sacco's own rate before summing.
     const qb = this.bookingRepository
       .createQueryBuilder('b')
       .select('b.travelDate', 'travelDate')
+      .addSelect('b.saccoId', 'saccoId')
       .addSelect('SUM(b.fare)', 'grossRevenue')
       .where('b.travelDate BETWEEN :start AND :end', { start, end })
       .andWhere('b.paymentStatus = :paid', { paid: PaymentStatus.PAID })
       .andWhere('b.status != :cancelled', { cancelled: BookingStatus.CANCELLED })
-      .groupBy('b.travelDate');
+      .groupBy('b.travelDate')
+      .addGroupBy('b.saccoId');
 
     if (saccoId) {
       qb.andWhere('b.saccoId = :saccoId', { saccoId });
     }
 
-    const rows = await qb.getRawMany<{ travelDate: string | Date; grossRevenue: string }>();
+    const rows = await qb.getRawMany<{
+      travelDate: string | Date;
+      saccoId: string;
+      grossRevenue: string;
+    }>();
 
-    const revenueByDate = new Map<string, number>(
-      rows.map((r) => [
-        this.normalizeTravelDate(r.travelDate), // force back to 'YYYY-MM-DD' string
-        Number(r.grossRevenue),
-      ]),
-    );
+    const rates = await this.saccoSettingsService.getCommissionRates(rows.map((r) => r.saccoId));
+
+    const revenueByDate = new Map<string, number>();
+    const commissionByDate = new Map<string, number>();
+    for (const row of rows) {
+      const date = this.normalizeTravelDate(row.travelDate); // force back to 'YYYY-MM-DD'
+      const revenue = Number(row.grossRevenue) || 0;
+      revenueByDate.set(date, (revenueByDate.get(date) ?? 0) + revenue);
+      commissionByDate.set(
+        date,
+        (commissionByDate.get(date) ?? 0) + revenue * (rates.get(row.saccoId) ?? 0),
+      );
+    }
 
     const trend: { date: string; revenue: number; commission: number }[] = [];
     const cursor = new Date(startDate);
     while (this.toDateString(cursor) <= end) {
       const date = this.toDateString(cursor);
-      const revenue = revenueByDate.get(date) ?? 0;
       trend.push({
         date,
-        revenue,
-        commission: this.commissionOf(revenue),
+        revenue: revenueByDate.get(date) ?? 0,
+        commission: commissionByDate.get(date) ?? 0,
       });
       cursor.setDate(cursor.getDate() + 1);
     }
@@ -920,43 +1068,58 @@ export class BookingService {
     return value; // already a string — some drivers/configs return it that way
   }
 
-  // Mirrors the frontend's commissionOf — keep the rate in sync, or better,
-  // pull both from one shared constant/config if you have one.
-  private commissionOf(grossRevenue: number): number {
-    const COMMISSION_RATE = 0.1;
-    return grossRevenue * COMMISSION_RATE;
-  }
-
   // ─── Today's Earnings (for dashboard KPI cards) ─────────────────────────
   // Single-day totals only — cheaper than getRevenueTrend when you just
   // need "today", not the whole range (e.g. KPI cards that poll more
   // often than the chart does).
   //
   // saccoId omitted → platform-wide totals (super admin view).
-  async getTodayEarnings(
-    saccoId?: string,
-  ): Promise<{ date: string; grossRevenue: number; commission: number }> {
+  async getTodayEarnings(saccoId?: string): Promise<{
+    date: string;
+    grossRevenue: number;
+    commission: number;
+    /**
+     * The rate the commission was computed at, as a fraction (0.1 = 10%), so
+     * the caller can label the figure and derive a per-trip cut without
+     * keeping a second copy of the rate. Null platform-wide, where each sacco
+     * contributes at its own rate and no single number describes the total.
+     */
+    commissionRate: number | null;
+  }> {
     const date = this.toDateString(new Date());
 
     const qb = this.bookingRepository
       .createQueryBuilder('b')
-      .select('SUM(b.fare)', 'grossRevenue')
+      .select('b.saccoId', 'saccoId')
+      .addSelect('SUM(b.fare)', 'grossRevenue')
       .where('b.travelDate = :date', { date })
       .andWhere('b.paymentStatus = :paid', { paid: PaymentStatus.PAID })
-      .andWhere('b.status != :cancelled', { cancelled: BookingStatus.CANCELLED });
+      .andWhere('b.status != :cancelled', { cancelled: BookingStatus.CANCELLED })
+      .groupBy('b.saccoId');
 
     if (saccoId) {
       qb.andWhere('b.saccoId = :saccoId', { saccoId });
     }
 
-    const result = await qb.getRawOne<{ grossRevenue: string | null }>();
-    const revenue = Number(result?.grossRevenue) || 0;
+    const rows = await qb.getRawMany<{ saccoId: string; grossRevenue: string }>();
 
-    return {
-      date,
-      grossRevenue: revenue,
-      commission: this.commissionOf(revenue),
-    };
+    // Scoped: read the rate directly, so it's still reported on a day with no
+    // revenue at all. Platform-wide: one rate per contributing sacco.
+    const scopedRate = saccoId ? await this.saccoSettingsService.getCommissionRate(saccoId) : null;
+    const rates =
+      saccoId !== undefined
+        ? new Map([[saccoId, scopedRate!]])
+        : await this.saccoSettingsService.getCommissionRates(rows.map((r) => r.saccoId));
+
+    let grossRevenue = 0;
+    let commission = 0;
+    for (const row of rows) {
+      const revenue = Number(row.grossRevenue) || 0;
+      grossRevenue += revenue;
+      commission += revenue * (rates.get(row.saccoId) ?? 0);
+    }
+
+    return { date, grossRevenue, commission, commissionRate: scopedRate };
   }
 
   // ─── Unique Passenger Stats (adoption signal, not staff accounts) ───────

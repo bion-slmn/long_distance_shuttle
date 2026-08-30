@@ -46,6 +46,13 @@ export interface Booking {
     mpesaReceiptNumber: string | null;
     preferredBoardingFrom: string | null;
     preferredBoardingTo: string | null;
+    /**
+     * While an M-Pesa payment is in flight the seat is claimed but not sold.
+     * Once this passes, the payment can no longer legitimately land — a row
+     * still PENDING past it is a dead booking, not one to keep waiting on.
+     * Null on CASH/pre-matched C2B (sold outright) and on legacy rows.
+     */
+    holdExpiresAt: string | null;
     createdByUserId: string | null;
     createdAt: string;
     updatedAt: string;
@@ -64,10 +71,31 @@ export interface Booking {
     } | null;
 }
 
+// A seat is unbookable for one of two different reasons, and collapsing them
+// into a single "taken" is what made an in-flight payment look like a sale.
+export const SeatState = {
+    TAKEN: "TAKEN", // paid for — occupied permanently
+    HELD: "HELD",   // payment in flight — occupied until holdExpiresAt passes
+} as const;
+
+export type SeatState = (typeof SeatState)[keyof typeof SeatState];
+
+export interface SeatMapSeat {
+    seatNumber: number;
+    state: SeatState;
+    /** Only set for HELD seats — when the hold lapses and the seat frees up. */
+    holdExpiresAt: string | null;
+}
+
 export interface BookingSeatMap {
     hasOpenTrip: boolean;
     seatsTotal: number | null;
+    /**
+     * Every unbookable seat, sold and held alike. Kept for callers that only
+     * need "can I click this" — prefer `seats` when the distinction matters.
+     */
     takenSeatNumbers: number[];
+    seats: SeatMapSeat[];
 }
 
 // Seat-count-only availability for a route/date — no seat map.
@@ -90,7 +118,11 @@ export interface BookingAvailability {
     travelDate: string;
     hasOpenTrip: boolean;
     seatsTotal: number | null;
+    /** SOLD only — paid. Excludes in-flight holds. */
     seatsBooked: number;
+    /** Claimed by a payment still in flight — not a sale, but not bookable either. */
+    seatsHeld: number;
+    /** Neither sold nor held — what can actually be handed out right now. */
     seatsAvailable: number | null;
     awaitingTripCount: number; // pre-bookings queued for the next vehicle
     preBooking: BookingAvailabilityPreBooking;
@@ -230,9 +262,22 @@ export async function cancelBookingRequest(
     return res.data;
 }
 
+export interface TodayEarnings {
+    date: string;
+    grossRevenue: number;
+    commission: number;
+    /**
+     * The rate the commission was computed at, as a fraction (0.1 = 10%),
+     * read from the sacco's own settings. Use it to label the figure and to
+     * derive a per-trip cut — never hardcode a rate alongside this. Null
+     * platform-wide, where each sacco contributes at its own rate.
+     */
+    commissionRate: number | null;
+}
+
 export async function getTodayEarningsRequest(
     saccoId?: string,
-): Promise<{ date: string; grossRevenue: number; commission: number }> {
+): Promise<TodayEarnings> {
     const params = new URLSearchParams();
     if (saccoId) params.set("saccoId", saccoId);
     const query = params.toString();

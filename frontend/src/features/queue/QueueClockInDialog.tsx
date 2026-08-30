@@ -15,6 +15,7 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog"
 import { clockInVehicleRequest } from "@/api/routeApi"
+import { invalidateQueues } from "@/hooks/useRouteQueues"
 import { VehicleCombobox } from "@/features/fleet/VehicleCombobox"
 import { getRouteRequest } from "@/api/routeApi"
 import { SaccoCombobox } from "../sacco/SaccoCombobox"
@@ -40,7 +41,6 @@ export function QueueClockInDialog({ routeId, open, onOpenChange }: QueueClockIn
         queryFn: () => getRouteRequest(routeId),
         enabled: !!routeId && open, // Only fetch when dialog is open
     })
-    console.log({ route }, 5555555555555, 'Saccoid', route?.saccoId)
 
     const form = useForm<ClockInValues>({
         resolver: zodResolver(clockInSchema),
@@ -52,7 +52,10 @@ export function QueueClockInDialog({ routeId, open, onOpenChange }: QueueClockIn
             clockInVehicleRequest({ routeId, vehicleId: values.vehicleId }),
         onSuccess: () => {
             toast.success("Vehicle clocked in")
-            queryClient.invalidateQueries({ queryKey: ["queue", routeId] })
+            // Must clear every queue cache entry, not just this route's key:
+            // the dashboard grid reads from one batched entry covering all
+            // routes, which a ["queue", routeId] prefix does not match.
+            invalidateQueues(queryClient)
             form.reset()
             onOpenChange(false)
         },

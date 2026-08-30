@@ -120,16 +120,31 @@ export class Booking {
     @Column({ type: 'enum', enum: BookingSource })
     declare source: BookingSource;
 
+    // ── Seat hold expiry ──────────────────────────────────────────────────
+    // While an M-Pesa payment is in flight the seat is CLAIMED but not SOLD.
+    // This timestamp is what makes that state self-releasing: occupancy
+    // queries treat an unpaid seat as taken only while holdExpiresAt is still
+    // in the future (compared against the DATABASE's NOW(), so instances can
+    // never disagree). Expiry is therefore a predicate, not an event — the
+    // seat frees itself correctly even if the reconcile job was lost to a
+    // restart or a Redis outage.
+    //
+    // Set when a PENDING payment is created, reset on retry, cleared to null
+    // once payment lands. Always null for CASH and pre-matched C2B, which are
+    // PAID on arrival and so hold their seat outright.
+    @Column({ type: 'timestamptz', nullable: true })
+    declare holdExpiresAt: Date | null;
+
     @Column({ type: 'time', nullable: true })
     declare preferredBoardingFrom: string | null;
 
     @Column({ type: 'time', nullable: true })
     declare preferredBoardingTo: string | null;
 
-    @CreateDateColumn()
+    @CreateDateColumn({ type: 'timestamptz' })
     declare createdAt: Date;
 
-    @UpdateDateColumn()
+    @UpdateDateColumn({ type: 'timestamptz' })
     declare updatedAt: Date;
 
     @BeforeInsert()

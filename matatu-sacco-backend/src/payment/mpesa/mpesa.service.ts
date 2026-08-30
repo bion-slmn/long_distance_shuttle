@@ -1,14 +1,13 @@
 // src/payment/mpesa/mpesa.service.ts
-import { Injectable, Logger, BadRequestException, Inject } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, MoreThanOrEqual, LessThanOrEqual, Repository } from 'typeorm';
-import Redis from 'ioredis';
+import { Between, Repository } from 'typeorm';
+import { LRUCache } from 'lru-cache';
 import { firstValueFrom } from 'rxjs';
 import { SaccoSettingsService } from '../../sacco/sacco-settings.service';
 import { InitiateStkPushDto } from '../dto/initiate-stk-push.dto';
 import { MpesaCallbackDto } from '../dto/mpesa-callback.dto';
-import { REDIS_CLIENT } from 'src/redis/redis.module';
 import { MpesaTransaction, MpesaTransactionMatchStatus, MpesaTransactionSource } from '../entities/mpesa.entity';
 
 
@@ -56,31 +55,115 @@ const PG_UNIQUE_VIOLATION = '23505';
 export class MpesaService {
     private readonly logger = new Logger(MpesaService.name);
 
+    // ── Resilience tuning ──────────────────────────────────────────────
+    // 30s covers realistic Daraja slowness without hanging a request handler
+    // indefinitely (Axios' own default timeout is 0 — no timeout at all).
+    private readonly HTTP_TIMEOUT_MS = 20_000;
+    // One retry beyond the initial attempt. This is for transient
+    // network/Daraja-side blips only — NOT a substitute for the
+    // caller-side idempotency key that should guard against a clerk's
+    // device double-submitting a booking. Keeping this low and bounded
+    // avoids compounding retries if the caller also retries.
+    private readonly MAX_RETRIES = 1;
+
+    // ── Daraja OAuth token cache, per sacco ───────────────────────────────
+    // In-process rather than Redis. A token is cheap, idempotent to re-fetch,
+    // and re-derivable from credentials we already hold — so a shared cache
+    // buys only a handful of avoided HTTP calls per hour, while a network
+    // round trip on the critical path of every STK push can (and did) hang
+    // payments when the cache store is unreachable. Losing this cache costs
+    // one extra Daraja call; it can never cost a payment.
+    //
+    // `max` is a safety net, not a working constraint: entries are keyed by
+    // saccoId and are a few dozen bytes each, so eviction will never fire in
+    // practice. TTL is what actually governs the entry, and it comes from
+    // Daraja's own expires_in.
+    private readonly TOKEN_CACHE_MAX = 500;
+    private readonly tokenCache = new LRUCache<string, string>({
+        max: this.TOKEN_CACHE_MAX,
+    });
+
     constructor(
         private readonly httpService: HttpService,
         private readonly saccoSettingsService: SaccoSettingsService,
-        @Inject(REDIS_CLIENT) private readonly redis: Redis,
         @InjectRepository(MpesaTransaction)
         private readonly mpesaTransactionRepo: Repository<MpesaTransaction>,
     ) { }
 
+    // Drop a sacco's cached token so the next call fetches a fresh one.
+    //
+    // Called whenever a token-bearing Daraja call fails. We can't reliably
+    // tell "your token is stale" apart from "Daraja had a bad minute" —
+    // Daraja reports auth problems inconsistently across its endpoints — so
+    // this errs toward discarding. The cost of being wrong is one extra
+    // OAuth round trip on the next attempt; the cost of keeping a bad token
+    // is every subsequent call failing the same way until the TTL runs out.
+    private invalidateToken(saccoId: string): void {
+        if (this.tokenCache.delete(saccoId)) {
+            this.logger.warn(`Discarded cached M-Pesa token for sacco ${saccoId} after a failed call`);
+        }
+    }
+
+    // ── Shared retry wrapper for outbound Daraja calls ────────────────────
+    // Only retries errors that look transient (timeout, connection reset,
+    // 502/503/504) — never retries on a 4xx or a Daraja-level business
+    // rejection, since retrying those just repeats the same failure.
+    private isRetryable(err: any): boolean {
+        const code = err?.code;
+        const status = err?.response?.status;
+        return (
+            code === 'ECONNABORTED' ||
+            code === 'ECONNRESET' ||
+            code === 'ETIMEDOUT' ||
+            status === 502 ||
+            status === 503 ||
+            status === 504
+        );
+    }
+
+    private async withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+        let lastErr: any;
+        for (let attempt = 0; attempt <= this.MAX_RETRIES; attempt++) {
+            try {
+                return await fn();
+            } catch (err: any) {
+                lastErr = err;
+                if (attempt < this.MAX_RETRIES && this.isRetryable(err)) {
+                    const delayMs = 1000 * (attempt + 1);
+                    this.logger.warn(
+                        `${label} failed (attempt ${attempt + 1}/${this.MAX_RETRIES + 1}), retrying in ${delayMs}ms: ${err.message}`,
+                    );
+                    await new Promise((resolve) => setTimeout(resolve, delayMs));
+                    continue;
+                }
+                throw lastErr;
+            }
+        }
+        throw lastErr;
+    }
+
     // ── OAuth token, cached per sacco (tokens are ~1hr valid) ─────────────
     private async getAccessToken(saccoId: string, consumerKey: string, consumerSecret: string): Promise<string> {
-        const cacheKey = `mpesa:token:${saccoId}`;
-        const cached = await this.redis.get(cacheKey);
+        const cached = this.tokenCache.get(saccoId);
         if (cached) return cached;
 
         const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
 
-        const { data } = await firstValueFrom(
-            this.httpService.get(`${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
-                headers: { Authorization: `Basic ${auth}` },
-            }),
+        const { data } = await this.withRetry('getAccessToken', () =>
+            firstValueFrom(
+                this.httpService.get(`${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
+                    headers: { Authorization: `Basic ${auth}` },
+                    timeout: this.HTTP_TIMEOUT_MS,
+                }),
+            ),
         );
 
-        // Cache for slightly under the actual TTL to avoid using an expired token
-        const ttlSeconds = (data.expires_in ?? 3600) - 60;
-        await this.redis.set(cacheKey, data.access_token, 'EX', ttlSeconds);
+        // Expire slightly early so we never present a token Daraja has already
+        // retired. Floored at 60s: a pathologically short expires_in must not
+        // produce a zero or negative ttl, which lru-cache reads as "no expiry
+        // at all" — the exact opposite of what a short-lived token wants.
+        const ttlSeconds = Math.max(60, (data.expires_in ?? 3600) - 60);
+        this.tokenCache.set(saccoId, data.access_token, { ttl: ttlSeconds * 1000 });
 
         return data.access_token;
     }
@@ -148,10 +231,13 @@ export class MpesaService {
         };
 
         try {
-            const { data } = await firstValueFrom(
-                this.httpService.post(`${DARAJA_BASE_URL}/mpesa/stkpush/v1/processrequest`, payload, {
-                    headers: { Authorization: `Bearer ${token}` },
-                }),
+            const { data } = await this.withRetry('initiateStkPush', () =>
+                firstValueFrom(
+                    this.httpService.post(`${DARAJA_BASE_URL}/mpesa/stkpush/v1/processrequest`, payload, {
+                        headers: { Authorization: `Bearer ${token}` },
+                        timeout: this.HTTP_TIMEOUT_MS,
+                    }),
+                ),
             );
 
             this.logger.log(
@@ -164,6 +250,7 @@ export class MpesaService {
                 responseDescription: data.ResponseDescription,
             };
         } catch (err: any) {
+            this.invalidateToken(saccoId);
             this.logger.error(
                 `STK push failed for sacco ${saccoId}: ${err?.response?.data?.errorMessage ?? err.message}`,
             );
@@ -171,34 +258,72 @@ export class MpesaService {
         }
     }
 
-
+    // ── Query Daraja directly for a checkout's current status ─────────────
+    // This is the reconcile/backstop path — the one meant to run when the
+    // network was already unreliable, so it can't be allowed to throw an
+    // unhandled Axios error. ServiceUnavailableException (503) rather than
+    // BadRequestException (400) here: a query failure means "we couldn't
+    // find out," not "the request was invalid" — callers (e.g. the
+    // reconcile endpoint) should treat the two differently, since a 503
+    // means "try again shortly," not "this will never succeed."
+    //
+    // Returns resultCode: null when Daraja gave us no usable ResultCode —
+    // most commonly its "still in flight" answer, which it returns as a
+    // *200* carrying { errorCode: '500.001.1001', errorMessage: 'The
+    // transaction is being processed' } and no ResultCode field at all.
+    // null means "we still don't know", never "it failed".
     async queryStkStatus(
         saccoId: string,
         checkoutRequestId: string,
-    ): Promise<{ resultCode: number; resultDesc: string }> {
-        const creds = await this.saccoSettingsService.getDecryptedMpesaCredentials(saccoId);
-        const token = await this.getAccessToken(saccoId, creds.consumerKey, creds.consumerSecret);
+    ): Promise<{ resultCode: number | null; resultDesc: string; errorCode: string | null }> {
+        try {
+            const creds = await this.saccoSettingsService.getDecryptedMpesaCredentials(saccoId);
+            const token = await this.getAccessToken(saccoId, creds.consumerKey, creds.consumerSecret);
 
-        const timestamp = this.timestamp();
-        const password = this.buildStkPassword(creds.shortcode, creds.passkey, timestamp);
+            const timestamp = this.timestamp();
+            const password = this.buildStkPassword(creds.shortcode, creds.passkey, timestamp);
 
-        const { data } = await firstValueFrom(
-            this.httpService.post(
-                `${DARAJA_BASE_URL}/mpesa/stkpushquery/v1/query`,
-                {
-                    BusinessShortCode: creds.shortcode,
-                    Password: password,
-                    Timestamp: timestamp,
-                    CheckoutRequestID: checkoutRequestId,
-                },
-                { headers: { Authorization: `Bearer ${token}` } },
-            ),
-        );
+            const { data } = await this.withRetry('queryStkStatus', () =>
+                firstValueFrom(
+                    this.httpService.post(
+                        `${DARAJA_BASE_URL}/mpesa/stkpushquery/v1/query`,
+                        {
+                            BusinessShortCode: creds.shortcode,
+                            Password: password,
+                            Timestamp: timestamp,
+                            CheckoutRequestID: checkoutRequestId,
+                        },
+                        {
+                            headers: { Authorization: `Bearer ${token}` },
+                            timeout: this.HTTP_TIMEOUT_MS,
+                        },
+                    ),
+                ),
+            );
 
-        return {
-            resultCode: Number(data.ResultCode),
-            resultDesc: data.ResultDesc,
-        };
+            // Daraja is inconsistent here: a pending/errored query can come
+            // back 200 with only errorCode/errorMessage. Number(undefined) is
+            // NaN, and NaN compares false against every known code — so guard
+            // explicitly instead of letting it fall through as "not success".
+            const rawResultCode = data.ResultCode;
+            const parsed = rawResultCode === undefined || rawResultCode === null
+                ? NaN
+                : Number(rawResultCode);
+
+            return {
+                resultCode: Number.isNaN(parsed) ? null : parsed,
+                resultDesc: data.ResultDesc ?? data.errorMessage ?? '',
+                errorCode: data.errorCode ?? null,
+            };
+        } catch (err: any) {
+            this.invalidateToken(saccoId);
+            this.logger.error(
+                `STK status query failed for checkoutRequestId=${checkoutRequestId}: ${err?.response?.data?.errorMessage ?? err.message}`,
+            );
+            throw new ServiceUnavailableException(
+                'Could not reach M-Pesa to check payment status. Please try again shortly.',
+            );
+        }
     }
 
     // ── Parse Safaricom's callback payload into a flat, usable shape ──────
@@ -232,6 +357,13 @@ export class MpesaService {
     // ── Handle the STK callback end-to-end: parse + persist ───────────────
     // Call this from your callback controller instead of parseCallback()
     // directly if you want every successful push stored automatically.
+    //
+    // NOTE: this only dedupes at the storage layer (unique mpesaReceiptNumber
+    // in storeTransaction below). It does NOT stop a resent callback from
+    // being handed to PaymentService.handleMpesaCallback again — that method
+    // needs its own guard (a conditional UPDATE ... WHERE status IN (PENDING,
+    // PROCESSING)) so a duplicate delivery is a no-op rather than re-running
+    // side effects like receipt generation or seat confirmation.
     async handleStkCallback(body: MpesaCallbackDto): Promise<ParsedCallback> {
         const parsed = this.parseCallback(body);
 
@@ -386,24 +518,27 @@ export class MpesaService {
         const creds = await this.saccoSettingsService.getDecryptedMpesaCredentials(saccoId);
         const token = await this.getAccessToken(saccoId, creds.consumerKey, creds.consumerSecret);
 
-        console.log(token)
         const payload = {
-            ShortCode: 600584, //creds.shortcode,
+            ShortCode: creds.shortcode,
             ResponseType: 'Completed',
             ConfirmationURL: `${process.env.MPESA_CALLBACK_BASE_URL}/payment/c2b/confirmation`,
             ValidationURL: `${process.env.MPESA_CALLBACK_BASE_URL}/payment/c2b/validation`,
         };
 
         try {
-            const { data } = await firstValueFrom(
-                this.httpService.post(`${DARAJA_BASE_URL}/mpesa/c2b/v1/registerurl`, payload, {
-                    headers: { Authorization: `Bearer ${token}` },
-                }),
+            const { data } = await this.withRetry('registerC2BUrls', () =>
+                firstValueFrom(
+                    this.httpService.post(`${DARAJA_BASE_URL}/mpesa/c2b/v1/registerurl`, payload, {
+                        headers: { Authorization: `Bearer ${token}` },
+                        timeout: this.HTTP_TIMEOUT_MS,
+                    }),
+                ),
             );
 
             this.logger.log(`C2B URLs registered for sacco ${saccoId}: ${data.ResponseDescription}`);
             return { responseDescription: data.ResponseDescription };
         } catch (err: any) {
+            this.invalidateToken(saccoId);
             this.logger.error(
                 `C2B URL registration failed for sacco ${saccoId}: ${err?.response?.data?.errorMessage ?? err.message}`,
             );

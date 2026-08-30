@@ -1,7 +1,7 @@
 // src/sacco/sacco-settings.service.ts
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { SaccoSettings } from './entities/sacco-settings.entity';
 import { ConfigureMpesaDto } from './dto/configure-mpesa.dto';
 import { decrypt, encrypt } from 'src/common/utils/crypto.util';
@@ -22,6 +22,12 @@ import { UpdateSaccoSettingsDto } from './dto/update-sacco-settings.dto';
 // real settings UI for them; until then, update() intentionally ignores
 // these fields even if a caller sends them.
 
+// The rate a sacco starts on before anyone edits it. Stored as a percentage
+// (10 = 10%), matching the column's own default, and used as the fallback
+// whenever a sacco somehow has no settings row — better a visible default
+// than silently reporting zero commission.
+export const DEFAULT_COMMISSION_RATE = 10;
+
 @Injectable()
 export class SaccoSettingsService {
     private readonly logger = new Logger(SaccoSettingsService.name);
@@ -40,7 +46,7 @@ export class SaccoSettingsService {
 
         const settings = repo.create({
             saccoId,
-            commissionRate: 10,
+            commissionRate: DEFAULT_COMMISSION_RATE,
             isAcceptingBookings: true,
             acceptsMpesa: false, // stays false until configureMpesa() succeeds
             acceptsCash: true,
@@ -65,6 +71,49 @@ export class SaccoSettingsService {
             throw new NotFoundException(`Settings for sacco "${saccoId}" not found.`);
         }
         return settings;
+    }
+
+    // commissionRate is a PERCENTAGE in a numeric(5,2) column, and pg hands
+    // decimals back as strings — `settings.commissionRate * gross` silently
+    // produces NaN even though the type says number. Every read of the rate
+    // goes through here so no caller has to remember that.
+    private toRateFraction(commissionRate: unknown): number {
+        const percent = Number(commissionRate);
+        return Number.isFinite(percent) ? percent / 100 : DEFAULT_COMMISSION_RATE / 100;
+    }
+
+    // ── The one place commission is defined ────────────────────────────────
+    // Every earnings figure in the product derives its rate from here, so a
+    // sacco that edits its rate sees the same number on the dashboard, in the
+    // trend chart and on a trip row — rather than each surface carrying its
+    // own constant and quietly disagreeing.
+
+    /** This sacco's commission as a fraction of gross fares (10% → 0.1). */
+    async getCommissionRate(saccoId: string): Promise<number> {
+        const settings = await this.findOne(saccoId);
+        return this.toRateFraction(settings.commissionRate);
+    }
+
+    /**
+     * Commission fractions for many saccos in one read. Platform-wide totals
+     * span saccos that each charge their own rate, so they have to be weighted
+     * per sacco — a single blended constant would be wrong for every one of
+     * them. Saccos with no settings row fall back to DEFAULT_COMMISSION_RATE.
+     */
+    async getCommissionRates(saccoIds: string[]): Promise<Map<string, number>> {
+        const unique = [...new Set(saccoIds)];
+        if (unique.length === 0) return new Map();
+
+        const rows = await this.settingsRepository.find({
+            where: { saccoId: In(unique) },
+            select: { saccoId: true, commissionRate: true },
+        });
+
+        const rates = new Map(rows.map((r) => [r.saccoId, this.toRateFraction(r.commissionRate)]));
+        for (const saccoId of unique) {
+            if (!rates.has(saccoId)) rates.set(saccoId, DEFAULT_COMMISSION_RATE / 100);
+        }
+        return rates;
     }
 
     // ── Update general operational settings ─────────────────────────────────

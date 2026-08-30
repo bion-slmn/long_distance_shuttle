@@ -257,6 +257,7 @@ describe('RouteController', () => {
 
       expect(routeQueueService.findAllQueueEntries).toHaveBeenCalledWith({
         routeId: 'route-1',
+        routeIds: undefined,
         status: QueueEntryStatus.WAITING,
         date: expect.any(Date),
       });
@@ -267,6 +268,34 @@ describe('RouteController', () => {
 
       expect(routeQueueService.findAllQueueEntries).toHaveBeenCalledWith({
         routeId: undefined,
+        routeIds: undefined,
+        status: undefined,
+        date: undefined,
+      });
+    });
+
+    it('splits the routeIds csv into a list', () => {
+      controller.findAllQueueEntries(
+        undefined,
+        undefined,
+        undefined,
+        'route-1, route-2 ,route-3',
+      );
+
+      expect(routeQueueService.findAllQueueEntries).toHaveBeenCalledWith({
+        routeId: undefined,
+        routeIds: ['route-1', 'route-2', 'route-3'],
+        status: undefined,
+        date: undefined,
+      });
+    });
+
+    it('treats an empty routeIds csv as absent rather than as an empty filter', () => {
+      controller.findAllQueueEntries(undefined, undefined, undefined, ' , ');
+
+      expect(routeQueueService.findAllQueueEntries).toHaveBeenCalledWith({
+        routeId: undefined,
+        routeIds: undefined,
         status: undefined,
         date: undefined,
       });

@@ -28,14 +28,14 @@ export class Trip {
   declare id: string;
 
   // Nullable — only filled the moment the vehicle actually departs the stage
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   declare departureTime: Date | null;
 
   // Nullable — filled when the trip is closed (auto via next clock-in, or
   // manually/by a cleanup job). Deliberately separate from `updatedAt`,
   // which changes on any edit and can't be trusted as "this is when it
   // actually completed."
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   declare completedAt: Date | null;
 
   // Postgres/TypeORM returns `decimal` columns as strings by default.
@@ -115,10 +115,10 @@ export class Trip {
 
   // ─── Timestamps ────────────────────────────────────────────────────────────
 
-  @CreateDateColumn({ type: 'timestamp' })
+  @CreateDateColumn({ type: 'timestamptz' })
   declare createdAt: Date; // Boarding started time
 
-  @UpdateDateColumn({ type: 'timestamp' })
+  @UpdateDateColumn({ type: 'timestamptz' })
   declare updatedAt: Date;
 
   // Snapshot from Fleet.seatingCapacity at trip creation — capacity must stay

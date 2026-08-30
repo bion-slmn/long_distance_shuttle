@@ -342,7 +342,7 @@ export default function Homepage() {
                                     <span className="text-emerald-500">not a spreadsheet.</span>
                                 </h1>
                                 <p className="max-w-md text-base leading-relaxed text-muted-foreground sm:text-lg">
-                                    ShuttleOps gives fleet managers, dispatchers, and members one
+                                    ShuttleHub gives fleet managers, dispatchers, and members one
                                     dashboard for vehicles, routes, trips, and payouts — updated as
                                     operations happen, not at end of month.
                                 </p>
@@ -400,7 +400,7 @@ export default function Homepage() {
                                 Every gate, covered.
                             </h2>
                             <p className="mt-3 text-base leading-relaxed text-muted-foreground">
-                                From the vehicle register to the payout ledger, ShuttleOps
+                                From the vehicle register to the payout ledger,
                                 replaces the notebook-and-WhatsApp-group approach most SACCOs
                                 still run on.
                             </p>
@@ -457,7 +457,7 @@ export default function Homepage() {
                 <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 text-sm text-muted-foreground sm:flex-row">
                     <div className="flex items-center gap-2">
                         <Bus className="size-4" />
-                        <span className="font-semibold text-foreground">ShuttleOps</span>
+                        <span className="font-semibold text-foreground">ShuttleHub</span>
                         <span>— book it, board it.</span>
                     </div>
                     <div className="flex items-center gap-6">

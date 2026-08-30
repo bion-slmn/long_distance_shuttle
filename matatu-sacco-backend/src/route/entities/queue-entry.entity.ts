@@ -53,16 +53,16 @@ export class QueueEntry {
     declare position: number;
 
     // The moment the driver clocks into the stage line-up for the day
-    @Column({ type: 'timestamp' })
+    @Column({ type: 'timestamptz' })
     declare clockedInAt: Date;
 
-    @Column({ type: 'timestamp', nullable: true })
+    @Column({ type: 'timestamptz', nullable: true })
     declare dispatchedAt?: Date;
 
-    @CreateDateColumn({ type: 'timestamp' })
+    @CreateDateColumn({ type: 'timestamptz' })
     declare createdAt: Date;
 
-    @UpdateDateColumn({ type: 'timestamp' })
+    @UpdateDateColumn({ type: 'timestamptz' })
     declare updatedAt: Date;
 
     @BeforeInsert()

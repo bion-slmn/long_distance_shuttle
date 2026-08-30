@@ -60,10 +60,10 @@ export class User {
     @Column({ type: 'varchar', length: 100, nullable: true })
     declare assignedStage: string | null;
 
-    @CreateDateColumn({ type: 'timestamp' })
+    @CreateDateColumn({ type: 'timestamptz' })
     declare createdAt: Date;
 
-    @UpdateDateColumn({ type: 'timestamp' })
+    @UpdateDateColumn({ type: 'timestamptz' })
     declare updatedAt: Date;
 
     @Column({ type: 'int', default: 0 })

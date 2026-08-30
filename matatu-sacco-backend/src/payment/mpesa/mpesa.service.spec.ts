@@ -12,7 +12,6 @@ describe('MpesaService', () => {
 
     let httpService: { get: jest.Mock; post: jest.Mock };
     let saccoSettingsService: { getDecryptedMpesaCredentials: jest.Mock };
-    let redis: { get: jest.Mock; set: jest.Mock };
     let mpesaTransactionRepo: {
         create: jest.Mock;
         save: jest.Mock;
@@ -42,7 +41,6 @@ describe('MpesaService', () => {
 
         httpService = { get: jest.fn(), post: jest.fn() };
         saccoSettingsService = { getDecryptedMpesaCredentials: jest.fn() };
-        redis = { get: jest.fn(), set: jest.fn() };
 
         qb = {
             where: jest.fn().mockReturnThis(),
@@ -65,7 +63,6 @@ describe('MpesaService', () => {
         service = new MpesaService(
             httpService as any,
             saccoSettingsService as any,
-            redis as any,
             mpesaTransactionRepo as any,
         );
     });
@@ -76,64 +73,92 @@ describe('MpesaService', () => {
 
     // ── getAccessToken (exercised via initiateStkPush) ──────────────────────
     describe('access token caching', () => {
-        it('fetches and caches a fresh token when none is cached', async () => {
-            redis.get.mockResolvedValue(null);
+        const push = () =>
+            service.initiateStkPush(SACCO_ID, {
+                payerPhone: '0712345678',
+                amount: 100,
+                accountReference: 'BK-1',
+            } as any);
+
+        const okPush = () =>
+            of({
+                data: {
+                    MerchantRequestID: 'm1',
+                    CheckoutRequestID: 'c1',
+                    ResponseDescription: 'Success',
+                },
+            });
+
+        it('fetches a token when none is cached and presents it as a bearer', async () => {
             httpService.get.mockReturnValue(
                 of({ data: { access_token: 'tok-1', expires_in: 3600 } }),
             );
-            httpService.post.mockReturnValue(
-                of({
-                    data: {
-                        MerchantRequestID: 'm1',
-                        CheckoutRequestID: 'c1',
-                        ResponseDescription: 'Success',
-                    },
-                }),
-            );
+            httpService.post.mockReturnValue(okPush());
 
-            await service.initiateStkPush(SACCO_ID, {
-                payerPhone: '0712345678',
-                amount: 100,
-                accountReference: 'BK-1',
-            } as any);
+            await push();
 
             expect(httpService.get).toHaveBeenCalledTimes(1);
-            expect(redis.set).toHaveBeenCalledWith(
-                `mpesa:token:${SACCO_ID}`,
-                'tok-1',
-                'EX',
-                3540, // 3600 - 60
-            );
+            const [, , config] = httpService.post.mock.calls[0];
+            expect(config.headers.Authorization).toBe('Bearer tok-1');
         });
 
-        it('reuses a cached token and skips the OAuth call', async () => {
-            redis.get.mockResolvedValue('cached-tok');
-            httpService.post.mockReturnValue(
-                of({
-                    data: {
-                        MerchantRequestID: 'm1',
-                        CheckoutRequestID: 'c1',
-                        ResponseDescription: 'Success',
-                    },
-                }),
+        it('reuses the cached token on a second call and skips the OAuth round trip', async () => {
+            httpService.get.mockReturnValue(
+                of({ data: { access_token: 'cached-tok', expires_in: 3600 } }),
             );
+            httpService.post.mockReturnValue(okPush());
 
-            await service.initiateStkPush(SACCO_ID, {
-                payerPhone: '0712345678',
-                amount: 100,
-                accountReference: 'BK-1',
-            } as any);
+            await push();
+            await push();
 
-            expect(httpService.get).not.toHaveBeenCalled();
-            const [, , config] = httpService.post.mock.calls[0];
+            expect(httpService.get).toHaveBeenCalledTimes(1);
+            const [, , config] = httpService.post.mock.calls[1];
             expect(config.headers.Authorization).toBe('Bearer cached-tok');
+        });
+
+        // A stale token would otherwise keep failing every call until its TTL
+        // ran out, since nothing else would evict it.
+        it('discards the cached token after a failed Daraja call', async () => {
+            httpService.get.mockReturnValue(
+                of({ data: { access_token: 'tok-1', expires_in: 3600 } }),
+            );
+            httpService.post.mockReturnValue(okPush());
+            await push();
+            expect(httpService.get).toHaveBeenCalledTimes(1);
+
+            httpService.post.mockReturnValue(
+                throwError(() => ({ response: { status: 401, data: { errorMessage: 'Invalid Access Token' } } })),
+            );
+            await expect(push()).rejects.toThrow(BadRequestException);
+
+            // Cache was cleared by the failure, so this re-fetches rather than
+            // presenting the same rejected token again.
+            httpService.post.mockReturnValue(okPush());
+            await push();
+
+            expect(httpService.get).toHaveBeenCalledTimes(2);
+        });
+
+        it('keeps the token cached across a successful call', async () => {
+            httpService.get.mockReturnValue(
+                of({ data: { access_token: 'tok-1', expires_in: 3600 } }),
+            );
+            httpService.post.mockReturnValue(okPush());
+
+            await push();
+            await push();
+            await push();
+
+            expect(httpService.get).toHaveBeenCalledTimes(1);
         });
     });
 
     // ── initiateStkPush ──────────────────────────────────────────────────────
     describe('initiateStkPush', () => {
         beforeEach(() => {
-            redis.get.mockResolvedValue('cached-tok');
+            httpService.get.mockReturnValue(
+                of({ data: { access_token: 'cached-tok', expires_in: 3600 } }),
+            );
         });
 
         it('normalizes a 07XX phone to 2547XX and rounds the amount', async () => {
@@ -260,7 +285,9 @@ describe('MpesaService', () => {
     // ── queryStkStatus ────────────────────────────────────────────────────────
     describe('queryStkStatus', () => {
         it('returns the numeric result code and description', async () => {
-            redis.get.mockResolvedValue('cached-tok');
+            httpService.get.mockReturnValue(
+                of({ data: { access_token: 'cached-tok', expires_in: 3600 } }),
+            );
             httpService.post.mockReturnValue(
                 of({ data: { ResultCode: '0', ResultDesc: 'The service request is processed successfully.' } }),
             );
@@ -270,7 +297,47 @@ describe('MpesaService', () => {
             expect(result).toEqual({
                 resultCode: 0,
                 resultDesc: 'The service request is processed successfully.',
+                errorCode: null,
             });
+        });
+
+        // Daraja answers an in-flight query with a 200 carrying only
+        // errorCode/errorMessage. Number(undefined) is NaN, which used to fall
+        // through every code comparison and get read as a failure — cancelling
+        // a booking while the passenger was still entering their PIN.
+        it('returns a null result code when Daraja omits ResultCode entirely', async () => {
+            httpService.get.mockReturnValue(
+                of({ data: { access_token: 'cached-tok', expires_in: 3600 } }),
+            );
+            httpService.post.mockReturnValue(
+                of({
+                    data: {
+                        errorCode: '500.001.1001',
+                        errorMessage: 'The transaction is being processed',
+                    },
+                }),
+            );
+
+            const result = await service.queryStkStatus(SACCO_ID, 'checkout-1');
+
+            expect(result).toEqual({
+                resultCode: null,
+                resultDesc: 'The transaction is being processed',
+                errorCode: '500.001.1001',
+            });
+        });
+
+        it('returns a null result code when ResultCode is present but not numeric', async () => {
+            httpService.get.mockReturnValue(
+                of({ data: { access_token: 'cached-tok', expires_in: 3600 } }),
+            );
+            httpService.post.mockReturnValue(
+                of({ data: { ResultCode: 'not-a-number', ResultDesc: 'Odd' } }),
+            );
+
+            const result = await service.queryStkStatus(SACCO_ID, 'checkout-1');
+
+            expect(result.resultCode).toBeNull();
         });
     });
 

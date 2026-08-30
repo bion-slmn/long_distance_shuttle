@@ -41,10 +41,10 @@ export class Sacco {
     @Column({ type: 'boolean', default: true })
     declare isActive: boolean;
 
-    @CreateDateColumn({ type: 'timestamp' })
+    @CreateDateColumn({ type: 'timestamptz' })
     declare createdAt: Date;
 
-    @UpdateDateColumn({ type: 'timestamp' })
+    @UpdateDateColumn({ type: 'timestamptz' })
     declare updatedAt: Date;
 
     // ◄ Automatically run this function right before TypeORM saves a new record

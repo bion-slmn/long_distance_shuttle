@@ -72,7 +72,13 @@ export interface QueueEntry {
         notes: string;
     };
     routeQueue: RouteQueue;
+    // Both only present on BOARDING entries — a WAITING vehicle has no trip
+    // to count bookings against yet.
+    /** Seats paid for. Does NOT include seats blocked by an in-flight payment. */
     seatedCount?: number
+    /** Seats claimed by a payment still in flight — blocked now, but they free
+     *  themselves when the hold lapses. Never counted in seatedCount. */
+    heldCount?: number
 }
 
 export interface CreateRoutePayload {
@@ -110,6 +116,9 @@ export interface UpdateQueuePayload {
 
 export interface GetQueueEntriesOptions {
     routeId?: string;
+    // Batched form of routeId. One request covering N routes instead of N
+    // requests — the difference between usable and unusable on a 3G link.
+    routeIds?: string[];
     status?: QueueEntryStatus;
     date?: string; // ISO date string, e.g. "2026-07-09" — defaults to today on the backend if omitted
 }
@@ -183,6 +192,7 @@ export async function getQueueEntriesRequest(
 ): Promise<QueueEntry[]> {
     const params = new URLSearchParams();
     if (options.routeId) params.set("routeId", options.routeId);
+    if (options.routeIds?.length) params.set("routeIds", options.routeIds.join(","));
     if (options.status) params.set("status", options.status);
     if (options.date) params.set("date", options.date);
 

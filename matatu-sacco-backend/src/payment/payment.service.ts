@@ -10,6 +10,13 @@ import {
     PaymentReferenceType,
 } from './entities/payment.entity';
 import { MpesaService } from './mpesa/mpesa.service';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+import {
+    RECONCILE_DELAYS_MS,
+    RECONCILE_GRACE_MS,
+    TERMINAL_FAILURE_RESULT_CODES,
+} from './payment-reconcile.constants';
 
 // ─── Event payload contracts ────────────────────────────────────────────
 // BookingService (or anything else) subscribes to these via @OnEvent.
@@ -49,6 +56,15 @@ interface MarkProcessingInput {
     accountReference: string; // used to look the pending payment back up
 }
 
+// Shape returned by MpesaService.queryStkStatus. resultCode is null when
+// Daraja answered without a usable ResultCode — "we still don't know",
+// never "it failed".
+type QueryStkStatusResult = {
+    resultCode: number | null;
+    resultDesc: string;
+    errorCode: string | null;
+};
+
 interface ParsedCallback {
     checkoutRequestId: string;
     resultCode: number;
@@ -69,6 +85,7 @@ export class PaymentService {
         private readonly paymentRepository: Repository<Payment>,
         private readonly mpesaService: MpesaService,
         private readonly eventEmitter: EventEmitter2,
+        @InjectQueue('payment-reconcile') private readonly reconcileQueue: Queue,
     ) { }
 
     // ── Create a PENDING payment row + kick off STK push ────────────────
@@ -103,6 +120,17 @@ export class PaymentService {
 
             this.logger.log(
                 `Payment ${saved.id} moved to PROCESSING (checkoutRequestId=${result.checkoutRequestId})`,
+            );
+
+            await this.reconcileQueue.add(
+                'check',
+                { paymentId: saved.id, attempt: 1 },
+                {
+                    jobId: `reconcile:${saved.id}:1`,
+                    delay: RECONCILE_DELAYS_MS[0],
+                    removeOnComplete: true,
+                    removeOnFail: true,
+                },
             );
 
             return { paymentId: saved.id, checkoutRequestId: result.checkoutRequestId };
@@ -200,6 +228,7 @@ export class PaymentService {
                 reason: parsed.resultDesc,
             } satisfies PaymentFailedEvent);
         }
+
     }
 
     // ── Record a cash payment (synchronous, no external call) ───────────
@@ -290,7 +319,37 @@ export class PaymentService {
         return qb.orderBy('payment.createdAt', 'DESC').getMany();
     }
 
-    // src/payment/payment.service.ts
+    /**
+     * Can this status-QUERY result be trusted to mean "this checkout is over"?
+     *
+     * Querying Daraja while the prompt is still on the passenger's phone
+     * returns a non-zero ResultCode that means "not finished yet", not
+     * "failed". Treating that as terminal cancels a booking mid-payment — and
+     * because a cancelled booking releases the seat, the passenger can end up
+     * paying for a seat they no longer hold.
+     *
+     * Two independent guards, both erring toward "keep waiting":
+     *   1. Inside the grace window nothing but SUCCESS is conclusive.
+     *   2. After it, only explicitly-known terminal codes are conclusive.
+     *
+     * Waiting is always safe: real failures arrive on the callback, and the
+     * reconcile schedule force-expires anything still unresolved at 3 minutes.
+     */
+    private isTerminalQueryResult(
+        payment: Payment,
+        result: QueryStkStatusResult,
+    ): boolean {
+        // No usable ResultCode at all — Daraja's "still being processed"
+        // answer. Never conclusive, at any age.
+        if (result.resultCode === null) return false;
+
+        const startedAt = payment.initiatedAt ?? payment.createdAt;
+        const age = Date.now() - new Date(startedAt).getTime();
+
+        if (age < RECONCILE_GRACE_MS) return false;
+
+        return TERMINAL_FAILURE_RESULT_CODES.has(result.resultCode);
+    }
 
     async reconcileStuckPayment(paymentId: string): Promise<Payment> {
         const payment = await this.findById(paymentId);
@@ -299,13 +358,36 @@ export class PaymentService {
             return payment; // nothing to reconcile — already resolved, or no STK push was ever sent
         }
 
-        const result = await this.mpesaService.queryStkStatus(payment.saccoId, payment.checkoutRequestId);
+        let result: QueryStkStatusResult;
+        try {
+            result = await this.mpesaService.queryStkStatus(payment.saccoId, payment.checkoutRequestId);
+        } catch (err: any) {
+            // Daraja unreachable right now — leave the payment PROCESSING and
+            // let the next poll/sweep attempt try again, rather than surface a
+            // 503 through to the caller (e.g. the public reconcile endpoint).
+            this.logger.warn(
+                `reconcileStuckPayment: could not reach M-Pesa for payment ${paymentId}: ${err.message}`,
+            );
+            return payment;
+        }
 
         if (result.resultCode === 0) {
             payment.status = PaymentStatus.SUCCESS;
-        } else if (result.resultCode === 1037 || result.resultDesc?.toLowerCase().includes('being processed')) {
-            return payment; // genuinely still pending — don't mark failed prematurely
+        } else if (!this.isTerminalQueryResult(payment, result)) {
+            // Still in flight as far as a QUERY can tell. Leave it PROCESSING:
+            // the callback will resolve it, and failing that the reconcile
+            // schedule force-expires it at the 3-minute ceiling.
+            this.logger.log(
+                `reconcileStuckPayment: payment ${paymentId} still in flight ` +
+                `(resultCode=${result.resultCode ?? 'none'} errorCode=${result.errorCode ?? 'none'} ` +
+                `"${result.resultDesc}") — leaving PROCESSING`,
+            );
+            return payment;
         } else {
+            this.logger.warn(
+                `reconcileStuckPayment: payment ${paymentId} FAILED via status query ` +
+                `(resultCode=${result.resultCode} "${result.resultDesc}")`,
+            );
             payment.status = PaymentStatus.FAILED;
             payment.resultCode = String(result.resultCode);
             payment.resultDesc = result.resultDesc;
@@ -347,5 +429,35 @@ export class PaymentService {
         }
 
         return this.reconcileStuckPayment(payment.id);
+    }
+
+    // src/payment/payment.service.ts
+    async forceExpireIfStillProcessing(paymentId: string): Promise<Payment> {
+        // Atomic conditional update — same pattern as everywhere else: only
+        // transition out of PROCESSING, never stomp on a status that resolved
+        // via the real callback in the gap between our last check and now.
+        const result = await this.paymentRepository.update(
+            { id: paymentId, status: PaymentStatus.PROCESSING },
+            {
+                status: PaymentStatus.EXPIRED,
+                resultDesc: 'No confirmation received from M-Pesa within the expected window.',
+                completedAt: new Date(),
+            },
+        );
+
+        const payment = await this.findById(paymentId);
+
+        if (result.affected && result.affected > 0) {
+            this.logger.warn(`Payment ${paymentId} force-expired after exhausting reconcile schedule`);
+            this.eventEmitter.emit('payment.failed', {
+                paymentId: payment.id,
+                referenceType: payment.referenceType,
+                referenceId: payment.referenceId,
+                saccoId: payment.saccoId,
+                reason: payment.resultDesc ?? 'Payment expired.',
+            } satisfies PaymentFailedEvent);
+        }
+
+        return payment;
     }
 }
