@@ -262,6 +262,68 @@ describe('RouteQueueService', () => {
             expect(result.position).toBe(6);
             expect(result.status).toBe(QueueEntryStatus.WAITING);
         });
+
+        // ── startBoarding: clock in and open the bay in one call ──────────
+        describe('startBoarding', () => {
+            // Query builders consumed, in order: existing RouteQueue, active
+            // entry for this vehicle, next position, then the bay check.
+            function mockQueueState(opts: { bayOccupied: boolean }) {
+                managerQbQueue = [
+                    mockQueryBuilder({
+                        getOne: jest.fn().mockResolvedValue({ id: 'rq-1', status: RouteQueueStatus.OPEN, routeId: 'route-1', queueDate: '2026-08-31' }),
+                    }),
+                    mockQueryBuilder({ getOne: jest.fn().mockResolvedValue(null) }),
+                    mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(0) }),
+                    mockQueryBuilder({ getCount: jest.fn().mockResolvedValue(opts.bayOccupied ? 1 : 0) }),
+                ];
+                mockManager.findOne.mockResolvedValue({ vehicle: { seatingCapacity: 14 } });
+            }
+
+            it('promotes straight to BOARDING and opens the trip when the bay is empty', async () => {
+                mockQueueState({ bayOccupied: false });
+                tripService.createFromQueueEntry!.mockResolvedValue({ id: 'trip-1' });
+
+                const result = await service.clockInVehicle(
+                    { ...dto, startBoarding: true },
+                    'sacco-1',
+                );
+
+                expect(result.status).toBe(QueueEntryStatus.BOARDING);
+                expect(tripService.createFromQueueEntry).toHaveBeenCalledWith(
+                    expect.objectContaining({
+                        routeId: 'route-1',
+                        vehicleId: 'vehicle-1',
+                        vehicleCapacity: 14,
+                    }),
+                    mockManager, // same transaction as the clock-in
+                );
+                expect(bookingService.assignPendingBookingsToTrip).toHaveBeenCalledWith(
+                    { id: 'trip-1' },
+                    mockManager,
+                );
+            });
+
+            it('leaves the vehicle WAITING when another vehicle already holds the bay', async () => {
+                mockQueueState({ bayOccupied: true });
+
+                const result = await service.clockInVehicle(
+                    { ...dto, startBoarding: true },
+                    'sacco-1',
+                );
+
+                expect(result.status).toBe(QueueEntryStatus.WAITING);
+                expect(tripService.createFromQueueEntry).not.toHaveBeenCalled();
+            });
+
+            it('does not touch the bay at all without the flag', async () => {
+                mockQueueState({ bayOccupied: false });
+
+                const result = await service.clockInVehicle(dto, 'sacco-1');
+
+                expect(result.status).toBe(QueueEntryStatus.WAITING);
+                expect(tripService.createFromQueueEntry).not.toHaveBeenCalled();
+            });
+        });
     });
 
     // ─── findOneQueueEntry ─────────────────────────────────────────────

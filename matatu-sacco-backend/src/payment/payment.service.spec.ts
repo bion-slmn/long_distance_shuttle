@@ -62,6 +62,10 @@ describe('PaymentService', () => {
     mpesaService = {
       initiateStkPush: jest.fn(),
       queryStkStatus: jest.fn(),
+      // Receipt recovery for a reconcile-confirmed success — nothing stored
+      // by default, so tests opt in.
+      findTransactionByCheckoutRequestId: jest.fn().mockResolvedValue(null),
+      matchTransaction: jest.fn(),
     };
     eventEmitter = {
       emit: jest.fn(),
@@ -403,7 +407,7 @@ describe('PaymentService', () => {
     // read as conclusive.
     const staleInitiatedAt = () => new Date(Date.now() - 10 * 60_000);
 
-    it('returns early if payment is not PROCESSING', async () => {
+    it('returns early for a payment Safaricom already settled', async () => {
       const payment = basePayment({ status: PaymentStatus.SUCCESS });
       paymentRepository.findOne!.mockResolvedValue(payment);
 
@@ -411,6 +415,211 @@ describe('PaymentService', () => {
 
       expect(mpesaService.queryStkStatus).not.toHaveBeenCalled();
       expect(result).toEqual(payment);
+    });
+
+    // EXPIRED is our own guess after a missing callback, never Safaricom's
+    // word — so it stays open to correction.
+    it('still queries Daraja for a payment we force-expired', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.EXPIRED,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: staleInitiatedAt(),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.queryStkStatus!.mockResolvedValue({ resultCode: 0, resultDesc: 'Success' });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(mpesaService.queryStkStatus).toHaveBeenCalled();
+      expect(result.status).toBe(PaymentStatus.SUCCESS);
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.succeeded',
+        expect.objectContaining({ paymentId: payment.id }),
+      );
+    });
+
+    it('leaves an expired payment expired when Daraja is still inconclusive', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.EXPIRED,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: staleInitiatedAt(),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      mpesaService.queryStkStatus!.mockResolvedValue({
+        resultCode: null,
+        resultDesc: 'still processing',
+      });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(result.status).toBe(PaymentStatus.EXPIRED);
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('does not re-fire the booking side when the verdict is unchanged', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.EXPIRED,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: staleInitiatedAt(),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      // 1032 = cancelled by user, a terminal failure
+      mpesaService.queryStkStatus!.mockResolvedValue({
+        resultCode: 1032,
+        resultDesc: 'Request cancelled by user',
+      });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(result.status).toBe(PaymentStatus.FAILED);
+      expect(eventEmitter.emit).toHaveBeenCalledTimes(1);
+    });
+
+    // Regression: a cancellation reported 14s after the push used to be read as
+    // "still in flight" and held the seat for the full 3-minute ladder.
+    it('fails immediately when the passenger cancelled, however young the push is', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: new Date(Date.now() - 14_000), // 14 seconds ago
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.queryStkStatus!.mockResolvedValue({
+        resultCode: 1032,
+        resultDesc: 'Request Cancelled by user.',
+      });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(result.status).toBe(PaymentStatus.FAILED);
+      expect(result.resultDesc).toBe('Request Cancelled by user.');
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.failed',
+        expect.objectContaining({ paymentId: payment.id }),
+      );
+    });
+
+    it.each([
+      [2001, 'Wrong PIN'],
+      [1, 'Insufficient balance'],
+    ])('also acts immediately on resultCode %i', async (resultCode, resultDesc) => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: new Date(Date.now() - 5_000),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.queryStkStatus!.mockResolvedValue({ resultCode, resultDesc });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(result.status).toBe(PaymentStatus.FAILED);
+    });
+
+    // The other half of the split: system-condition codes still wait, because a
+    // query fired while the prompt is live can surface one before it settles.
+    it('still waits out the grace period for a system-condition code', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: new Date(Date.now() - 14_000),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      mpesaService.queryStkStatus!.mockResolvedValue({
+        resultCode: 1019,
+        resultDesc: 'Transaction expired',
+      });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(result.status).toBe(PaymentStatus.PROCESSING);
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('concludes a system-condition code once the push is old enough', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: staleInitiatedAt(),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.queryStkStatus!.mockResolvedValue({
+        resultCode: 1019,
+        resultDesc: 'Transaction expired',
+      });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(result.status).toBe(PaymentStatus.FAILED);
+    });
+
+    it('recovers the receipt number from a stored M-Pesa transaction on success', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        mpesaReceiptNumber: null,
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.queryStkStatus!.mockResolvedValue({ resultCode: 0, resultDesc: 'Success' });
+      mpesaService.findTransactionByCheckoutRequestId!.mockResolvedValue({
+        id: 'tx-1',
+        mpesaReceiptNumber: 'NLJ7RT61SV',
+        matchStatus: 'UNMATCHED',
+      });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(result.mpesaReceiptNumber).toBe('NLJ7RT61SV');
+      expect(mpesaService.matchTransaction).toHaveBeenCalledWith(
+        'tx-1',
+        payment.referenceId,
+        payment.id,
+        'reconcile',
+      );
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.succeeded',
+        expect.objectContaining({ mpesaReceiptNumber: 'NLJ7RT61SV' }),
+      );
+    });
+
+    it('still confirms the success when no stored transaction carries the receipt', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        mpesaReceiptNumber: null,
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.queryStkStatus!.mockResolvedValue({ resultCode: 0, resultDesc: 'Success' });
+      mpesaService.findTransactionByCheckoutRequestId!.mockResolvedValue(null);
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(result.status).toBe(PaymentStatus.SUCCESS);
+      expect(result.mpesaReceiptNumber).toBeNull();
+      expect(mpesaService.matchTransaction).not.toHaveBeenCalled();
+    });
+
+    it('does not overwrite a receipt number it already has', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        mpesaReceiptNumber: 'ALREADYHERE',
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.queryStkStatus!.mockResolvedValue({ resultCode: 0, resultDesc: 'Success' });
+
+      const result = await service.reconcileStuckPayment('payment-1');
+
+      expect(result.mpesaReceiptNumber).toBe('ALREADYHERE');
+      expect(mpesaService.findTransactionByCheckoutRequestId).not.toHaveBeenCalled();
     });
 
     it('returns early if PROCESSING but has no checkoutRequestId', async () => {
@@ -524,7 +733,7 @@ describe('PaymentService', () => {
     // A clerk pressing "check now" seconds after the push must never be able
     // to cancel a booking the passenger is still paying for. A real
     // cancellation reaches us on the callback, which is authoritative.
-    it('does NOT mark FAILED for a terminal code inside the grace window', async () => {
+    it('does NOT mark FAILED for a system-condition code inside the grace window', async () => {
       const payment = basePayment({
         status: PaymentStatus.PROCESSING,
         checkoutRequestId: 'ws_CO_123',
@@ -532,8 +741,8 @@ describe('PaymentService', () => {
       });
       paymentRepository.findOne!.mockResolvedValue(payment);
       mpesaService.queryStkStatus!.mockResolvedValue({
-        resultCode: 1032,
-        resultDesc: 'Request cancelled by user',
+        resultCode: 1019,
+        resultDesc: 'Transaction expired',
       });
 
       const result = await service.reconcileStuckPayment('payment-1');
@@ -552,8 +761,8 @@ describe('PaymentService', () => {
       });
       paymentRepository.findOne!.mockResolvedValue(payment);
       mpesaService.queryStkStatus!.mockResolvedValue({
-        resultCode: 1032,
-        resultDesc: 'Request cancelled by user',
+        resultCode: 1019,
+        resultDesc: 'Transaction expired',
       });
 
       const result = await service.reconcileStuckPayment('payment-1');

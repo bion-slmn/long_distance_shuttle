@@ -152,8 +152,79 @@ export class RouteQueueService {
 
             this.logger.log(`Vehicle ${saved.vehicleId} clocked in to queue ${saved.id} on route ${route.origin} → ${route.destination} at position ${saved.position}`);
 
+            // "Clock in and start boarding" as one call, so the clerk with a
+            // passenger in front of them doesn't have to clock in, find the
+            // vehicle in the queue, and promote it — three taps and two round
+            // trips on a 3G link — before they can sell the first seat.
+            //
+            // Only ever fills an EMPTY bay: a route boards one vehicle at a
+            // time, and this shortcut must not be able to open a second bay
+            // behind the first one's back. findOrCreateRouteQueue already holds
+            // a pessimistic_write lock on the RouteQueue row here, so no
+            // concurrent clock-in can slip a vehicle into the bay between this
+            // check and the promotion. A busy bay is not an error — the vehicle
+            // simply keeps its place in the queue, and the response says so.
+            if (dto.startBoarding && !(await this.bayIsOccupied(manager, routeQueue.id))) {
+                return this.promoteToBoarding(manager, saved, routeQueue, route);
+            }
+
             return saved;
         });
+    }
+
+    private async bayIsOccupied(manager: EntityManager, routeQueueId: string): Promise<boolean> {
+        const count = await manager
+            .createQueryBuilder(QueueEntry, 'qe')
+            .where('qe.routeQueueId = :routeQueueId', { routeQueueId })
+            .andWhere('qe.status = :status', { status: QueueEntryStatus.BOARDING })
+            .getCount();
+        return count > 0;
+    }
+
+    /**
+     * Moves an entry into BOARDING and opens its trip — the same work the
+     * WAITING → BOARDING transition does in updateQueueEntry, reached here
+     * from the one-tap clock-in instead. Caller owns the transaction.
+     */
+    private async promoteToBoarding(
+        manager: EntityManager,
+        entry: QueueEntry,
+        routeQueue: RouteQueue,
+        route: Route,
+    ): Promise<QueueEntry> {
+        entry.status = QueueEntryStatus.BOARDING;
+        const saved = await manager.save(QueueEntry, entry);
+
+        // manager.create() gave us no vehicle relation, and the trip needs the
+        // seating capacity to size itself.
+        const withVehicle = await manager.findOne(QueueEntry, {
+            where: { id: saved.id },
+            relations: { vehicle: true },
+        });
+
+        const trip = await this.tripService.createFromQueueEntry(
+            {
+                queueEntryId: saved.id,
+                routeId: routeQueue.routeId,
+                vehicleId: saved.vehicleId,
+                saccoId: route.saccoId,
+                fare: route.fare,
+                vehicleCapacity: withVehicle!.vehicle.seatingCapacity,
+                travelDate: routeQueue.queueDate,
+            },
+            manager,
+        );
+
+        this.logger.log(
+            `Trip ${trip?.id} created for queue entry ${saved.id} via clock-in with immediate boarding on route ${route.origin} → ${route.destination}`,
+        );
+
+        if (trip) {
+            await this.bookingService.assignPendingBookingsToTrip(trip, manager);
+            this.logger.log(`Bookings assigned to trip ${trip.id}`);
+        }
+
+        return saved;
     }
 
     async findOneQueueEntry(id: string): Promise<QueueEntry> {

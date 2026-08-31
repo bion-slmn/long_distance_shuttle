@@ -733,4 +733,198 @@ describe('BookingService — pre-booking (public portal)', () => {
       expect(() => service.assertStageAccess(booking, undefined)).not.toThrow();
     });
   });
+
+  // ── 8. Late M-Pesa confirmation on a booking we already cancelled ───────
+  // Safaricom is the source of truth: if a reconcile finds the money landed
+  // after we force-expired the payment, the payment stands. The seat is the
+  // only thing that may no longer be available.
+  describe('confirmPayment — reviving a cancelled booking', () => {
+    const cancelledBooking = (overrides: Partial<Booking> = {}) =>
+      ({
+        id: 'booking-1',
+        status: BookingStatus.CANCELLED,
+        paymentStatus: PaymentStatus.FAILED,
+        tripId: 'trip-1',
+        seatNumber: 4,
+        holdExpiresAt: null,
+        mpesaReceiptNumber: null,
+        ...overrides,
+      }) as Booking;
+
+    // manager.save() is called with a single entity here, unlike the two-arg
+    // form the create() path uses.
+    function mockSeatState(opts: {
+      trip: Partial<Trip> | null;
+      takenSeats: number[];
+    }) {
+      managerMock.save = jest.fn(async (entity: any) => entity);
+
+      const tripQb = createMockQueryBuilder();
+      tripQb.getOne.mockResolvedValue(opts.trip);
+
+      const seatsQb = createMockQueryBuilder();
+      seatsQb.getRawMany.mockResolvedValue(
+        opts.takenSeats.map((seatNumber) => ({
+          seatNumber,
+          paymentStatus: PaymentStatus.PAID,
+          holdExpiresAt: null,
+        })),
+      );
+
+      managerMock.createQueryBuilder
+        .mockReturnValueOnce(tripQb)
+        .mockReturnValueOnce(seatsQb);
+    }
+
+    it('gives the seat back when nobody else took it', async () => {
+      const booking = cancelledBooking();
+      bookingRepository.findOne.mockResolvedValue(booking);
+      mockSeatState({ trip: { id: 'trip-1', status: 'BOARDING' } as any, takenSeats: [1, 2] });
+
+      const result = await service.confirmPayment('booking-1', {
+        mpesaReceiptNumber: 'NLJ7RT61SV',
+      });
+
+      expect(result.status).toBe(BookingStatus.CONFIRMED);
+      expect(result.paymentStatus).toBe(PaymentStatus.PAID);
+      expect(result.seatNumber).toBe(4);
+      expect(result.mpesaReceiptNumber).toBe('NLJ7RT61SV');
+    });
+
+    it('keeps the payment but requeues the passenger when the seat is gone', async () => {
+      const booking = cancelledBooking();
+      bookingRepository.findOne.mockResolvedValue(booking);
+      mockSeatState({ trip: { id: 'trip-1', status: 'BOARDING' } as any, takenSeats: [4] });
+
+      const result = await service.confirmPayment('booking-1', {
+        mpesaReceiptNumber: 'NLJ7RT61SV',
+      });
+
+      expect(result.paymentStatus).toBe(PaymentStatus.PAID);
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+      expect(result.seatNumber).toBeNull();
+      expect(result.tripId).toBeNull();
+    });
+
+    it('requeues when the trip has already departed', async () => {
+      const booking = cancelledBooking();
+      bookingRepository.findOne.mockResolvedValue(booking);
+      mockSeatState({ trip: { id: 'trip-1', status: 'EN_ROUTE' } as any, takenSeats: [] });
+
+      const result = await service.confirmPayment('booking-1', {});
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+      expect(result.seatNumber).toBeNull();
+    });
+
+    it('requeues when the booking never had a seat to begin with', async () => {
+      const booking = cancelledBooking({ tripId: null, seatNumber: null });
+      bookingRepository.findOne.mockResolvedValue(booking);
+      managerMock.save = jest.fn(async (entity: any) => entity);
+
+      const result = await service.confirmPayment('booking-1', {});
+
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+      expect(result.paymentStatus).toBe(PaymentStatus.PAID);
+      // No seat to check, so no trip lock is taken.
+      expect(managerMock.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('leaves a normal (uncancelled) confirmation on the simple path', async () => {
+      const booking = cancelledBooking({
+        status: BookingStatus.CONFIRMED,
+        paymentStatus: PaymentStatus.PENDING,
+        holdExpiresAt: new Date(Date.now() + 60_000), // still inside the hold
+      });
+      bookingRepository.findOne.mockResolvedValue(booking);
+      bookingRepository.save.mockImplementation(async (b: any) => b);
+
+      const result = await service.confirmPayment('booking-1', {
+        mpesaReceiptNumber: 'NLJ7RT61SV',
+      });
+
+      expect(result.paymentStatus).toBe(PaymentStatus.PAID);
+      expect(result.seatNumber).toBe(4);
+      expect(bookingRepository.manager.transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── 9. Payment landing after the hold lapsed, booking never cancelled ────
+  // The seat goes back into the pool the moment holdExpiresAt passes, so a
+  // success arriving after that must re-check the seat before claiming it —
+  // otherwise two CONFIRMED bookings end up on the same seat.
+  describe('confirmPayment — hold lapsed before the money landed', () => {
+    const lapsedBooking = (overrides: Partial<Booking> = {}) =>
+      ({
+        id: 'booking-1',
+        status: BookingStatus.CONFIRMED,
+        paymentStatus: PaymentStatus.PENDING,
+        tripId: 'trip-1',
+        seatNumber: 4,
+        holdExpiresAt: new Date(Date.now() - 1_000), // ran out a second ago
+        mpesaReceiptNumber: null,
+        ...overrides,
+      }) as Booking;
+
+    function mockSeatState(opts: { trip: Partial<Trip> | null; takenSeats: number[] }) {
+      managerMock.save = jest.fn(async (entity: any) => entity);
+
+      const tripQb = createMockQueryBuilder();
+      tripQb.getOne.mockResolvedValue(opts.trip);
+
+      const seatsQb = createMockQueryBuilder();
+      seatsQb.getRawMany.mockResolvedValue(
+        opts.takenSeats.map((seatNumber) => ({
+          seatNumber,
+          paymentStatus: PaymentStatus.PAID,
+          holdExpiresAt: null,
+        })),
+      );
+
+      managerMock.createQueryBuilder
+        .mockReturnValueOnce(tripQb)
+        .mockReturnValueOnce(seatsQb);
+    }
+
+    it('claims the seat back when nobody took it while the hold was down', async () => {
+      bookingRepository.findOne.mockResolvedValue(lapsedBooking());
+      mockSeatState({ trip: { id: 'trip-1', status: 'BOARDING' } as any, takenSeats: [1, 2] });
+
+      const result = await service.confirmPayment('booking-1', {
+        mpesaReceiptNumber: 'NLJ7RT61SV',
+      });
+
+      expect(result.status).toBe(BookingStatus.CONFIRMED);
+      expect(result.paymentStatus).toBe(PaymentStatus.PAID);
+      expect(result.seatNumber).toBe(4);
+      expect(result.holdExpiresAt).toBeNull(); // sold now, not held
+      expect(result.mpesaReceiptNumber).toBe('NLJ7RT61SV');
+    });
+
+    it('does not double-book a seat someone else claimed in the meantime', async () => {
+      bookingRepository.findOne.mockResolvedValue(lapsedBooking());
+      mockSeatState({ trip: { id: 'trip-1', status: 'BOARDING' } as any, takenSeats: [4] });
+
+      const result = await service.confirmPayment('booking-1', {
+        mpesaReceiptNumber: 'NLJ7RT61SV',
+      });
+
+      expect(result.paymentStatus).toBe(PaymentStatus.PAID);
+      expect(result.status).toBe(BookingStatus.AWAITING_TRIP);
+      expect(result.seatNumber).toBeNull();
+      expect(result.tripId).toBeNull();
+    });
+
+    it('leaves a boarded passenger alone even if the hold had lapsed', async () => {
+      const booking = lapsedBooking({ status: BookingStatus.BOARDED });
+      bookingRepository.findOne.mockResolvedValue(booking);
+      bookingRepository.save.mockImplementation(async (b: any) => b);
+
+      const result = await service.confirmPayment('booking-1', {});
+
+      expect(result.status).toBe(BookingStatus.BOARDED);
+      expect(result.seatNumber).toBe(4);
+      expect(bookingRepository.manager.transaction).not.toHaveBeenCalled();
+    });
+  });
 });

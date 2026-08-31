@@ -472,6 +472,20 @@ export class MpesaService {
         return qb.orderBy('t.transactionTime', 'DESC').getMany();
     }
 
+    // ── Look up a stored transaction by its STK checkout id ───────────────
+    // The status QUERY api never returns a receipt number, so this is how a
+    // reconcile-confirmed success gets one: the C2B confirmation arrives on a
+    // different Safaricom endpoint and often lands even when the STK callback
+    // is lost, leaving the receipt sitting here.
+    async findTransactionByCheckoutRequestId(
+        checkoutRequestId: string,
+    ): Promise<MpesaTransaction | null> {
+        return this.mpesaTransactionRepo.findOne({
+            where: { checkoutRequestId },
+            order: { transactionTime: 'DESC' },
+        });
+    }
+
     // ── Mark a transaction as matched to a booking/payment ────────────────
     async matchTransaction(
         transactionId: string,

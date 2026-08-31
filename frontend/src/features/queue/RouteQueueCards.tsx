@@ -372,6 +372,10 @@ function RouteQueueCard({
                 routeId={route.id}
                 open={showClockIn}
                 onOpenChange={setShowClockIn}
+                // Nothing loading on this route means the clerk is almost
+                // certainly clocking in the vehicle that should start taking
+                // passengers now — the dialog offers that in the same request.
+                bayIsEmpty={!loadingVehicle}
             />
 
             {awaitingBooking && (
@@ -480,7 +484,7 @@ function LoadingVehicleBlock({
                         }}
                     >
                         <Plus className="size-3.5" />
-                        Clock In &amp; Start Boarding Bay
+                        Clock In &amp; Start Boarding
                     </Button>
                 ) : null}
             </div>

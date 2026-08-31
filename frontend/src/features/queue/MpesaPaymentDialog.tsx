@@ -9,6 +9,9 @@ import {
     Download,
     MapPin,
     Loader2,
+    Wallet,
+    Armchair,
+    CircleAlert,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -209,7 +212,15 @@ export function MpesaPaymentDialog({
                         booking={booking}
                         route={route}
                         travelDate={travelDate}
-                        seatNumber={finalBookingQuery.data?.seatNumber ?? booking.seatNumber}
+                        seatNumber={
+                            finalBookingQuery.data
+                                ? finalBookingQuery.data.seatNumber
+                                : booking.seatNumber
+                        }
+                        seatLost={
+                            finalBookingQuery.data != null &&
+                            finalBookingQuery.data.seatNumber == null
+                        }
                         mpesaReceiptNumber={
                             finalBookingQuery.data?.mpesaReceiptNumber ??
                             paymentResult?.mpesaReceiptNumber ??
@@ -221,16 +232,25 @@ export function MpesaPaymentDialog({
                     />
                 ) : (
                     <>
-                        <DialogHeader>
-                            <DialogTitle className="flex items-center gap-2">
-                                {settled ? (
-                                    <XCircle className="size-5 text-red-500" />
-                                ) : (
-                                    <Smartphone className="size-5 text-emerald-600" />
+                        <DialogHeader className="items-center pt-2 text-center">
+                            <div
+                                className={cn(
+                                    "flex size-14 items-center justify-center rounded-full",
+                                    settled
+                                        ? "bg-destructive/10 text-destructive"
+                                        : "bg-primary/10 text-primary"
                                 )}
+                            >
+                                {settled ? (
+                                    <XCircle className="size-7" />
+                                ) : (
+                                    <Smartphone className="size-7" />
+                                )}
+                            </div>
+                            <DialogTitle className="text-lg">
                                 {settled ? "Payment didn't go through" : "Waiting for M-Pesa"}
                             </DialogTitle>
-                            <DialogDescription>
+                            <DialogDescription className="max-w-[19rem] text-balance">
                                 {paymentFailed
                                     ? paymentResult?.errorMessage ??
                                     "The payment failed. Try a different payment method."
@@ -240,50 +260,126 @@ export function MpesaPaymentDialog({
                             </DialogDescription>
                         </DialogHeader>
 
-                        {!settled && (
-                            <div className="flex flex-col items-center gap-1 py-2">
-                                <p
-                                    className={cn(
-                                        "text-4xl font-bold font-mono tabular-nums",
-                                        secondsRemaining <= 30 ? "text-amber-500" : "text-primary"
-                                    )}
-                                >
-                                    {formatCountdown(secondsRemaining)}
-                                </p>
-                                <p className="text-[11px] text-muted-foreground/60">
-                                    KSh {Number(booking.fare).toLocaleString()}
-                                    {booking.seatNumber ? ` · Seat ${booking.seatNumber}` : ""}
-                                </p>
+                        {settled ? (
+                            // Settled: the reconcile button lives inside the failure
+                            // card, next to the reference the clerk would quote.
+                            <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3">
+                                <div className="flex gap-3">
+                                    <CircleAlert className="mt-0.5 size-4 shrink-0 text-destructive" />
+                                    <div className="min-w-0 space-y-1">
+                                        <p className="text-xs font-semibold text-destructive">
+                                            {paymentTimedOut
+                                                ? "No confirmation from M-Pesa"
+                                                : "Transaction declined"}
+                                        </p>
+                                        <p className="font-mono text-[11px] text-muted-foreground">
+                                            REF: #{booking.id.slice(0, 6).toUpperCase()}
+                                        </p>
+                                        <Button
+                                            variant="link"
+                                            size="sm"
+                                            className="h-auto gap-1.5 px-0"
+                                            onClick={handleManualReconcile}
+                                            disabled={reconcileMutation.isPending}
+                                        >
+                                            <RefreshCw
+                                                className={cn(
+                                                    "size-3.5",
+                                                    reconcileMutation.isPending && "animate-spin"
+                                                )}
+                                            />
+                                            {reconcileMutation.isPending
+                                                ? "Checking M-Pesa..."
+                                                : "Check M-Pesa now"}
+                                        </Button>
+                                    </div>
+                                </div>
                             </div>
+                        ) : (
+                            <>
+                                {/* Ticket-shaped status card: countdown above the
+                                    perforation, "still working" dots below it. */}
+                                <div className="overflow-hidden rounded-xl border bg-muted/40">
+                                    <div className="flex flex-col items-center gap-3 px-4 py-6">
+                                        <p
+                                            className={cn(
+                                                "font-mono text-4xl font-bold tabular-nums tracking-[0.08em]",
+                                                secondsRemaining <= 30
+                                                    ? "text-amber-500"
+                                                    : "text-primary"
+                                            )}
+                                        >
+                                            {formatCountdown(secondsRemaining)}
+                                        </p>
+                                        <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-1.5 font-mono text-xs">
+                                            <Wallet className="size-3.5 text-primary" />
+                                            <span>KSh {Number(booking.fare).toLocaleString()}</span>
+                                            {booking.seatNumber != null && (
+                                                <>
+                                                    <span className="text-border">•</span>
+                                                    <Armchair className="size-3.5 text-primary" />
+                                                    <span>Seat {booking.seatNumber}</span>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="flex items-center">
+                                        <div className="-ml-2 size-4 rounded-full border bg-popover" />
+                                        <div className="flex-1 border-t border-dashed" />
+                                        <div className="-mr-2 size-4 rounded-full border bg-popover" />
+                                    </div>
+
+                                    <div className="flex justify-center gap-1.5 py-4">
+                                        <span className="size-1.5 animate-bounce rounded-full bg-primary/70 [animation-delay:-0.3s]" />
+                                        <span className="size-1.5 animate-bounce rounded-full bg-primary/70 [animation-delay:-0.15s]" />
+                                        <span className="size-1.5 animate-bounce rounded-full bg-primary/70" />
+                                    </div>
+                                </div>
+
+                                <div className="space-y-1.5">
+                                    <Button
+                                        variant="outline"
+                                        className="h-11 w-full gap-2"
+                                        onClick={handleManualReconcile}
+                                        disabled={reconcileMutation.isPending}
+                                    >
+                                        <RefreshCw
+                                            className={cn(
+                                                "size-4",
+                                                reconcileMutation.isPending && "animate-spin"
+                                            )}
+                                        />
+                                        {reconcileMutation.isPending
+                                            ? "Checking M-Pesa..."
+                                            : "Check M-Pesa now"}
+                                    </Button>
+                                    <p className="text-center text-[11px] text-muted-foreground/60">
+                                        Asks Safaricom directly if the money came through, in case the
+                                        confirmation never reached us.
+                                    </p>
+                                </div>
+                            </>
                         )}
 
-                        <div className="space-y-1.5">
-                            <Button
-                                variant="outline"
-                                className="w-full gap-2"
-                                onClick={handleManualReconcile}
-                                disabled={reconcileMutation.isPending}
-                            >
-                                <RefreshCw
-                                    className={cn("size-4", reconcileMutation.isPending && "animate-spin")}
-                                />
-                                {reconcileMutation.isPending ? "Checking M-Pesa..." : "Check M-Pesa now"}
-                            </Button>
-                            <p className="text-[11px] text-center text-muted-foreground/60">
-                                Asks Safaricom directly if the money came through, in case the
-                                confirmation never reached us.
-                            </p>
-                        </div>
-
-                        <DialogFooter>
+                        <DialogFooter className="flex-col gap-2 sm:flex-col">
                             {settled ? (
-                                <Button className="w-full h-11" onClick={() => onRetry(booking)}>
-                                    Try Again
-                                </Button>
+                                <>
+                                    <Button className="h-11 w-full" onClick={() => onRetry(booking)}>
+                                        Try Again
+                                    </Button>
+                                    <Button
+                                        variant="outline"
+                                        className="h-11 w-full"
+                                        onClick={() => onOpenChange(false)}
+                                    >
+                                        Close
+                                    </Button>
+                                </>
                             ) : (
                                 <Button
                                     variant="outline"
-                                    className="w-full h-11"
+                                    className="h-11 w-full"
                                     onClick={() => onOpenChange(false)}
                                 >
                                     Close — booking stays pending
@@ -304,6 +400,7 @@ function PaymentReceipt({
     route,
     travelDate,
     seatNumber,
+    seatLost,
     mpesaReceiptNumber,
     isDownloading,
     onDownload,
@@ -313,6 +410,8 @@ function PaymentReceipt({
     route?: { origin: string; destination: string; id: string }
     travelDate: string
     seatNumber: number | null
+    /** Paid, but with no seat — a late payment landed after the seat was released. */
+    seatLost: boolean
     mpesaReceiptNumber: string | null
     isDownloading: boolean
     onDownload: () => void
@@ -320,27 +419,30 @@ function PaymentReceipt({
 }) {
     return (
         <>
-            <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
-                    <CheckCircle2 className="size-5 text-emerald-500" />
-                    Payment received
-                </DialogTitle>
-                <DialogDescription>
+            <DialogHeader className="items-center pt-2 text-center">
+                <div className="flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <CheckCircle2 className="size-8" />
+                </div>
+                <DialogTitle className="text-lg">Payment received</DialogTitle>
+                <DialogDescription className="max-w-[19rem] text-balance">
                     The seat is confirmed. Hand the passenger their receipt.
                 </DialogDescription>
             </DialogHeader>
 
-            <div className="rounded-xl border overflow-hidden">
-                <div className="bg-emerald-50 dark:bg-emerald-950/30 border-b border-emerald-100 dark:border-emerald-900/50 px-4 py-3">
-                    <p className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide">
-                        Receipt
+            <div className="overflow-hidden rounded-xl border">
+                <div className="flex items-center justify-between border-b bg-muted/50 px-4 py-2.5">
+                    <p className="text-[10px] font-semibold tracking-[0.15em] text-muted-foreground uppercase">
+                        Ticket
                     </p>
-                    <p className="text-[11px] font-mono text-emerald-700/80 dark:text-emerald-400/80 mt-0.5">
-                        REF: #{booking.id.slice(0, 6).toUpperCase()}
+                    <p className="font-mono text-[11px] text-muted-foreground">
+                        REF:{" "}
+                        <span className="font-semibold text-foreground">
+                            #{booking.id.slice(0, 6).toUpperCase()}
+                        </span>
                     </p>
                 </div>
 
-                <div className="px-4 py-3 space-y-3">
+                <div className="space-y-3 px-4 py-3">
                     {route && (
                         <div className="flex items-center gap-2">
                             <MapPin className="size-4 text-muted-foreground/50" />
@@ -350,57 +452,91 @@ function PaymentReceipt({
                         </div>
                     )}
 
+                    {/* A late M-Pesa confirmation can land after the seat was
+                        already released to someone else. The money stands, but the
+                        clerk has to know the passenger isn't seated yet. */}
+                    {seatLost && (
+                        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                            <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                                Paid, but the seat was already taken
+                            </p>
+                            <p className="mt-1 text-[11px] leading-relaxed text-amber-700/80 dark:text-amber-400/80">
+                                This payment reached us after the booking had timed out. The
+                                passenger is paid up and queued for the next vehicle on this
+                                route — seat them manually or refund.
+                            </p>
+                        </div>
+                    )}
+
                     <div className="h-px border-t border-dashed" />
 
-                    <dl className="grid grid-cols-2 gap-y-3 gap-x-2 text-sm">
+                    <dl className="grid grid-cols-2 gap-x-2 gap-y-3 text-sm">
                         <div>
-                            <dt className="text-xs text-muted-foreground">Passenger</dt>
-                            <dd className="font-medium">{booking.passengerName}</dd>
+                            <dt className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                                Passenger
+                            </dt>
+                            <dd className="truncate font-medium">{booking.passengerName}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-muted-foreground">Travel date</dt>
+                            <dt className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                                Travel date
+                            </dt>
                             <dd className="font-medium">{travelDate}</dd>
                         </div>
                         <div>
-                            <dt className="text-xs text-muted-foreground">Phone</dt>
-                            <dd className="font-medium">{booking.passengerPhone}</dd>
+                            <dt className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                                Phone
+                            </dt>
+                            <dd className="font-mono text-[13px] font-medium">
+                                {booking.passengerPhone}
+                            </dd>
                         </div>
                         {seatNumber != null && (
                             <div>
-                                <dt className="text-xs text-muted-foreground">Seat number</dt>
-                                <dd className="font-medium">{seatNumber}</dd>
+                                <dt className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                                    Seat
+                                </dt>
+                                <dd className="text-xl leading-tight font-bold text-primary">
+                                    {seatNumber}
+                                </dd>
                             </div>
                         )}
                         {mpesaReceiptNumber && (
                             <div className="col-span-2">
-                                <dt className="text-xs text-muted-foreground">M-Pesa Ref</dt>
-                                <dd className="font-mono text-xs font-medium mt-0.5">
+                                <dt className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                                    M-Pesa Ref
+                                </dt>
+                                <dd className="mt-0.5 font-mono text-xs font-medium">
                                     {mpesaReceiptNumber}
                                 </dd>
                             </div>
                         )}
                     </dl>
+                </div>
 
-                    <div className="h-px border-t border-dashed" />
+                <div className="flex items-center">
+                    <div className="-ml-2 size-4 rounded-full border bg-popover" />
+                    <div className="flex-1 border-t border-dashed" />
+                    <div className="-mr-2 size-4 rounded-full border bg-popover" />
+                </div>
 
-                    <div className="flex items-center justify-between pt-0.5">
-                        <div>
-                            <p className="text-sm font-semibold">Total paid</p>
-                            <Badge variant="secondary" className="mt-0.5 text-[10px]">
-                                M-PESA
-                            </Badge>
-                        </div>
-                        <span className="text-lg font-bold">
-                            KSh {Number(booking.fare).toLocaleString()}
-                        </span>
-                    </div>
+                <div className="flex flex-col items-center gap-1 bg-muted/40 px-4 py-4">
+                    <p className="text-[10px] font-semibold tracking-[0.15em] text-muted-foreground uppercase">
+                        Total paid
+                    </p>
+                    <p className="font-mono text-2xl font-bold tracking-[0.06em] text-primary">
+                        KSh {Number(booking.fare).toLocaleString()}
+                    </p>
+                    <Badge variant="secondary" className="mt-1 text-[10px]">
+                        M-PESA
+                    </Badge>
                 </div>
             </div>
 
-            <DialogFooter className="gap-2 sm:flex-col">
+            <DialogFooter className="flex-col gap-2 sm:flex-col">
                 <Button
                     variant="outline"
-                    className="w-full gap-2"
+                    className="h-11 w-full gap-2"
                     onClick={onDownload}
                     disabled={isDownloading}
                 >
@@ -411,7 +547,7 @@ function PaymentReceipt({
                     )}
                     {isDownloading ? "Preparing..." : "Download receipt"}
                 </Button>
-                <Button className="w-full h-11" onClick={onDone}>
+                <Button className="h-11 w-full" onClick={onDone}>
                     Done
                 </Button>
             </DialogFooter>

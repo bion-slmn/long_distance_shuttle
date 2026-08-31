@@ -104,6 +104,10 @@ export interface CreateQueuePayload {
     routeId: string;
     vehicleId: string;
     clockedInAt?: Date;
+    // Clock in and open the boarding bay in the same request. The server
+    // honours it only when nothing is boarding on this route yet — otherwise
+    // the vehicle just joins the queue, and the returned entry says WAITING.
+    startBoarding?: boolean;
 }
 
 export interface UpdateQueuePayload {

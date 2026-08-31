@@ -133,6 +133,21 @@ export class BookingService {
     return new Date(Date.now() + SEAT_HOLD_MS);
   }
 
+  /**
+   * Whether this booking's seat hold has run out — i.e. whether the seat has
+   * already gone back into the pool for the next passenger. A null expiry
+   * reads as lapsed, matching the SQL predicate in getOccupiedSeats.
+   *
+   * Compared against the app clock rather than the database's, which is fine
+   * because this only decides whether to take the slow, locked path: anything
+   * that actually claims a seat re-checks under the trip lock, where NOW() is
+   * the database's own.
+   */
+  private holdHasLapsed(booking: Booking): boolean {
+    if (!booking.holdExpiresAt) return true;
+    return new Date(booking.holdExpiresAt).getTime() <= Date.now();
+  }
+
   private initialPaymentStatus(dto: CreateBookingDto): PaymentStatus {
     if (dto.paymentMethod === PaymentMethod.CASH) return PaymentStatus.PAID;
     if (dto.paymentMethod === PaymentMethod.MPESA && dto.mpesaTransactionId) return PaymentStatus.PAID;
@@ -720,6 +735,33 @@ export class BookingService {
     receiptOrRef: { mpesaReceiptNumber?: string; mpesaCheckoutRequestId?: string },
   ): Promise<Booking> {
     const booking = await this.findOne(id);
+
+    // Money arriving on a booking we already gave up on — a reconcile that
+    // reached Safaricom after the payment had been force-expired. Safaricom is
+    // the source of truth, so the payment stands unconditionally; the only open
+    // question is whether the seat is still there to hand back.
+    if (booking.status === BookingStatus.CANCELLED) {
+      return this.settleLatePayment(booking, receiptOrRef);
+    }
+
+    // Money arriving after the hold ran out but before anything cancelled the
+    // booking. The hold is a predicate on the row, not a state some job has to
+    // transition (see getOccupiedSeats), so the seat went back into the pool
+    // the instant holdExpiresAt passed even though this row still reads
+    // CONFIRMED. That puts this payment in exactly the same position as one
+    // landing on a cancelled booking — the seat may already be someone else's,
+    // and writing PAID straight onto it would sell it twice. BOARDED is
+    // excluded deliberately: that passenger is on the vehicle, seat settled.
+    if (
+      booking.status === BookingStatus.CONFIRMED &&
+      booking.paymentStatus !== PaymentStatus.PAID &&
+      booking.tripId &&
+      booking.seatNumber !== null &&
+      this.holdHasLapsed(booking)
+    ) {
+      return this.settleLatePayment(booking, receiptOrRef);
+    }
+
     booking.paymentStatus = PaymentStatus.PAID;
     booking.holdExpiresAt = null; // paid — the seat is sold, not held
     if (receiptOrRef.mpesaReceiptNumber) {
@@ -737,6 +779,69 @@ export class BookingService {
     // a BOARDING trip), CONFIRMED here just means "seat held, payment now
     // in". If it's still AWAITING_TRIP, this is what makes it eligible for
     // assignPendingBookingsToTrip the next time a trip opens on this route/date.
+  }
+
+  /**
+   * Settles a payment that landed after its seat was already let go — either
+   * because the booking was cancelled outright, or because the hold simply
+   * lapsed while the passenger was still on the STK prompt.
+   *
+   * The seat is the part that can't be conjured back: it went into the pool
+   * the moment the hold ended, and someone else may be sitting in it. So the
+   * money is always honoured, and the seat only if it's genuinely still free —
+   * otherwise the passenger goes back into the queue as PAID and
+   * assignPendingBookingsToTrip puts them on the next vehicle for that
+   * route/date. Never silently overbooks, never loses the payment.
+   */
+  private async settleLatePayment(
+    booking: Booking,
+    receiptOrRef: { mpesaReceiptNumber?: string; mpesaCheckoutRequestId?: string },
+  ): Promise<Booking> {
+    return this.bookingRepository.manager.transaction(async (manager) => {
+      booking.paymentStatus = PaymentStatus.PAID;
+      booking.holdExpiresAt = null;
+      if (receiptOrRef.mpesaReceiptNumber) {
+        booking.mpesaReceiptNumber = receiptOrRef.mpesaReceiptNumber;
+      }
+      if (receiptOrRef.mpesaCheckoutRequestId) {
+        booking.mpesaCheckoutRequestId = receiptOrRef.mpesaCheckoutRequestId;
+      }
+
+      if (booking.tripId && booking.seatNumber !== null) {
+        // Same pessimistic lock every other seat-claiming path takes — this is
+        // a seat assignment like any other and must not race one.
+        const trip = await manager
+          .createQueryBuilder(Trip, 't')
+          .where('t.id = :id', { id: booking.tripId })
+          .setLock('pessimistic_write')
+          .getOne();
+
+        const takenSeats = trip ? await this.getTakenSeatNumbers(manager, trip.id) : [];
+
+        // The booking's own row can't appear in takenSeats: either it's
+        // CANCELLED and that query only counts CONFIRMED/BOARDED, or it's
+        // CONFIRMED with a lapsed hold and an unpaid payment, which the
+        // occupancy predicate excludes. Its seat is genuinely back in the pool.
+        if (trip && trip.status === TripStatus.BOARDING && !takenSeats.includes(booking.seatNumber)) {
+          booking.status = BookingStatus.CONFIRMED;
+          this.logger.log(
+            `Booking ${booking.id} settled on late payment — seat ${booking.seatNumber} ` +
+            `was still free and has been claimed back`,
+          );
+          return manager.save(booking);
+        }
+
+        this.logger.warn(
+          `Booking ${booking.id} settled on late payment, but seat ${booking.seatNumber} ` +
+          `on trip ${booking.tripId} is gone — requeued as PAID for the next trip`,
+        );
+        booking.tripId = null;
+        booking.seatNumber = null;
+      }
+
+      booking.status = BookingStatus.AWAITING_TRIP;
+      return manager.save(booking);
+    });
   }
 
   async markPaymentFailed(id: string): Promise<Booking> {

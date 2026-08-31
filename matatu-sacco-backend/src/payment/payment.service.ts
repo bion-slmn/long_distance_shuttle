@@ -15,8 +15,10 @@ import { Queue } from 'bullmq';
 import {
     RECONCILE_DELAYS_MS,
     RECONCILE_GRACE_MS,
+    ALWAYS_TERMINAL_RESULT_CODES,
     TERMINAL_FAILURE_RESULT_CODES,
 } from './payment-reconcile.constants';
+import { MpesaTransactionMatchStatus } from './entities/mpesa.entity';
 
 // ─── Event payload contracts ────────────────────────────────────────────
 // BookingService (or anything else) subscribes to these via @OnEvent.
@@ -388,6 +390,12 @@ export class PaymentService {
         // answer. Never conclusive, at any age.
         if (result.resultCode === null) return false;
 
+        // The passenger already cancelled, mistyped their PIN, or had no money.
+        // That's a verdict about something that happened, not a snapshot of an
+        // unfinished process — it can't turn into a payment later, so there is
+        // nothing to wait for and a seat to free.
+        if (ALWAYS_TERMINAL_RESULT_CODES.has(result.resultCode)) return true;
+
         const startedAt = payment.initiatedAt ?? payment.createdAt;
         const age = Date.now() - new Date(startedAt).getTime();
 
@@ -396,12 +404,63 @@ export class PaymentService {
         return TERMINAL_FAILURE_RESULT_CODES.has(result.resultCode);
     }
 
+    /**
+     * Daraja's stkpushquery reports only a result code — never the M-Pesa
+     * receipt number. Without this, every success confirmed by reconcile (i.e.
+     * exactly the ones whose callback went missing) produces a PAID booking
+     * with no receipt, which is the one field you need to tie it back to a
+     * Safaricom statement.
+     *
+     * Mutates `payment` in place; the caller saves.
+     */
+    private async attachReceiptFromStoredTransaction(payment: Payment): Promise<void> {
+        if (payment.mpesaReceiptNumber || !payment.checkoutRequestId) return;
+
+        const transaction = await this.mpesaService.findTransactionByCheckoutRequestId(
+            payment.checkoutRequestId,
+        );
+
+        if (!transaction) {
+            this.logger.warn(
+                `Payment ${payment.id} confirmed by status query but no stored M-Pesa ` +
+                `transaction matches checkoutRequestId=${payment.checkoutRequestId} — ` +
+                `booking will be PAID without a receipt number.`,
+            );
+            return;
+        }
+
+        payment.mpesaReceiptNumber = transaction.mpesaReceiptNumber;
+
+        if (transaction.matchStatus === MpesaTransactionMatchStatus.UNMATCHED) {
+            await this.mpesaService.matchTransaction(
+                transaction.id,
+                payment.referenceId,
+                payment.id,
+                'reconcile',
+            );
+        }
+
+        this.logger.log(
+            `Payment ${payment.id} confirmed by status query; receipt ` +
+            `${transaction.mpesaReceiptNumber} recovered from stored M-Pesa transaction`,
+        );
+    }
+
     async reconcileStuckPayment(paymentId: string): Promise<Payment> {
         const payment = await this.findById(paymentId);
 
-        if (payment.status !== PaymentStatus.PROCESSING || !payment.checkoutRequestId) {
-            return payment; // nothing to reconcile — already resolved, or no STK push was ever sent
+        // EXPIRED is reconcilable, not final. Force-expiry is our own guess
+        // after the callback never came — it is not Safaricom's word. If a
+        // later query says the money moved, that answer wins and the booking
+        // gets revived. SUCCESS/FAILED are Safaricom's own verdicts and stay put.
+        const reconcilable =
+            payment.status === PaymentStatus.PROCESSING || payment.status === PaymentStatus.EXPIRED;
+
+        if (!reconcilable || !payment.checkoutRequestId) {
+            return payment; // already settled by Safaricom, or no STK push was ever sent
         }
+
+        const previousStatus = payment.status;
 
         let result: QueryStkStatusResult;
         try {
@@ -418,8 +477,10 @@ export class PaymentService {
 
         if (result.resultCode === 0) {
             payment.status = PaymentStatus.SUCCESS;
+            await this.attachReceiptFromStoredTransaction(payment);
         } else if (!this.isTerminalQueryResult(payment, result)) {
-            // Still in flight as far as a QUERY can tell. Leave it PROCESSING:
+            // Still in flight as far as a QUERY can tell. Leave the status as
+            // it stands (PROCESSING, or EXPIRED if the ladder already ran out):
             // the callback will resolve it, and failing that the reconcile
             // schedule force-expires it at the 3-minute ceiling.
             this.logger.log(
@@ -440,6 +501,12 @@ export class PaymentService {
 
         payment.completedAt = new Date();
         const saved = await this.paymentRepository.save(payment);
+
+        // Re-pressing "Check M-Pesa" on a payment that already settled the same
+        // way shouldn't re-fire the booking side.
+        if (saved.status === previousStatus) {
+            return saved;
+        }
 
         if (saved.status === PaymentStatus.SUCCESS) {
             this.eventEmitter.emit('payment.succeeded', {
