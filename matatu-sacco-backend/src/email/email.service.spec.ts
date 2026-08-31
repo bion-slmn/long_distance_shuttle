@@ -113,4 +113,74 @@ describe('EmailService', () => {
       expect(callArgs.html).toContain('987654');
     });
   });
+
+  describe('sendPasswordLink', () => {
+    beforeEach(() => {
+      mockSend.mockResolvedValue({ data: { id: 'email_789' }, error: null });
+    });
+
+    it('uses welcome wording and a working link for an invite', async () => {
+      await service.sendPasswordLink(
+        'clerk@example.com',
+        'Jane Wanjiku',
+        'https://app.example.com/set-password?token=abc',
+        'invite',
+        '3 days',
+      );
+
+      const args = mockSend.mock.calls[0][0];
+      expect(args.to).toBe('clerk@example.com');
+      expect(args.subject).toBe('Set up your ShuttleHub account');
+      expect(args.html).toContain('Welcome to ShuttleHub');
+      expect(args.html).toContain('Jane Wanjiku');
+      expect(args.html).toContain('href="https://app.example.com/set-password?token=abc"');
+      expect(args.html).toContain('3 days');
+    });
+
+    it('uses reset wording for a reset', async () => {
+      await service.sendPasswordLink(
+        'clerk@example.com',
+        'Jane Wanjiku',
+        'https://app.example.com/set-password?token=abc',
+        'reset',
+        '1 hour',
+      );
+
+      const args = mockSend.mock.calls[0][0];
+      expect(args.subject).toBe('Reset your ShuttleHub password');
+      expect(args.html).toContain('Reset your password');
+      expect(args.html).toContain('1 hour');
+    });
+
+    it('never puts the link in the subject line', async () => {
+      await service.sendPasswordLink(
+        'clerk@example.com',
+        'Jane Wanjiku',
+        'https://app.example.com/set-password?token=secret-token',
+        'reset',
+        '1 hour',
+      );
+
+      expect(mockSend.mock.calls[0][0].subject).not.toContain('secret-token');
+    });
+
+    it('throws when Resend resolves with an error payload', async () => {
+      mockSend.mockResolvedValueOnce({
+        data: null,
+        error: { message: 'Invalid recipient', name: 'validation_error' },
+      });
+
+      await expect(
+        service.sendPasswordLink('bad@example.com', 'Jane', 'https://x/y', 'reset', '1 hour'),
+      ).rejects.toThrow('Failed to send password email: Invalid recipient');
+    });
+
+    it('propagates a hard SDK failure', async () => {
+      mockSend.mockRejectedValueOnce(new Error('Network timeout'));
+
+      await expect(
+        service.sendPasswordLink('clerk@example.com', 'Jane', 'https://x/y', 'invite', '3 days'),
+      ).rejects.toThrow('Network timeout');
+    });
+  });
 });

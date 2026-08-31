@@ -13,7 +13,7 @@ import {
     HttpCode,
 } from '@nestjs/common';
 import { PaymentService } from './payment.service';
-import { PaymentReferenceType, PaymentStatus } from './entities/payment.entity';
+import { Payment, PaymentReferenceType, PaymentStatus } from './entities/payment.entity';
 import { PaymentQueryDto } from './dto/payment-query.dto';
 import { RecordCashPaymentDto } from './dto/record-cash-payment.dto';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
@@ -23,6 +23,7 @@ import { CurrentUser } from '../decorators/current-user.decorator';
 import { UserRole } from '../auth/entities/user.entity';
 import { Public } from 'src/decorators/public.decorator';
 import { MpesaService } from './mpesa/mpesa.service';
+import { clerkStage } from '../common/utils/clerk-stage.util';
 
 @Controller('payment')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -92,7 +93,7 @@ export class PaymentController {
 
         return this.paymentService.findBySacco(
             isSuperAdmin ? saccoId : user.saccoId,
-            query,
+            { ...query, assignedStage: clerkStage(user) },
         );
     }
 
@@ -110,6 +111,7 @@ export class PaymentController {
         if (user.role !== UserRole.SUPER_ADMIN && payment.saccoId !== user.saccoId) {
             throw new ForbiddenException('Access denied to this payment.');
         }
+        await this.assertStageAccess(payment, user);
         return payment;
     }
 
@@ -124,7 +126,20 @@ export class PaymentController {
         if (user.role !== UserRole.SUPER_ADMIN && payment.saccoId !== user.saccoId) {
             throw new ForbiddenException('Access denied to this payment.');
         }
+        await this.assertStageAccess(payment, user);
         return payment;
     }
 
+    // A clerk only sees payments for their own stage in the list, so they must
+    // not be able to reach another stage's payment straight by id either.
+    private async assertStageAccess(payment: Payment, user: any): Promise<void> {
+        const stage = clerkStage(user);
+        if (!stage) return;
+
+        if (!(await this.paymentService.isForStage(payment, stage))) {
+            throw new ForbiddenException(
+                `This payment is not for your assigned stage ("${stage}").`,
+            );
+        }
+    }
 }

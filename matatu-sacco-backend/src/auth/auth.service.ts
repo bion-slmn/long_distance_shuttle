@@ -9,7 +9,10 @@ import { FindOptionsWhere, ILike, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import { User, UserRole } from './entities/user.entity';
+import { EmailService } from '../email/email.service';
+import { PasswordResetService, type ResetPurpose } from './password-reset.service';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -22,20 +25,20 @@ interface RegisterDto {
     saccoId?: string;
 }
 
+// Admin-created accounts never carry a password: the admin supplies an email,
+// the new user sets their own password from the link we send them.
 export interface CreateManagerDto {
     fullName: string;
-    email?: string;
+    email: string;
     phoneNumber?: string;
-    password: string;
     saccoId: string;
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────
 export interface CreateStaffDto {
     fullName: string;
-    email?: string;
+    email: string;
     phoneNumber?: string;
-    password: string;
     role: UserRole.DRIVER | UserRole.CLERK;
     saccoId: string;
     assignedStage?: string; // ← missing, add this
@@ -63,11 +66,15 @@ export interface UpdateUserDto {
     saccoId?: string;
 }
 
+export type UserStatusFilter = 'active' | 'removed' | 'all';
+
 export interface GetUsersQuery {
     saccoId?: string;
     search?: string;
     page?: number;
     limit?: number;
+    // Defaults to 'active'. Admins switch to 'removed' to find someone to restore.
+    status?: UserStatusFilter;
 }
 
 export interface PaginatedUsers {
@@ -93,6 +100,8 @@ export class AuthService {
         private readonly userRepository: Repository<User>,
         private readonly jwtService: JwtService,
         private readonly configService: ConfigService,
+        private readonly emailService: EmailService,
+        private readonly passwordResetService: PasswordResetService,
     ) { }
 
     // ── Register ──────────────────────────────────────────────────────────────
@@ -128,6 +137,7 @@ export class AuthService {
             role,
             saccoId: saccoId ?? null,
             tokenVersion: 0,
+            passwordSetAt: new Date(),
         });
 
         const saved = await this.userRepository.save(user);
@@ -210,27 +220,29 @@ export class AuthService {
 
 
     async createManager(dto: CreateManagerDto) {
-        if (!dto.email && !dto.phoneNumber) {
-            throw new BadRequestException('Provide at least an email or phone number.');
+        if (!dto.email) {
+            throw new BadRequestException(
+                'An email address is required — the manager sets their own password from a link we send there.',
+            );
         }
 
         await this.assertNoDuplicateEmail(dto.email);
         await this.assertNoDuplicatePhone(dto.phoneNumber);
 
-        const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
-
         const user = this.userRepository.create({
             fullName: dto.fullName.trim(),
-            email: dto.email?.toLowerCase().trim() ?? null,
+            email: dto.email.toLowerCase().trim(),
             phoneNumber: dto.phoneNumber?.trim() ?? null,
-            passwordHash,
+            passwordHash: await this.unusablePasswordHash(),
             role: UserRole.SACCO_ADMIN,
             saccoId: dto.saccoId,
             tokenVersion: 0,
         });
 
         const saved = await this.userRepository.save(user);
-        return this.sanitizeUser(saved);
+        const invite = await this.sendPasswordLink(saved, 'invite');
+
+        return { ...this.sanitizeUser(saved), inviteSent: invite.sent };
     }
 
 
@@ -258,9 +270,9 @@ export class AuthService {
             );
         }
 
-        if (!dto.email && !dto.phoneNumber) {
+        if (!dto.email) {
             throw new BadRequestException(
-                'Provide at least an email or phone number.',
+                'An email address is required — staff set their own password from a link we send there.',
             );
         }
         if (dto.role === UserRole.CLERK && !dto.assignedStage) {
@@ -270,13 +282,11 @@ export class AuthService {
         await this.assertNoDuplicateEmail(dto.email);
         await this.assertNoDuplicatePhone(dto.phoneNumber);
 
-        const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
-
         const user = this.userRepository.create({
             fullName: dto.fullName.trim(),
-            email: dto.email?.toLowerCase().trim() ?? null,
+            email: dto.email.toLowerCase().trim(),
             phoneNumber: dto.phoneNumber?.trim() ?? null,
-            passwordHash,
+            passwordHash: await this.unusablePasswordHash(),
             role: dto.role,
             saccoId: dto.saccoId,
             assignedStage: dto.role === UserRole.CLERK ? dto.assignedStage ?? null : null, // ← add
@@ -284,7 +294,9 @@ export class AuthService {
         });
 
         const saved = await this.userRepository.save(user);
-        return this.sanitizeUser(saved);
+        const invite = await this.sendPasswordLink(saved, 'invite');
+
+        return { ...this.sanitizeUser(saved), inviteSent: invite.sent };
     }
 
     // ── List users (scoped by Sacco, or all if super admin) ─────────────────
@@ -292,7 +304,14 @@ export class AuthService {
         const page = Math.max(1, query.page ?? 1);
         const limit = Math.min(100, Math.max(1, query.limit ?? 20));
 
+        // Removed users are soft-deleted, not erased, so the default list has to
+        // exclude them — otherwise a removal looks like it did nothing at all.
+        const status = query.status ?? 'active';
         const where: FindOptionsWhere<User> = {};
+
+        if (status !== 'all') {
+            where.isActive = status === 'active';
+        }
 
         if (query.saccoId) {
             where.saccoId = query.saccoId;
@@ -369,6 +388,10 @@ export class AuthService {
             saccoId: user.saccoId,
             assignedStage: user.assignedStage, // ← add
             createdAt: user.createdAt,
+            isActive: user.isActive,
+            // Null means "invited but hasn't set a password yet" — the users
+            // table renders that as a pending badge with a resend action.
+            passwordSetAt: user.passwordSetAt,
         };
     }
 
@@ -377,7 +400,15 @@ export class AuthService {
         const exists = await this.userRepository.findOne({
             where: { email: email.toLowerCase().trim() },
         });
-        if (exists) throw new ConflictException('A user with this email already exists.');
+        if (!exists) return;
+
+        // The row is hidden from the users table once removed, so say so —
+        // otherwise the admin is blocked by an account they cannot see.
+        throw new ConflictException(
+            exists.isActive
+                ? 'A user with this email already exists.'
+                : 'This email belongs to a removed account. Restore that account instead of creating a new one.',
+        );
     }
 
     private async assertNoDuplicatePhone(phoneNumber?: string): Promise<void> {
@@ -440,9 +471,14 @@ export class AuthService {
         return this.sanitizeUser(saved);
     }
 
-    // ── Delete (deactivate) user ─────────────────────────────────────────────
-    // Soft delete: flips isActive off rather than removing the row, so
-    // historical records (trips, orders, etc.) tied to this user stay intact.
+    // ── Delete user ──────────────────────────────────────────────────────────
+    // Two different removals, because "remove" means two different things here:
+    //
+    //  • An account that never set a password was never signed into, so there is
+    //    no history to protect. It's erased outright — which is what an admin
+    //    expects after mistyping an email — and that frees the address for reuse.
+    //  • Anyone who has actually used the system is soft-deleted (isActive off),
+    //    so their trips and bookings keep pointing at a real name.
     async deleteUser(
         id: string,
         requester: { sub: string; role: UserRole; saccoId: string | null },
@@ -468,10 +504,321 @@ export class AuthService {
             throw new BadRequestException('You cannot delete your own account.');
         }
 
+        // Never signed in, and no trip points at them: nothing to preserve.
+        if (!user.passwordSetAt && !(await this.hasTripHistory(user.id))) {
+            // Kill the outstanding invite too, so the link already sitting in
+            // their inbox stops working the moment the account is cancelled.
+            await this.passwordResetService.revokeTokensFor(user.id);
+            await this.userRepository.remove(user);
+
+            return { success: true, message: 'Invite cancelled and user removed.' };
+        }
+
         user.isActive = false;
         user.tokenVersion += 1; // invalidate any existing tokens for this user
         await this.userRepository.save(user);
 
         return { success: true, message: 'User removed.' };
+    }
+
+    // ── Restore a removed user ───────────────────────────────────────────────
+    // The mirror of the soft delete. Their old password still works, so this is
+    // enough to give access back — except for an account that never set one,
+    // which gets a fresh invite instead.
+    async restoreUser(
+        id: string,
+        requester: { sub: string; role: UserRole; saccoId: string | null },
+    ) {
+        const user = await this.userRepository.findOne({ where: { id } });
+        if (!user) {
+            throw new BadRequestException('User not found.');
+        }
+
+        if (requester.role === UserRole.SACCO_ADMIN) {
+            if (user.saccoId !== requester.saccoId) {
+                throw new UnauthorizedException(
+                    'You can only restore users within your own Sacco.',
+                );
+            }
+        } else if (requester.role !== UserRole.SUPER_ADMIN) {
+            throw new UnauthorizedException(
+                'Only Sacco admins or super admins can restore users.',
+            );
+        }
+
+        if (user.isActive) {
+            throw new BadRequestException('This account is already active.');
+        }
+
+        user.isActive = true;
+        const restored = await this.userRepository.save(user);
+
+        // Never had a password to come back to — send them a fresh invite so the
+        // restore actually leaves them able to sign in.
+        const needsInvite = !user.passwordSetAt;
+        const invite = needsInvite
+            ? await this.sendPasswordLink(restored, 'invite')
+            : { sent: false };
+
+        return {
+            ...this.sanitizeUser(restored),
+            inviteSent: invite.sent,
+            message: needsInvite
+                ? invite.sent
+                    ? `${restored.fullName} restored — a fresh invite is on its way.`
+                    : `${restored.fullName} restored, but the invite email didn't send. Resend it from their profile.`
+                : `${restored.fullName} restored. Their existing password still works.`,
+        };
+    }
+
+    /**
+     * `trips.driverId` is the only foreign key pointing at a user. A raw count
+     * keeps this check here rather than dragging the whole trip module into
+     * AuthModule for one lookup.
+     */
+    private async hasTripHistory(userId: string): Promise<boolean> {
+        const rows = await this.userRepository.manager.query(
+            'SELECT 1 FROM trips WHERE "driverId" = $1 LIMIT 1',
+            [userId],
+        );
+        return rows.length > 0;
+    }
+
+    // ── Passwords ─────────────────────────────────────────────────────────────
+
+    /**
+     * A real bcrypt hash of a value nobody knows, used for accounts that haven't
+     * picked a password yet. Login against it simply fails, so there's no
+     * "empty password" special case to get wrong anywhere else in the codebase.
+     */
+    private async unusablePasswordHash(): Promise<string> {
+        return bcrypt.hash(crypto.randomBytes(32).toString('hex'), SALT_ROUNDS);
+    }
+
+    private assertStrongPassword(password: string): void {
+        if (!password || password.length < 8) {
+            throw new BadRequestException('Password must be at least 8 characters.');
+        }
+    }
+
+    /**
+     * Mints a token and emails the link. A send failure is swallowed and
+     * reported through the return value: an admin creating a clerk shouldn't
+     * get a 500 (and lose the created account) because Resend hiccuped — they
+     * get the account plus a "couldn't email them, resend it" signal.
+     */
+    private async sendPasswordLink(
+        user: User,
+        purpose: ResetPurpose,
+    ): Promise<{ sent: boolean }> {
+        if (!user.email) {
+            return { sent: false };
+        }
+
+        const token = await this.passwordResetService.issueToken(user.id, purpose);
+        const link = this.passwordResetService.buildLink(token, purpose);
+        const expiresIn = purpose === 'invite' ? '3 days' : '1 hour';
+
+        try {
+            await this.emailService.sendPasswordLink(
+                user.email,
+                user.fullName,
+                link,
+                purpose,
+                expiresIn,
+            );
+            await this.passwordResetService.startCooldown(user.id);
+            return { sent: true };
+        } catch {
+            return { sent: false };
+        }
+    }
+
+    /**
+     * Public. Always reports success, whether or not the address belongs to an
+     * account — otherwise this endpoint doubles as a "does this person have an
+     * account here" oracle.
+     */
+    async forgotPassword(email: string) {
+        const genericResponse = {
+            success: true,
+            message: 'If that email is registered, a reset link is on its way.',
+        };
+
+        if (!email?.trim()) {
+            throw new BadRequestException('Provide the email address on your account.');
+        }
+
+        const user = await this.userRepository.findOne({
+            where: { email: email.toLowerCase().trim(), isActive: true },
+        });
+
+        if (!user) {
+            return genericResponse;
+        }
+
+        // Silently skip rather than erroring: telling the caller "too soon"
+        // would leak that the address exists.
+        if (await this.passwordResetService.isOnCooldown(user.id)) {
+            return genericResponse;
+        }
+
+        await this.sendPasswordLink(user, user.passwordSetAt ? 'reset' : 'invite');
+
+        return genericResponse;
+    }
+
+    /** Public. Lets the frontend show "this link expired" before the user types anything. */
+    async verifyPasswordToken(token: string) {
+        const payload = await this.passwordResetService.peekToken(token);
+
+        if (!payload) {
+            return { valid: false as const };
+        }
+
+        const user = await this.userRepository.findOne({
+            where: { id: payload.userId, isActive: true },
+        });
+
+        if (!user) {
+            return { valid: false as const };
+        }
+
+        return {
+            valid: true as const,
+            purpose: payload.purpose,
+            fullName: user.fullName,
+            email: user.email,
+        };
+    }
+
+    /** Public. Spends the token, sets the password, and kills every existing session. */
+    async resetPassword(token: string, newPassword: string) {
+        this.assertStrongPassword(newPassword);
+
+        const payload = await this.passwordResetService.consumeToken(token);
+        if (!payload) {
+            throw new BadRequestException(
+                'This link has expired or has already been used. Request a new one.',
+            );
+        }
+
+        const user = await this.userRepository.findOne({
+            where: { id: payload.userId, isActive: true },
+        });
+
+        if (!user) {
+            throw new BadRequestException('This account is no longer active.');
+        }
+
+        user.passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+        user.passwordSetAt = new Date();
+        // If the reset was prompted by a compromise, any session the attacker
+        // still holds dies here.
+        user.tokenVersion += 1;
+        await this.userRepository.save(user);
+
+        return {
+            success: true,
+            message:
+                payload.purpose === 'invite'
+                    ? 'Password set. You can now sign in.'
+                    : 'Password updated. You can now sign in.',
+        };
+    }
+
+    /** Authenticated. Requires the current password, and hands back fresh tokens
+     *  so bumping tokenVersion doesn't log the user out mid-shift. */
+    async changePassword(
+        userId: string,
+        currentPassword: string,
+        newPassword: string,
+    ): Promise<AuthResponse> {
+        if (!currentPassword) {
+            throw new BadRequestException('Enter your current password.');
+        }
+        this.assertStrongPassword(newPassword);
+
+        if (currentPassword === newPassword) {
+            throw new BadRequestException(
+                'Your new password must be different from your current one.',
+            );
+        }
+
+        const user = await this.userRepository.findOne({
+            where: { id: userId, isActive: true },
+        });
+
+        if (!user) {
+            throw new UnauthorizedException('User not found.');
+        }
+
+        if (!(await bcrypt.compare(currentPassword, user.passwordHash))) {
+            throw new UnauthorizedException('Your current password is incorrect.');
+        }
+
+        user.passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+        user.passwordSetAt = new Date();
+        user.tokenVersion += 1;
+        const saved = await this.userRepository.save(user);
+
+        const tokens = await this.generateTokenPair(saved);
+        return { ...tokens, user: this.sanitizeUser(saved) };
+    }
+
+    /**
+     * Admin-triggered resend, for the very common "the clerk never got the
+     * email" case. The admin still can't see or choose the password.
+     */
+    async sendPasswordLinkForUser(
+        id: string,
+        requester: { sub: string; role: UserRole; saccoId: string | null },
+    ) {
+        const user = await this.userRepository.findOne({ where: { id } });
+        if (!user) {
+            throw new BadRequestException('User not found.');
+        }
+
+        if (requester.role === UserRole.SACCO_ADMIN) {
+            if (user.saccoId !== requester.saccoId) {
+                throw new UnauthorizedException(
+                    'You can only manage users within your own Sacco.',
+                );
+            }
+        } else if (requester.role !== UserRole.SUPER_ADMIN) {
+            throw new UnauthorizedException(
+                'Only Sacco admins or super admins can send password links.',
+            );
+        }
+
+        if (!user.isActive) {
+            throw new BadRequestException(
+                'This account is deactivated. Reactivate it before sending a link.',
+            );
+        }
+
+        if (!user.email) {
+            throw new BadRequestException(
+                'This user has no email address on file. Add one first.',
+            );
+        }
+
+        const purpose: ResetPurpose = user.passwordSetAt ? 'reset' : 'invite';
+        const { sent } = await this.sendPasswordLink(user, purpose);
+
+        if (!sent) {
+            throw new BadRequestException(
+                'We could not send the email just now. Please try again.',
+            );
+        }
+
+        return {
+            success: true,
+            purpose,
+            message:
+                purpose === 'invite'
+                    ? `Invite re-sent to ${user.email}.`
+                    : `Password reset link sent to ${user.email}.`,
+        };
     }
 }

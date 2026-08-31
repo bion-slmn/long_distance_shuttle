@@ -6,6 +6,8 @@ import { ConflictException, BadRequestException, UnauthorizedException } from '@
 import * as bcrypt from 'bcrypt';
 
 import { AuthService, CreateStaffDto } from './auth.service';
+import { EmailService } from '../email/email.service';
+import { PasswordResetService } from './password-reset.service';
 import { User, UserRole } from './entities/user.entity';
 
 // ─── Shared mock factory ──────────────────────────────────────────────────────
@@ -22,6 +24,7 @@ const makeUser = (overrides: Partial<User> = {}): User => ({
   tokenVersion: 0,
   isActive: true,
   createdAt: new Date('2024-01-01'),
+  passwordSetAt: new Date('2024-01-01'),
   ...overrides,
 } as User);
 
@@ -32,7 +35,10 @@ const mockUserRepository = () => ({
   findAndCount: jest.fn(),
   create: jest.fn(),
   save: jest.fn(),
+  remove: jest.fn(),
   increment: jest.fn(),
+  // `trips.driverId` probe in deleteUser — no trips by default
+  manager: { query: jest.fn().mockResolvedValue([]) },
 });
 
 // ─── JWT + Config mocks ───────────────────────────────────────────────────────
@@ -40,6 +46,20 @@ const mockUserRepository = () => ({
 const mockJwtService = () => ({
   signAsync: jest.fn(),
   verifyAsync: jest.fn(),
+});
+
+const mockEmailService = () => ({
+  sendPasswordLink: jest.fn().mockResolvedValue({ data: { id: 'email-1' }, error: null }),
+});
+
+const mockPasswordResetService = () => ({
+  issueToken: jest.fn().mockResolvedValue('raw-token'),
+  peekToken: jest.fn(),
+  consumeToken: jest.fn(),
+  isOnCooldown: jest.fn().mockResolvedValue(false),
+  startCooldown: jest.fn(),
+  revokeTokensFor: jest.fn(),
+  buildLink: jest.fn((token: string) => `http://localhost:5173/set-password?token=${token}`),
 });
 
 const mockConfigService = () => ({
@@ -56,6 +76,8 @@ describe('AuthService', () => {
   let service: AuthService;
   let userRepo: ReturnType<typeof mockUserRepository>;
   let jwtService: ReturnType<typeof mockJwtService>;
+  let emailService: ReturnType<typeof mockEmailService>;
+  let passwordResetService: ReturnType<typeof mockPasswordResetService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -64,12 +86,16 @@ describe('AuthService', () => {
         { provide: getRepositoryToken(User), useFactory: mockUserRepository },
         { provide: JwtService, useFactory: mockJwtService },
         { provide: ConfigService, useFactory: mockConfigService },
+        { provide: EmailService, useFactory: mockEmailService },
+        { provide: PasswordResetService, useFactory: mockPasswordResetService },
       ],
     }).compile();
 
     service = module.get<AuthService>(AuthService);
     userRepo = module.get(getRepositoryToken(User));
     jwtService = module.get(JwtService);
+    emailService = module.get(EmailService);
+    passwordResetService = module.get(PasswordResetService);
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -353,7 +379,6 @@ describe('AuthService', () => {
       fullName: 'Sacco Manager',
       email: 'manager@example.com',
       phoneNumber: '0700000000',
-      password: 'secret123',
       saccoId: 'sacco-123',
     };
 
@@ -381,9 +406,9 @@ describe('AuthService', () => {
       expect(result).not.toHaveProperty('passwordHash');
     });
 
-    it('throws BadRequestException when neither email nor phone provided', async () => {
+    it('throws BadRequestException when no email is provided', async () => {
       await expect(
-        service.createManager({ ...dto, email: undefined, phoneNumber: undefined })
+        service.createManager({ ...dto, email: '' })
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -391,6 +416,12 @@ describe('AuthService', () => {
       userRepo.findOne.mockResolvedValueOnce(makeUser());
 
       await expect(service.createManager(dto)).rejects.toThrow(ConflictException);
+    });
+
+    it('explains when the clashing email belongs to a removed account', async () => {
+      userRepo.findOne.mockResolvedValueOnce(makeUser({ isActive: false }));
+
+      await expect(service.createManager(dto)).rejects.toThrow(/removed account/);
     });
 
     it('throws ConflictException on duplicate phone number', async () => {
@@ -401,17 +432,40 @@ describe('AuthService', () => {
       await expect(service.createManager(dto)).rejects.toThrow(ConflictException);
     });
 
-    it('hashes the password before saving', async () => {
+    it('stores an unusable password hash and emails an invite instead', async () => {
       userRepo.findOne.mockResolvedValue(null);
-      const saved = makeUser({ role: UserRole.SACCO_ADMIN });
+      const saved = makeUser({ role: UserRole.SACCO_ADMIN, passwordSetAt: null });
       userRepo.create.mockReturnValue(saved);
       userRepo.save.mockResolvedValue(saved);
 
-      await service.createManager(dto);
+      const result = await service.createManager(dto);
 
       const createCall = userRepo.create.mock.calls[0][0];
-      const isHashed = await bcrypt.compare(dto.password, createCall.passwordHash);
-      expect(isHashed).toBe(true);
+      expect(createCall.passwordHash).toEqual(expect.any(String));
+      expect(createCall.passwordSetAt).toBeUndefined();
+
+      expect(passwordResetService.issueToken).toHaveBeenCalledWith(saved.id, 'invite');
+      expect(emailService.sendPasswordLink).toHaveBeenCalledWith(
+        saved.email,
+        saved.fullName,
+        expect.stringContaining('raw-token'),
+        'invite',
+        '3 days',
+      );
+      expect(result.inviteSent).toBe(true);
+    });
+
+    it('still returns the created account when the invite email fails to send', async () => {
+      userRepo.findOne.mockResolvedValue(null);
+      const saved = makeUser({ role: UserRole.SACCO_ADMIN, passwordSetAt: null });
+      userRepo.create.mockReturnValue(saved);
+      userRepo.save.mockResolvedValue(saved);
+      emailService.sendPasswordLink.mockRejectedValueOnce(new Error('Resend down'));
+
+      const result = await service.createManager(dto);
+
+      expect(result).toMatchObject({ role: UserRole.SACCO_ADMIN });
+      expect(result.inviteSent).toBe(false);
     });
   });
 
@@ -427,7 +481,6 @@ describe('AuthService', () => {
       fullName: 'Clerk One',
       email: 'clerk@example.com',
       phoneNumber: '0711111111',
-      password: 'secret123',
       role: UserRole.CLERK,
       saccoId: 'sacco-123',
       assignedStage: 'stage-a',
@@ -437,7 +490,6 @@ describe('AuthService', () => {
       fullName: 'Driver One',
       email: 'driver@example.com',
       phoneNumber: '0722222222',
-      password: 'secret123',
       role: UserRole.DRIVER,
       saccoId: 'sacco-123',
     };
@@ -501,10 +553,22 @@ describe('AuthService', () => {
       expect(result.assignedStage).toBeNull();
     });
 
-    it('throws BadRequestException when neither email nor phone provided', async () => {
+    it('throws BadRequestException when no email is provided', async () => {
       await expect(
-        service.createStaffUser({ ...clerkDto, email: undefined, phoneNumber: undefined }, saccoAdminCreator)
+        service.createStaffUser({ ...clerkDto, email: '' }, saccoAdminCreator)
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('emails the new staff member an invite link rather than a password', async () => {
+      userRepo.findOne.mockResolvedValue(null);
+      const saved = makeUser({ role: UserRole.CLERK, saccoId: 'sacco-123', passwordSetAt: null });
+      userRepo.create.mockReturnValue(saved);
+      userRepo.save.mockResolvedValue(saved);
+
+      await service.createStaffUser(clerkDto, saccoAdminCreator);
+
+      expect(passwordResetService.issueToken).toHaveBeenCalledWith(saved.id, 'invite');
+      expect(emailService.sendPasswordLink).toHaveBeenCalledTimes(1);
     });
 
     it('throws ConflictException on duplicate email', async () => {
@@ -534,6 +598,35 @@ describe('AuthService', () => {
       expect(result.meta).toEqual({ total: 2, page: 1, limit: 20, totalPages: 1 });
       // sanitized: no passwordHash leaking through
       expect(result.data[0]).not.toHaveProperty('passwordHash');
+    });
+
+    it('excludes removed (deactivated) users by default', async () => {
+      userRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getUsers({});
+
+      expect(userRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ isActive: true }) })
+      );
+    });
+
+    it('returns only removed users when asked for them', async () => {
+      userRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getUsers({ status: 'removed' });
+
+      expect(userRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ isActive: false }) })
+      );
+    });
+
+    it('does not filter on isActive at all for status "all"', async () => {
+      userRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getUsers({ status: 'all' });
+
+      const where = userRepo.findAndCount.mock.calls[0][0].where;
+      expect(where).not.toHaveProperty('isActive');
     });
 
     it('scopes results by saccoId when provided', async () => {
@@ -706,6 +799,41 @@ describe('AuthService', () => {
       expect(result.success).toBe(true);
     });
 
+    it('erases an invited user who never set a password, and revokes their link', async () => {
+      const pending = makeUser({ id: 'target-1', saccoId: 'sacco-123', passwordSetAt: null });
+      userRepo.findOne.mockResolvedValueOnce(pending);
+
+      const result = await service.deleteUser('target-1', saccoAdminRequester);
+
+      expect(passwordResetService.revokeTokensFor).toHaveBeenCalledWith('target-1');
+      expect(userRepo.remove).toHaveBeenCalledWith(pending);
+      expect(userRepo.save).not.toHaveBeenCalled();
+      expect(result.message).toContain('Invite cancelled');
+    });
+
+    it('falls back to a soft delete when a pending user is already on a trip', async () => {
+      const pending = makeUser({ id: 'target-1', saccoId: 'sacco-123', passwordSetAt: null });
+      userRepo.findOne.mockResolvedValueOnce(pending);
+      userRepo.manager.query.mockResolvedValueOnce([{ '?column?': 1 }]);
+      userRepo.save.mockImplementation(async (u) => u);
+
+      await service.deleteUser('target-1', saccoAdminRequester);
+
+      expect(userRepo.remove).not.toHaveBeenCalled();
+      expect(pending.isActive).toBe(false);
+    });
+
+    it('never erases a user who has actually set a password', async () => {
+      const active = makeUser({ id: 'target-1', saccoId: 'sacco-123' });
+      userRepo.findOne.mockResolvedValueOnce(active);
+      userRepo.save.mockImplementation(async (u) => u);
+
+      await service.deleteUser('target-1', saccoAdminRequester);
+
+      expect(userRepo.remove).not.toHaveBeenCalled();
+      expect(active.isActive).toBe(false);
+    });
+
     it('throws BadRequestException when the user does not exist', async () => {
       userRepo.findOne.mockResolvedValueOnce(null);
 
@@ -750,6 +878,315 @@ describe('AuthService', () => {
       const result = await service.deleteUser('target-1', superAdminRequester);
 
       expect(result.success).toBe(true);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // forgotPassword()
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('forgotPassword()', () => {
+    it('sends a reset link to a user who already has a password', async () => {
+      const user = makeUser({ email: 'jane@example.com' });
+      userRepo.findOne.mockResolvedValue(user);
+
+      const result = await service.forgotPassword('Jane@Example.com ');
+
+      expect(userRepo.findOne).toHaveBeenCalledWith({
+        where: { email: 'jane@example.com', isActive: true },
+      });
+      expect(passwordResetService.issueToken).toHaveBeenCalledWith(user.id, 'reset');
+      expect(emailService.sendPasswordLink).toHaveBeenCalledWith(
+        user.email,
+        user.fullName,
+        expect.any(String),
+        'reset',
+        '1 hour',
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it('sends invite wording to a user who never set a password', async () => {
+      userRepo.findOne.mockResolvedValue(makeUser({ passwordSetAt: null }));
+
+      await service.forgotPassword('jane@example.com');
+
+      expect(passwordResetService.issueToken).toHaveBeenCalledWith('user-uuid-1', 'invite');
+    });
+
+    it('returns the same response for an unknown email and sends nothing', async () => {
+      userRepo.findOne.mockResolvedValue(null);
+
+      const result = await service.forgotPassword('nobody@example.com');
+
+      expect(emailService.sendPasswordLink).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        success: true,
+        message: 'If that email is registered, a reset link is on its way.',
+      });
+    });
+
+    it('does not reveal the cooldown — same response, no second email', async () => {
+      userRepo.findOne.mockResolvedValue(makeUser());
+      passwordResetService.isOnCooldown.mockResolvedValueOnce(true);
+
+      const result = await service.forgotPassword('jane@example.com');
+
+      expect(emailService.sendPasswordLink).not.toHaveBeenCalled();
+      expect(result.success).toBe(true);
+    });
+
+    it('throws BadRequestException when no email is given at all', async () => {
+      await expect(service.forgotPassword('')).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // resetPassword()
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('resetPassword()', () => {
+    it('sets the new password, stamps passwordSetAt, and invalidates sessions', async () => {
+      passwordResetService.consumeToken.mockResolvedValue({
+        userId: 'user-uuid-1',
+        purpose: 'invite',
+      });
+      const user = makeUser({ tokenVersion: 3, passwordSetAt: null });
+      userRepo.findOne.mockResolvedValue(user);
+      userRepo.save.mockImplementation(async (u) => u);
+
+      const result = await service.resetPassword('raw-token', 'brand-new-pass');
+
+      const saved = userRepo.save.mock.calls[0][0];
+      expect(await bcrypt.compare('brand-new-pass', saved.passwordHash)).toBe(true);
+      expect(saved.passwordSetAt).toBeInstanceOf(Date);
+      expect(saved.tokenVersion).toBe(4);
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects an expired or already-used token', async () => {
+      passwordResetService.consumeToken.mockResolvedValue(null);
+
+      await expect(
+        service.resetPassword('stale-token', 'brand-new-pass'),
+      ).rejects.toThrow(BadRequestException);
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a password shorter than 8 characters before spending the token', async () => {
+      await expect(service.resetPassword('raw-token', 'short')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(passwordResetService.consumeToken).not.toHaveBeenCalled();
+    });
+
+    it('rejects a token belonging to a deactivated account', async () => {
+      passwordResetService.consumeToken.mockResolvedValue({
+        userId: 'user-uuid-1',
+        purpose: 'reset',
+      });
+      userRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.resetPassword('raw-token', 'brand-new-pass'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // changePassword()
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('changePassword()', () => {
+    const currentPassword = 'current-pass';
+    let passwordHash: string;
+
+    beforeEach(async () => {
+      passwordHash = await bcrypt.hash(currentPassword, 8);
+      jwtService.signAsync.mockResolvedValue('signed-token');
+    });
+
+    it('replaces the hash and hands back a fresh token pair', async () => {
+      userRepo.findOne.mockResolvedValue(makeUser({ passwordHash, tokenVersion: 1 }));
+      userRepo.save.mockImplementation(async (u) => u);
+
+      const result = await service.changePassword(
+        'user-uuid-1',
+        currentPassword,
+        'a-different-pass',
+      );
+
+      const saved = userRepo.save.mock.calls[0][0];
+      expect(await bcrypt.compare('a-different-pass', saved.passwordHash)).toBe(true);
+      expect(saved.tokenVersion).toBe(2);
+      expect(result.access_token).toBe('signed-token');
+      expect(result.refresh_token).toBe('signed-token');
+      expect(result.user).not.toHaveProperty('passwordHash');
+    });
+
+    it('throws UnauthorizedException when the current password is wrong', async () => {
+      userRepo.findOne.mockResolvedValue(makeUser({ passwordHash }));
+
+      await expect(
+        service.changePassword('user-uuid-1', 'not-my-password', 'a-different-pass'),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects reusing the same password', async () => {
+      await expect(
+        service.changePassword('user-uuid-1', currentPassword, currentPassword),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects a new password shorter than 8 characters', async () => {
+      await expect(
+        service.changePassword('user-uuid-1', currentPassword, 'short'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // sendPasswordLinkForUser()
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('sendPasswordLinkForUser()', () => {
+    const saccoAdminRequester = { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' };
+    const superAdminRequester = { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null };
+
+    it('re-sends an invite when the user has never set a password', async () => {
+      userRepo.findOne.mockResolvedValue(
+        makeUser({ saccoId: 'sacco-123', passwordSetAt: null }),
+      );
+
+      const result = await service.sendPasswordLinkForUser('user-uuid-1', saccoAdminRequester);
+
+      expect(passwordResetService.issueToken).toHaveBeenCalledWith('user-uuid-1', 'invite');
+      expect(result).toMatchObject({ success: true, purpose: 'invite' });
+    });
+
+    it('sends a reset link when the user already has a password', async () => {
+      userRepo.findOne.mockResolvedValue(makeUser({ saccoId: 'other-sacco' }));
+
+      const result = await service.sendPasswordLinkForUser('user-uuid-1', superAdminRequester);
+
+      expect(passwordResetService.issueToken).toHaveBeenCalledWith('user-uuid-1', 'reset');
+      expect(result).toMatchObject({ success: true, purpose: 'reset' });
+    });
+
+    it('blocks a sacco admin from touching a user in another sacco', async () => {
+      userRepo.findOne.mockResolvedValue(makeUser({ saccoId: 'other-sacco' }));
+
+      await expect(
+        service.sendPasswordLinkForUser('user-uuid-1', saccoAdminRequester),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(emailService.sendPasswordLink).not.toHaveBeenCalled();
+    });
+
+    it('refuses to send to a deactivated account', async () => {
+      userRepo.findOne.mockResolvedValue(
+        makeUser({ saccoId: 'sacco-123', isActive: false }),
+      );
+
+      await expect(
+        service.sendPasswordLinkForUser('user-uuid-1', saccoAdminRequester),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('surfaces a send failure to the admin instead of reporting success', async () => {
+      userRepo.findOne.mockResolvedValue(makeUser({ saccoId: 'sacco-123' }));
+      emailService.sendPasswordLink.mockRejectedValueOnce(new Error('Resend down'));
+
+      await expect(
+        service.sendPasswordLinkForUser('user-uuid-1', saccoAdminRequester),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // restoreUser()
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('restoreUser()', () => {
+    const saccoAdminRequester = { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' };
+    const superAdminRequester = { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null };
+
+    it('reactivates a removed user without touching their password', async () => {
+      const removed = makeUser({ id: 'target-1', saccoId: 'sacco-123', isActive: false });
+      userRepo.findOne.mockResolvedValueOnce(removed);
+      userRepo.save.mockImplementation(async (u) => u);
+
+      const result = await service.restoreUser('target-1', saccoAdminRequester);
+
+      expect(removed.isActive).toBe(true);
+      expect(removed.passwordHash).toBe('$2b$08$hashedpassword');
+      expect(emailService.sendPasswordLink).not.toHaveBeenCalled();
+      expect(result.message).toContain('existing password still works');
+    });
+
+    it('sends a fresh invite when the restored account never set a password', async () => {
+      const removed = makeUser({
+        id: 'target-1',
+        saccoId: 'sacco-123',
+        isActive: false,
+        passwordSetAt: null,
+      });
+      userRepo.findOne.mockResolvedValueOnce(removed);
+      userRepo.save.mockImplementation(async (u) => u);
+
+      const result = await service.restoreUser('target-1', saccoAdminRequester);
+
+      expect(passwordResetService.issueToken).toHaveBeenCalledWith('target-1', 'invite');
+      expect(result.inviteSent).toBe(true);
+    });
+
+    it('still restores the account when the invite email fails', async () => {
+      const removed = makeUser({ id: 'target-1', saccoId: 'sacco-123', isActive: false, passwordSetAt: null });
+      userRepo.findOne.mockResolvedValueOnce(removed);
+      userRepo.save.mockImplementation(async (u) => u);
+      emailService.sendPasswordLink.mockRejectedValueOnce(new Error('Resend down'));
+
+      const result = await service.restoreUser('target-1', saccoAdminRequester);
+
+      expect(removed.isActive).toBe(true);
+      expect(result.inviteSent).toBe(false);
+    });
+
+    it('rejects restoring an account that is already active', async () => {
+      userRepo.findOne.mockResolvedValueOnce(makeUser({ saccoId: 'sacco-123' }));
+
+      await expect(
+        service.restoreUser('target-1', saccoAdminRequester),
+      ).rejects.toThrow(BadRequestException);
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('blocks a sacco admin from restoring a user in another sacco', async () => {
+      userRepo.findOne.mockResolvedValueOnce(
+        makeUser({ saccoId: 'other-sacco', isActive: false }),
+      );
+
+      await expect(
+        service.restoreUser('target-1', saccoAdminRequester),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('lets a super admin restore a user in any sacco', async () => {
+      const removed = makeUser({ saccoId: 'other-sacco', isActive: false });
+      userRepo.findOne.mockResolvedValueOnce(removed);
+      userRepo.save.mockImplementation(async (u) => u);
+
+      await service.restoreUser('target-1', superAdminRequester);
+
+      expect(removed.isActive).toBe(true);
+    });
+
+    it('throws BadRequestException when the user does not exist', async () => {
+      userRepo.findOne.mockResolvedValueOnce(null);
+
+      await expect(
+        service.restoreUser('missing', superAdminRequester),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });

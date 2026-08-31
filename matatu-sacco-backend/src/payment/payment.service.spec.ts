@@ -22,6 +22,8 @@ const createMockRepo = (): MockRepo<Payment> => ({
   findOne: jest.fn(),
   update: jest.fn(),
   createQueryBuilder: jest.fn(),
+  // Raw-SQL escape hatch used by isForStage()
+  manager: { query: jest.fn().mockResolvedValue([]) } as any,
 });
 
 describe('PaymentService', () => {
@@ -670,6 +672,72 @@ describe('PaymentService', () => {
 
       expect(spy).toHaveBeenCalledWith(payment.id);
       expect(result.status).toBe(PaymentStatus.SUCCESS);
+    });
+  });
+
+  // ── Clerk stage scoping ─────────────────────────────────────────────────
+  describe('findBySacco — clerk stage scoping', () => {
+    const mockQb = () => {
+      const qb: any = {};
+      qb.andWhere = jest.fn().mockReturnValue(qb);
+      qb.orderBy = jest.fn().mockReturnValue(qb);
+      qb.getMany = jest.fn().mockResolvedValue([]);
+      return qb;
+    };
+
+    it('restricts results to bookings departing from the assigned stage', async () => {
+      const qb = mockQb();
+      (paymentRepository.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+
+      await service.findBySacco('sacco-1', { assignedStage: 'Kencom' });
+
+      const stageCall = qb.andWhere.mock.calls.find((c: any[]) =>
+        String(c[0]).includes('r.origin = :assignedStage'),
+      );
+      expect(stageCall).toBeDefined();
+      expect(stageCall[1]).toMatchObject({
+        assignedStage: 'Kencom',
+        bookingRef: PaymentReferenceType.BOOKING,
+      });
+    });
+
+    it('adds no stage filter for an admin', async () => {
+      const qb = mockQb();
+      (paymentRepository.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+
+      await service.findBySacco('sacco-1', {});
+
+      const stageCalls = qb.andWhere.mock.calls.filter((c: any[]) =>
+        String(c[0]).includes('r.origin'),
+      );
+      expect(stageCalls).toHaveLength(0);
+    });
+  });
+
+  describe('isForStage', () => {
+    it('is true when the payment\'s booking departs from that stage', async () => {
+      (paymentRepository.manager as any).query.mockResolvedValueOnce([{ '?column?': 1 }]);
+
+      const result = await service.isForStage(basePayment(), 'Kencom');
+
+      expect(result).toBe(true);
+      expect((paymentRepository.manager as any).query).toHaveBeenCalledWith(
+        expect.stringContaining('r.origin'),
+        ['booking-1', 'Kencom'],
+      );
+    });
+
+    it('is false when the booking belongs to another stage', async () => {
+      (paymentRepository.manager as any).query.mockResolvedValueOnce([]);
+
+      expect(await service.isForStage(basePayment(), 'Kencom')).toBe(false);
+    });
+
+    it('is false for a payment that is not tied to a booking at all', async () => {
+      const nonBooking = basePayment({ referenceType: 'SACCO_SUBSCRIPTION' as any });
+
+      expect(await service.isForStage(nonBooking, 'Kencom')).toBe(false);
+      expect((paymentRepository.manager as any).query).not.toHaveBeenCalled();
     });
   });
 });

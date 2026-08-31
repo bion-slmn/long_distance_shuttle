@@ -18,7 +18,9 @@ describe('BookingController', () => {
 
   const superAdmin = { id: 'user-1', role: UserRole.SUPER_ADMIN, saccoId: null };
   const saccoAdmin = { id: 'user-2', role: UserRole.SACCO_ADMIN, saccoId: SACCO_A };
-  const clerk = { id: 'user-3', role: UserRole.CLERK, saccoId: SACCO_A };
+  // Clerks are pinned to one stage — a stage is a route's origin.
+  const CLERK_STAGE = 'Kencom';
+  const clerk = { id: 'user-3', role: UserRole.CLERK, saccoId: SACCO_A, assignedStage: CLERK_STAGE };
 
   beforeEach(async () => {
     bookingService = {
@@ -27,6 +29,7 @@ describe('BookingController', () => {
       findAll: jest.fn().mockResolvedValue([]),
       getUniquePassengerStats: jest.fn().mockResolvedValue({ thisWeekUnique: 5 }),
       findOne: jest.fn(),
+      assertStageAccess: jest.fn(),
       update: jest.fn().mockResolvedValue({ id: 'booking-1', status: BookingStatus.BOARDED }),
       cancel: jest.fn().mockResolvedValue({ id: 'booking-1', status: BookingStatus.CANCELLED }),
       hasBookingForEmail: jest.fn(),
@@ -127,6 +130,43 @@ describe('BookingController', () => {
   });
 
   // ── GET /bookings — staff list, sacco-scoped ─────────────────────────────
+  describe('findAll — stage scoping', () => {
+    it('narrows a clerk to their assigned stage', () => {
+      controller.findAll(clerk);
+
+      expect(bookingService.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: SACCO_A, assignedStage: CLERK_STAGE }),
+      );
+    });
+
+    it('leaves a sacco admin unscoped by stage', () => {
+      controller.findAll(saccoAdmin);
+
+      expect(bookingService.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: SACCO_A, assignedStage: undefined }),
+      );
+    });
+
+    it('leaves a super admin unscoped by stage', () => {
+      controller.findAll(superAdmin, SACCO_B);
+
+      expect(bookingService.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: SACCO_B, assignedStage: undefined }),
+      );
+    });
+
+    it('applies the stage guard when a clerk opens a booking by id', async () => {
+      bookingService.findOne.mockResolvedValue({ id: 'booking-1', saccoId: SACCO_A });
+
+      await controller.findOne('booking-1', clerk);
+
+      expect(bookingService.assertStageAccess).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'booking-1' }),
+        CLERK_STAGE,
+      );
+    });
+  });
+
   describe('findAll — sacco scoping', () => {
     it('lets a super admin filter by any saccoId query param', () => {
       controller.findAll(superAdmin, SACCO_B, 'route-1');
@@ -365,6 +405,7 @@ describe('BookingController', () => {
         'booking-1',
         { status: BookingStatus.BOARDED },
         undefined,
+        undefined,
       );
     });
 
@@ -375,16 +416,18 @@ describe('BookingController', () => {
         'booking-1',
         { status: BookingStatus.BOARDED },
         SACCO_A,
+        undefined,
       );
     });
 
-    it('scopes the update to the caller\'s own saccoId for a clerk', () => {
+    it('scopes the update to the caller\'s sacco AND assigned stage for a clerk', () => {
       controller.update('booking-1', { status: BookingStatus.BOARDED } as any, clerk);
 
       expect(bookingService.update).toHaveBeenCalledWith(
         'booking-1',
         { status: BookingStatus.BOARDED },
         SACCO_A,
+        CLERK_STAGE,
       );
     });
   });
@@ -393,12 +436,12 @@ describe('BookingController', () => {
   describe('cancel — sacco scoping', () => {
     it('passes saccoId = undefined for a super admin', () => {
       controller.cancel('booking-1', superAdmin);
-      expect(bookingService.cancel).toHaveBeenCalledWith('booking-1', undefined);
+      expect(bookingService.cancel).toHaveBeenCalledWith('booking-1', undefined, undefined);
     });
 
     it('scopes cancellation to the caller\'s own saccoId for a sacco admin', () => {
       controller.cancel('booking-1', saccoAdmin);
-      expect(bookingService.cancel).toHaveBeenCalledWith('booking-1', SACCO_A);
+      expect(bookingService.cancel).toHaveBeenCalledWith('booking-1', SACCO_A, undefined);
     });
   });
 

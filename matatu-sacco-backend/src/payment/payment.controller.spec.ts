@@ -19,6 +19,7 @@ describe('PaymentController', () => {
       findBySacco: jest.fn(),
       findByReference: jest.fn(),
       findById: jest.fn(),
+      isForStage: jest.fn(),
     } as unknown as jest.Mocked<PaymentService>;
 
     mpesaService = {} as jest.Mocked<MpesaService>;
@@ -240,6 +241,67 @@ describe('PaymentController', () => {
       const user = { role: UserRole.CLERK, saccoId: 'sacco-6' };
 
       await expect(controller.findOne('pay-1', user)).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  // ── Clerk stage scoping ──────────────────────────────────────────────
+  describe('clerk stage scoping', () => {
+    const clerk = {
+      role: UserRole.CLERK,
+      saccoId: 'sacco-1',
+      assignedStage: 'Kencom',
+    };
+    const admin = { role: UserRole.SACCO_ADMIN, saccoId: 'sacco-1' };
+    const payment = { id: 'pay-1', saccoId: 'sacco-1' } as any;
+
+    it('passes the clerk\'s stage into the sacco listing', () => {
+      controller.findForSacco(undefined, {} as any, clerk);
+
+      expect(paymentService.findBySacco).toHaveBeenCalledWith(
+        'sacco-1',
+        expect.objectContaining({ assignedStage: 'Kencom' }),
+      );
+    });
+
+    it('leaves an admin listing unscoped by stage', () => {
+      controller.findForSacco(undefined, {} as any, admin);
+
+      expect(paymentService.findBySacco).toHaveBeenCalledWith(
+        'sacco-1',
+        expect.objectContaining({ assignedStage: undefined }),
+      );
+    });
+
+    it('lets a clerk open a payment from their own stage', async () => {
+      paymentService.findById.mockResolvedValue(payment);
+      paymentService.isForStage.mockResolvedValue(true);
+
+      await expect(controller.findOne('pay-1', clerk)).resolves.toBe(payment);
+      expect(paymentService.isForStage).toHaveBeenCalledWith(payment, 'Kencom');
+    });
+
+    it('blocks a clerk from opening a payment from another stage by id', async () => {
+      paymentService.findById.mockResolvedValue(payment);
+      paymentService.isForStage.mockResolvedValue(false);
+
+      await expect(controller.findOne('pay-1', clerk)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('blocks a clerk reaching another stage\'s payment through its booking', async () => {
+      paymentService.findByReference.mockResolvedValue(payment);
+      paymentService.isForStage.mockResolvedValue(false);
+
+      await expect(controller.findForBooking('booking-1', clerk)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('does not run the stage check at all for an admin', async () => {
+      paymentService.findById.mockResolvedValue(payment);
+
+      await controller.findOne('pay-1', admin);
+
+      expect(paymentService.isForStage).not.toHaveBeenCalled();
     });
   });
 });

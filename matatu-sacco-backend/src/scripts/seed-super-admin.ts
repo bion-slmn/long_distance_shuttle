@@ -37,6 +37,9 @@ async function seedSuperAdmin() {
         role: UserRole.SUPER_ADMIN,
         saccoId: null,
         tokenVersion: 0,
+        // Seeded with a known password, so it's already "set" — otherwise the
+        // dashboard would show the super admin as invite-pending forever.
+        passwordSetAt: new Date(),
     });
 
     await userRepository.save(admin);

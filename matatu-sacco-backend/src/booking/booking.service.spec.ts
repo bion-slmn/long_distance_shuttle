@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { BookingService } from './booking.service';
 import {
   Booking,
@@ -683,6 +683,54 @@ describe('BookingService — pre-booking (public portal)', () => {
       ).rejects.toThrow(NotFoundException);
 
       expect(saccoSettingsService.findOne).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── 7. Stage scoping for clerks ─────────────────────────────────────────
+  describe('findAll — clerk stage scoping', () => {
+    it('filters on the route origin when an assigned stage is given', async () => {
+      const qb = createMockQueryBuilder();
+      qb.getMany.mockResolvedValue([]);
+      bookingRepository.createQueryBuilder.mockReturnValue(qb);
+
+      await service.findAll({ saccoId: 'sacco-1', assignedStage: 'Kencom' });
+
+      expect(qb.andWhere).toHaveBeenCalledWith('route.origin = :assignedStage', {
+        assignedStage: 'Kencom',
+      });
+    });
+
+    it('adds no origin filter for an admin with no assigned stage', async () => {
+      const qb = createMockQueryBuilder();
+      qb.getMany.mockResolvedValue([]);
+      bookingRepository.createQueryBuilder.mockReturnValue(qb);
+
+      await service.findAll({ saccoId: 'sacco-1' });
+
+      const originCalls = qb.andWhere.mock.calls.filter((c: any[]) =>
+        String(c[0]).includes('route.origin'),
+      );
+      expect(originCalls).toHaveLength(0);
+    });
+  });
+
+  describe('assertStageAccess', () => {
+    it('allows a booking departing from the clerk\'s own stage', () => {
+      const booking: any = { id: 'b1', route: { origin: 'Kencom' } };
+
+      expect(() => service.assertStageAccess(booking, 'Kencom')).not.toThrow();
+    });
+
+    it('rejects a booking from another stage', () => {
+      const booking: any = { id: 'b1', route: { origin: 'Railways' } };
+
+      expect(() => service.assertStageAccess(booking, 'Kencom')).toThrow(ForbiddenException);
+    });
+
+    it('is a no-op when no stage is given (admins)', () => {
+      const booking: any = { id: 'b1', route: { origin: 'Railways' } };
+
+      expect(() => service.assertStageAccess(booking, undefined)).not.toThrow();
     });
   });
 });

@@ -4,7 +4,7 @@ import { Controller, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { useMutation } from "@tanstack/react-query"
-import { useLocation, useNavigate } from "react-router-dom"
+import { Link, useLocation, useNavigate } from "react-router-dom"
 import { Eye, EyeOff } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -99,7 +99,15 @@ export default function LoginForm() {
                             control={form.control}
                             render={({ field, fieldState }) => (
                                 <Field data-invalid={fieldState.invalid}>
-                                    <FieldLabel htmlFor="login-password">Password</FieldLabel>
+                                    <div className="flex items-center justify-between">
+                                        <FieldLabel htmlFor="login-password">Password</FieldLabel>
+                                        <Link
+                                            to="/forgot-password"
+                                            className="text-xs text-muted-foreground hover:text-primary transition-colors"
+                                        >
+                                            Forgot password?
+                                        </Link>
+                                    </div>
                                     <div className="relative">
                                         <Input
                                             {...field}

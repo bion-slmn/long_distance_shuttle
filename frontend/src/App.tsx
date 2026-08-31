@@ -15,6 +15,8 @@ import NotFound from './components/NotFound'
 const HomePage = lazy(() => import('./components/page'))
 const LoginPage = lazy(() => import('./pages/auth/login'))
 const RegisterPage = lazy(() => import('./pages/auth/RegisterPage'))
+const ForgotPasswordPage = lazy(() => import('./pages/auth/ForgotPasswordPage'))
+const SetPasswordPage = lazy(() => import('./pages/auth/SetPasswordPage'))
 const BookTicket = lazy(() => import('./features/booking/BookTicket'))
 
 // Dashboard pages
@@ -59,6 +61,9 @@ function App() {
             <Route path="/book" element={<BookTicket />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            {/* Target of the emailed invite / reset link — see PUBLIC_APP_URL on the backend */}
+            <Route path="/set-password" element={<SetPasswordPage />} />
             <Route path='/ticket' element={<MyTickets />} />
             <Route path="/verify/:bookingId" element={<VerifyReceipt />} />
           </Route>

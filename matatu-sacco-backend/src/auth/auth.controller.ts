@@ -14,12 +14,18 @@ import {
     Param,
     Delete,
 } from '@nestjs/common';
-import { AuthService, type UpdateUserDto, type CreateManagerDto, type CreateStaffDto } from './auth.service';
+import {
+    AuthService,
+    type UpdateUserDto,
+    type CreateManagerDto,
+    type CreateStaffDto,
+    type UserStatusFilter,
+} from './auth.service';
 import { UserRole } from './entities/user.entity';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { Roles } from '../decorators/roles.decorator';
 import { Public } from '../decorators/public.decorator';
-import type { Request, Response } from 'express';
+import type { CookieOptions, Request, Response } from 'express';
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
@@ -37,10 +43,39 @@ class LoginDto {
     declare password: string;
 }
 
+class ForgotPasswordDto {
+    declare email: string;
+}
+
+class ResetPasswordDto {
+    declare token: string;
+    declare password: string;
+}
+
+class ChangePasswordDto {
+    declare currentPassword: string;
+    declare newPassword: string;
+}
+
 const REFRESH_COOKIE_NAME = 'refresh_token';
 const REFRESH_COOKIE_PATH = '/auth/refresh';
 
 const allowCrossSiteCookies = process.env.ALLOW_CROSS_SITE_COOKIES === 'true';
+
+// One definition shared by login, refresh, logout and change-password. The
+// browser only overwrites or clears a cookie when the flags match the ones it
+// was set with, so these must not drift apart.
+//
+// `Secure` is why this is worth spelling out: a Secure cookie is dropped over
+// plain HTTP, so if NODE_ENV says "production" while the app is actually served
+// over http://localhost, login appears to work and then every refresh 401s
+// because the cookie was never stored. Keep NODE_ENV honest per environment.
+const refreshCookieOptions: CookieOptions = {
+    httpOnly: true,
+    secure: allowCrossSiteCookies || process.env.NODE_ENV === 'production',
+    sameSite: allowCrossSiteCookies ? 'none' : 'lax',
+    path: REFRESH_COOKIE_PATH,
+};
 
 // ─── Controller ──────────────────────────────────────────────────────────────
 
@@ -71,12 +106,7 @@ export class AuthController {
             body.password,
         );
 
-        res.cookie(REFRESH_COOKIE_NAME, refresh_token, {
-            httpOnly: true,
-            secure: allowCrossSiteCookies || process.env.NODE_ENV === 'production',
-            sameSite: allowCrossSiteCookies ? 'none' : 'lax',
-            path: REFRESH_COOKIE_PATH,
-        });
+        res.cookie(REFRESH_COOKIE_NAME, refresh_token, refreshCookieOptions);
 
         return { access_token, user };
     }
@@ -100,12 +130,7 @@ export class AuthController {
 
         const results = await this.authService.refresh(rawRefreshToken);
 
-        res.cookie(REFRESH_COOKIE_NAME, results.refresh_token, {
-            httpOnly: true,
-            secure: allowCrossSiteCookies || process.env.NODE_ENV === 'production',
-            sameSite: allowCrossSiteCookies ? 'none' : 'lax',
-            path: REFRESH_COOKIE_PATH,
-        });
+        res.cookie(REFRESH_COOKIE_NAME, results.refresh_token, refreshCookieOptions);
 
         return results;
     }
@@ -121,14 +146,61 @@ export class AuthController {
         @Res({ passthrough: true }) res: Response,
     ) {
         const result = await this.authService.logout(req.user.sub);
-        res.clearCookie(REFRESH_COOKIE_NAME, {
-            httpOnly: true,
-            secure: allowCrossSiteCookies || process.env.NODE_ENV === 'production',
-            sameSite: allowCrossSiteCookies ? 'none' : 'lax',
-            path: REFRESH_COOKIE_PATH,
-        });
+        res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions);
 
         return result;
+    }
+
+    // ── Forgot password ───────────────────────────────────────────────────────
+    // POST /auth/forgot-password — always 200, even for unknown addresses, so the
+    // endpoint can't be used to probe which emails have accounts.
+    @Post('forgot-password')
+    @Public()
+    @HttpCode(HttpStatus.OK)
+    forgotPassword(@Body() body: ForgotPasswordDto) {
+        return this.authService.forgotPassword(body.email);
+    }
+
+    // ── Verify a set-password link ────────────────────────────────────────────
+    // GET /auth/reset-password?token=… — read-only check so the frontend can show
+    // an "expired link" screen instead of a form that's doomed to fail.
+    @Get('reset-password')
+    @Public()
+    @HttpCode(HttpStatus.OK)
+    verifyResetToken(@Query('token') token: string) {
+        return this.authService.verifyPasswordToken(token);
+    }
+
+    // ── Set / reset password via emailed link ────────────────────────────────
+    // POST /auth/reset-password — spends the token and invalidates all sessions.
+    @Post('reset-password')
+    @Public()
+    @HttpCode(HttpStatus.OK)
+    resetPassword(@Body() body: ResetPasswordDto) {
+        return this.authService.resetPassword(body.token, body.password);
+    }
+
+    // ── Change password while signed in ───────────────────────────────────────
+    // POST /auth/change-password — bumping tokenVersion kills the old refresh
+    // token, so we hand back a fresh pair and re-set the cookie in place.
+    @Post('change-password')
+    @UseGuards(JwtAuthGuard)
+    @HttpCode(HttpStatus.OK)
+    async changePassword(
+        @Body() body: ChangePasswordDto,
+        @Req() req: any,
+        @Res({ passthrough: true }) res: Response,
+    ) {
+        const { access_token, refresh_token, user } =
+            await this.authService.changePassword(
+                req.user.sub,
+                body.currentPassword,
+                body.newPassword,
+            );
+
+        res.cookie(REFRESH_COOKIE_NAME, refresh_token, refreshCookieOptions);
+
+        return { access_token, user };
     }
 
     // ── Staff creation ───────────────────────────────────────────────────────
@@ -148,6 +220,7 @@ export class AuthController {
         @Query('page') page: string | undefined,
         @Query('limit') limit: string | undefined,
         @Query('search') search: string | undefined,
+        @Query('status') status: UserStatusFilter | undefined,
         @Req() req: any,
     ) {
         // Sacco admins are locked to their own sacco regardless of what's
@@ -160,7 +233,8 @@ export class AuthController {
             saccoId: scopedSaccoId,
             page: page ? Number(page) : undefined,
             limit: limit ? Number(limit) : undefined,
-            search: search
+            search: search,
+            status,
         });
     }
 
@@ -185,6 +259,26 @@ export class AuthController {
         @Req() req: any,
     ) {
         return this.authService.updateUser(id, dto, req.user);
+    }
+
+    // ── Resend a set-password / reset link ───────────────────────────────────
+    // POST /auth/users/:id/password-link — for "the clerk never got the email".
+    // Admins can trigger the email but never see or choose the password.
+    @Post('users/:id/password-link')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+    @HttpCode(HttpStatus.OK)
+    sendPasswordLink(@Param('id') id: string, @Req() req: any) {
+        return this.authService.sendPasswordLinkForUser(id, req.user);
+    }
+
+    // ── Restore a removed user ───────────────────────────────────────────────
+    // POST /auth/users/:id/restore — undoes a soft delete. Same scoping as the
+    // delete itself: sacco admins within their own sacco, super admins anywhere.
+    @Post('users/:id/restore')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+    @HttpCode(HttpStatus.OK)
+    restoreUser(@Param('id') id: string, @Req() req: any) {
+        return this.authService.restoreUser(id, req.user);
     }
 
     // ── Delete user ───────────────────────────────────────────────────────────

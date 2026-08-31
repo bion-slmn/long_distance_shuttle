@@ -12,11 +12,16 @@ import { useNavigate } from "react-router-dom"
 
 type AuthUser = AuthResponse["user"]
 
+// Everything setSession actually needs. The refresh token never reaches JS —
+// it's an httpOnly cookie — so responses that omit it (change-password) are
+// perfectly good sessions too.
+type SessionData = { access_token: string; user: AuthUser }
+
 interface AuthContextValue {
     user: AuthUser | null
     isAuthenticated: boolean
     isLoading: boolean
-    setSession: (data: AuthResponse) => void
+    setSession: (data: SessionData) => void
     logout: () => void
     assignedStage: string | null
 
@@ -48,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const assignedStage = user?.assignedStage ?? null
     // Called by LoginForm/RegisterForm directly on success — no need to
     // refetch, we already have the data from the login/register response.
-    function setSession(data: AuthResponse) {
+    function setSession(data: SessionData) {
         setAccessToken(data.access_token)
         queryClient.setQueryData(["me"], data.user)
         // Clear all other leftover cache from a previous session,

@@ -44,6 +44,10 @@ import {
     Plus,
     X,
     Loader2,
+    MailWarning,
+    Send,
+    Undo2,
+    Archive,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
@@ -51,6 +55,8 @@ import {
     getUsersRequest,
     updateUserRequest,
     deleteUserRequest,
+    restoreUserRequest,
+    sendPasswordLinkRequest,
     type UpdateUserPayload,
 } from "@/api/authApi"
 import AdminCreateUser from "@/features/auth/AdmincreateUser"
@@ -111,6 +117,33 @@ function formatDate(iso: string) {
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
+// Shown until the user follows their invite link and picks a password. Until
+// then the account exists but nobody can sign into it.
+function PendingInviteBadge() {
+    return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
+            <MailWarning className="size-2.5" />
+            Invite pending
+        </span>
+    )
+}
+
+// One place for the resend, used by both the row and the details dialog.
+function useSendPasswordLink() {
+    const queryClient = useQueryClient()
+
+    return useMutation({
+        mutationFn: (id: string) => sendPasswordLinkRequest(id),
+        onSuccess: (data) => {
+            toast.success(data.message)
+            queryClient.invalidateQueries({ queryKey: ["users", "table"] })
+        },
+        onError: (err: any) => {
+            toast.error(err?.response?.data?.message ?? "Failed to send the link")
+        },
+    })
+}
+
 function RoleBadge({ role }: { role: string }) {
     const meta = ROLE_META[role]
     if (!meta) return <span className="text-xs text-muted-foreground">{role}</span>
@@ -139,6 +172,8 @@ export function SaccoUsersTable({ saccoId }: SaccoUsersTableProps) {
     const [deletingUser, setDeletingUser] = useState<User | null>(null)
     const [createUserOpen, setCreateUserOpen] = useState(false)
     const [isMobile, setIsMobile] = useState(false)
+    // Removed users are soft-deleted, so they're hidden until you ask for them.
+    const [showRemoved, setShowRemoved] = useState(false)
 
     const limit = 10
     const queryClient = useQueryClient()
@@ -158,21 +193,40 @@ export function SaccoUsersTable({ saccoId }: SaccoUsersTableProps) {
         isError,
         refetch,
     } = useQuery({
-        queryKey: ["users", "table", saccoId, page, limit, search],
-        queryFn: () => getUsersRequest({ saccoId, page, limit, search }),
+        queryKey: ["users", "table", saccoId, page, limit, search, showRemoved],
+        queryFn: () =>
+            getUsersRequest({
+                saccoId,
+                page,
+                limit,
+                search,
+                status: showRemoved ? "removed" : "active",
+            }),
         placeholderData: keepPreviousData,
     })
 
     const deleteMutation = useMutation({
         mutationFn: (id: string) => deleteUserRequest(id),
-        onSuccess: () => {
-            toast.success("User removed")
+        onSuccess: (data) => {
+            toast.success(data.message ?? "User removed")
             queryClient.invalidateQueries({ queryKey: ["users", "table"] })
             setDeletingUser(null)
             setSelectedUser(null)
         },
         onError: (err: any) => {
             toast.error(err?.response?.data?.message ?? "Failed to remove user")
+        },
+    })
+
+    const restoreMutation = useMutation({
+        mutationFn: (id: string) => restoreUserRequest(id),
+        onSuccess: (data) => {
+            toast.success(data.message)
+            queryClient.invalidateQueries({ queryKey: ["users", "table"] })
+            setSelectedUser(null)
+        },
+        onError: (err: any) => {
+            toast.error(err?.response?.data?.message ?? "Failed to restore user")
         },
     })
 
@@ -196,6 +250,22 @@ export function SaccoUsersTable({ saccoId }: SaccoUsersTableProps) {
 
     // Empty
     if (!users.length) {
+        // The removed list has its own empty state — offering "Add user" there
+        // would answer a question nobody asked.
+        if (showRemoved) {
+            return (
+                <EmptyState
+                    title="Nothing in here"
+                    description="No removed users to restore."
+                    action={
+                        <Button size="sm" variant="outline" onClick={() => setShowRemoved(false)}>
+                            Back to active users
+                        </Button>
+                    }
+                />
+            )
+        }
+
         return (
             <EmptyState
                 title="No users found"
@@ -228,7 +298,14 @@ export function SaccoUsersTable({ saccoId }: SaccoUsersTableProps) {
                             {saccoId ? saccoName ?? "Sacco" : "All users"}
                         </h2>
                         <p className="text-xs text-muted-foreground">
-                            {meta?.total ?? 0} {meta?.total === 1 ? "user" : "users"}
+                            {meta?.total ?? 0}{" "}
+                            {showRemoved
+                                ? meta?.total === 1
+                                    ? "removed user"
+                                    : "removed users"
+                                : meta?.total === 1
+                                    ? "user"
+                                    : "users"}
                         </p>
                     </div>
 
@@ -257,6 +334,25 @@ export function SaccoUsersTable({ saccoId }: SaccoUsersTableProps) {
                                 </button>
                             )}
                         </div>
+
+                        {/* Removed users are hidden by default — this is how you find
+                            someone to restore */}
+                        <RoleGuard allowed={ALL_ADMINS}>
+                            <Button
+                                size="sm"
+                                variant={showRemoved ? "secondary" : "outline"}
+                                className="h-8 gap-1.5 text-xs"
+                                onClick={() => {
+                                    setShowRemoved((v) => !v)
+                                    setPage(1)
+                                }}
+                            >
+                                <Archive className="size-3.5" />
+                                <span className="hidden sm:inline">
+                                    {showRemoved ? "Showing removed" : "Removed"}
+                                </span>
+                            </Button>
+                        </RoleGuard>
 
                         {/* Add user – only for admins */}
                         <RoleGuard allowed={ALL_ADMINS}>
@@ -314,6 +410,7 @@ export function SaccoUsersTable({ saccoId }: SaccoUsersTableProps) {
                                         onSelect={() => setSelectedUser(user)}
                                         onEdit={() => setEditingUser(user)}
                                         onDelete={() => setDeletingUser(user!)}
+                                        onRestore={() => restoreMutation.mutate(user.id)}
                                     />
                                 ))}
                             </TableBody>
@@ -371,6 +468,8 @@ export function SaccoUsersTable({ saccoId }: SaccoUsersTableProps) {
                         setSelectedUser(null)
                     }
                 }}
+                onRestore={() => selectedUser && restoreMutation.mutate(selectedUser.id)}
+                restoring={restoreMutation.isPending}
             />
 
             <EditUserDialog
@@ -411,6 +510,7 @@ interface DesktopUserRowProps {
     onSelect: () => void
     onEdit: () => void
     onDelete: () => void
+    onRestore: () => void
 }
 
 function DesktopUserRow({
@@ -419,6 +519,7 @@ function DesktopUserRow({
     onSelect,
     onEdit,
     onDelete,
+    onRestore,
 }: DesktopUserRowProps) {
     return (
         <TableRow
@@ -433,7 +534,10 @@ function DesktopUserRow({
                         </AvatarFallback>
                     </Avatar>
                     <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">{user.fullName}</p>
+                        <div className="flex items-center gap-1.5">
+                            <p className="truncate text-sm font-medium">{user.fullName}</p>
+                            {!user.passwordSetAt && <PendingInviteBadge />}
+                        </div>
                         <p className="truncate text-xs text-muted-foreground">
                             {user.email || user.phoneNumber || "—"}
                         </p>
@@ -455,28 +559,45 @@ function DesktopUserRow({
             <RoleGuard allowed={ALL_ADMINS}>
                 <TableCell onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-7 text-muted-foreground hover:text-foreground"
-                            onClick={(e) => {
-                                e.stopPropagation()
-                                onEdit()
-                            }}
-                        >
-                            <Pencil className="size-3.5" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-7 text-muted-foreground hover:text-destructive"
-                            onClick={(e) => {
-                                e.stopPropagation()
-                                onDelete()
-                            }}
-                        >
-                            <Trash2 className="size-3.5" />
-                        </Button>
+                        {user.isActive === false ? (
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    onRestore()
+                                }}
+                            >
+                                <Undo2 className="size-3.5" />
+                                Restore
+                            </Button>
+                        ) : (
+                            <>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="size-7 text-muted-foreground hover:text-foreground"
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        onEdit()
+                                    }}
+                                >
+                                    <Pencil className="size-3.5" />
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="size-7 text-muted-foreground hover:text-destructive"
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        onDelete()
+                                    }}
+                                >
+                                    <Trash2 className="size-3.5" />
+                                </Button>
+                            </>
+                        )}
                     </div>
                 </TableCell>
             </RoleGuard>
@@ -505,7 +626,10 @@ function MobileUserRow({ user, onSelect }: MobileUserRowProps) {
                 </Avatar>
                 <div className="min-w-0">
                     <p className="truncate text-sm font-medium">{user.fullName}</p>
-                    <RoleBadge role={user.role} />
+                    <div className="flex items-center gap-1.5">
+                        <RoleBadge role={user.role} />
+                        {!user.passwordSetAt && <PendingInviteBadge />}
+                    </div>
                 </div>
             </div>
             <ChevronRight className="size-4 shrink-0 text-muted-foreground/40" />
@@ -522,6 +646,8 @@ function UserDetailsDialog({
     showSacco,
     onEdit,
     onDelete,
+    onRestore,
+    restoring,
 }: {
     user: User | null
     open: boolean
@@ -529,9 +655,15 @@ function UserDetailsDialog({
     showSacco: boolean
     onEdit: () => void
     onDelete: () => void
+    onRestore: () => void
+    restoring: boolean
 }) {
     const saccoName = useSaccoName(user?.saccoId ?? undefined)
+    const sendLink = useSendPasswordLink()
     if (!user) return null
+
+    const isPending = !user.passwordSetAt
+    const isRemoved = user.isActive === false
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -547,7 +679,16 @@ function UserDetailsDialog({
                             <DialogTitle className="truncate text-base">
                                 {user.fullName}
                             </DialogTitle>
-                            <RoleBadge role={user.role} />
+                            <div className="flex items-center gap-1.5">
+                                <RoleBadge role={user.role} />
+                                {isPending && <PendingInviteBadge />}
+                                {isRemoved && (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                        <Archive className="size-2.5" />
+                                        Removed
+                                    </span>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </DialogHeader>
@@ -604,7 +745,7 @@ function UserDetailsDialog({
                     </div>
                 </div>
 
-                <DialogFooter className="gap-2 sm:gap-2">
+                <DialogFooter className="flex-wrap gap-2 sm:gap-2">
                     {/* Admin gets Edit/Remove, Clerk gets Close */}
                     <RoleGuard
                         allowed={ALL_ADMINS}
@@ -614,6 +755,41 @@ function UserDetailsDialog({
                             </Button>
                         }
                     >
+                        {isRemoved ? (
+                            <Button
+                                size="sm"
+                                className="w-full"
+                                disabled={restoring}
+                                onClick={onRestore}
+                            >
+                                {restoring ? (
+                                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                                ) : (
+                                    <Undo2 className="mr-1.5 size-3.5" />
+                                )}
+                                Restore access
+                            </Button>
+                        ) : (
+                            <>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="flex-1"
+                            disabled={!user.email || sendLink.isPending}
+                            onClick={() => sendLink.mutate(user.id)}
+                            title={
+                                user.email
+                                    ? undefined
+                                    : "This user has no email address on file"
+                            }
+                        >
+                            {sendLink.isPending ? (
+                                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                            ) : (
+                                <Send className="mr-1.5 size-3.5" />
+                            )}
+                            {isPending ? "Resend invite" : "Reset password"}
+                        </Button>
                         <Button variant="outline" size="sm" className="flex-1" onClick={onEdit}>
                             <Pencil className="mr-1.5 size-3.5" />
                             Edit
@@ -627,6 +803,8 @@ function UserDetailsDialog({
                             <Trash2 className="mr-1.5 size-3.5" />
                             Remove
                         </Button>
+                            </>
+                        )}
                     </RoleGuard>
                 </DialogFooter>
             </DialogContent>
@@ -747,7 +925,7 @@ function EditUserDialog({
                     </div>
                 </div>
 
-                <DialogFooter className="gap-2 sm:gap-2">
+                <DialogFooter className="flex-wrap gap-2 sm:gap-2">
                     <Button variant="outline" size="sm" onClick={onOpenChange}>
                         Cancel
                     </Button>
@@ -778,17 +956,24 @@ function DeleteDialog({
     onConfirm: () => void
     onCancel: () => void
 }) {
+    // A never-activated account is erased rather than deactivated — say so,
+    // because the two outcomes are genuinely different.
+    const isInvitePending = !!user && !user.passwordSetAt
+
     return (
         <Dialog open={!!user} onOpenChange={onCancel}>
             <DialogContent className="sm:max-w-sm">
                 <DialogHeader>
-                    <DialogTitle className="text-base">Remove user?</DialogTitle>
+                    <DialogTitle className="text-base">
+                        {isInvitePending ? "Cancel this invite?" : "Remove user?"}
+                    </DialogTitle>
                     <DialogDescription>
-                        {user?.fullName} will lose access immediately. This cannot be
-                        undone.
+                        {isInvitePending
+                            ? `${user?.fullName} never set a password, so the account will be deleted outright and their invite link will stop working. The email address becomes free to use again.`
+                            : `${user?.fullName} will lose access immediately. Their trips and bookings are kept. This cannot be undone.`}
                     </DialogDescription>
                 </DialogHeader>
-                <DialogFooter className="gap-2 sm:gap-2">
+                <DialogFooter className="flex-wrap gap-2 sm:gap-2">
                     <Button variant="outline" size="sm" onClick={onCancel}>
                         Cancel
                     </Button>
@@ -801,7 +986,7 @@ function DeleteDialog({
                         {isPending && (
                             <Loader2 className="mr-1.5 size-3.5 animate-spin" />
                         )}
-                        Remove
+                        {isInvitePending ? "Cancel invite" : "Remove"}
                     </Button>
                 </DialogFooter>
             </DialogContent>

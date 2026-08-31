@@ -69,6 +69,12 @@ export class User {
     @Column({ type: 'int', default: 0 })
     declare tokenVersion: number;
 
+    // Null until the user has chosen their own password. Admin-created accounts
+    // start out null (they're created with an unusable hash and an emailed
+    // invite link), which is what lets the UI show "invite pending".
+    @Column({ type: 'timestamptz', nullable: true })
+    declare passwordSetAt: Date | null;
+
     @BeforeInsert()
     generateId() {
         this.id = uuidv7();

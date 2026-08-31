@@ -18,21 +18,27 @@ export interface LoginPayload {
     password: string;
 }
 
+// Admin-created accounts carry no password: the backend emails the new user a
+// link and they choose their own.
 export interface CreateStaffPayload {
     fullName: string;
-    email?: string;
+    email: string;
     phoneNumber?: string;
-    password: string;
     role: UserRole;
     saccoId?: string;
+    assignedStage?: string;
 }
 
 export interface CreateManagerPayload {
     fullName: string;
-    email?: string;
+    email: string;
     phoneNumber?: string;
-    password: string;
     saccoId?: string;
+}
+
+export interface CreatedUserResponse extends User {
+    /** False when the account was created but the invite email failed to go out. */
+    inviteSent: boolean;
 }
 
 export interface User {
@@ -45,6 +51,8 @@ export interface User {
     createdAt?: string;
     assignedStage?: string | null
     isActive: boolean
+    /** Null means the user was invited but hasn't set a password yet. */
+    passwordSetAt?: string | null
 }
 
 export interface AuthResponse {
@@ -53,11 +61,15 @@ export interface AuthResponse {
     user: User;
 }
 
+export type UserStatusFilter = 'active' | 'removed' | 'all';
+
 export interface GetUsersParams {
     saccoId?: string;
     page?: number;
     limit?: number;
     search?: string
+    /** Defaults to 'active' server-side — removed users are hidden unless asked for. */
+    status?: UserStatusFilter
 }
 
 export interface PaginatedUsersResponse {
@@ -85,6 +97,15 @@ export const updateUserRequest = async (id: string, payload: UpdateUserPayload):
 
 export const deleteUserRequest = async (id: string): Promise<{ success: boolean; message: string }> => {
     const { data } = await api.delete<{ success: boolean; message: string }>(`/auth/users/${id}`);
+    return data;
+};
+
+// Undoes a soft delete. Accounts that never set a password are erased on
+// delete, so they never reach this — only real users can be restored.
+export const restoreUserRequest = async (id: string) => {
+    const { data } = await api.post<User & { inviteSent: boolean; message: string }>(
+        `/auth/users/${id}/restore`,
+    );
     return data;
 };
 
@@ -119,12 +140,69 @@ export async function logoutRequest() {
 
 // admin-only — creates drivers/clerks (requires auth token attached via interceptor)
 export const createStaffRequest = async (payload: CreateStaffPayload) => {
-    const { data } = await api.post('/auth/staff', payload);
+    const { data } = await api.post<CreatedUserResponse>('/auth/staff', payload);
     return data;
 };
 
 // super-admin-only — creates SACCO managers
 export const createManagerRequest = async (payload: CreateManagerPayload) => {
-    const { data } = await api.post('/auth/managers', payload);
+    const { data } = await api.post<CreatedUserResponse>('/auth/managers', payload);
+    return data;
+};
+
+// ─── Password flows ─────────────────────────────────────────────────────────
+
+export interface PasswordLinkCheck {
+    valid: boolean;
+    purpose?: 'invite' | 'reset';
+    fullName?: string;
+    email?: string | null;
+}
+
+// Public. Always resolves with the same generic message, whether or not the
+// address has an account — don't branch on it.
+export const forgotPasswordRequest = async (email: string) => {
+    const { data } = await api.post<{ success: boolean; message: string }>(
+        '/auth/forgot-password',
+        { email },
+    );
+    return data;
+};
+
+export const verifyPasswordLinkRequest = async (token: string) => {
+    const { data } = await api.get<PasswordLinkCheck>('/auth/reset-password', {
+        params: { token },
+    });
+    return data;
+};
+
+export const resetPasswordRequest = async (token: string, password: string) => {
+    const { data } = await api.post<{ success: boolean; message: string }>(
+        '/auth/reset-password',
+        { token, password },
+    );
+    return data;
+};
+
+// Authenticated. Returns a fresh access token — the old session is invalidated
+// server-side, so the caller must hand this to setSession.
+export const changePasswordRequest = async (
+    currentPassword: string,
+    newPassword: string,
+) => {
+    const { data } = await api.post<{ access_token: string; user: User }>(
+        '/auth/change-password',
+        { currentPassword, newPassword },
+    );
+    return data;
+};
+
+// admin-only — re-sends the invite (or a reset link) to a user
+export const sendPasswordLinkRequest = async (id: string) => {
+    const { data } = await api.post<{
+        success: boolean;
+        purpose: 'invite' | 'reset';
+        message: string;
+    }>(`/auth/users/${id}/password-link`);
     return data;
 };

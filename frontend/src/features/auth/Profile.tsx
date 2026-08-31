@@ -1,6 +1,10 @@
 // src/features/auth/Profile.tsx
 import { useState } from "react"
+import { useMutation } from "@tanstack/react-query"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
@@ -22,9 +26,11 @@ import {
     ClipboardList,
     Car,
     UserRound,
+    KeyRound,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "./AuthContext"
+import { changePasswordRequest } from "@/api/authApi"
 import { useSaccoName } from "@/hooks/useSaccoName"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -141,6 +147,7 @@ function ProfileSkeleton() {
 export function Profile() {
     const { user, isLoading, logout } = useAuth()
     const [confirmOpen, setConfirmOpen] = useState(false)
+    const [passwordOpen, setPasswordOpen] = useState(false)
     const [signingOut, setSigningOut] = useState(false)
     // Called unconditionally (rules of hooks) — safe no-op via `enabled` when
     // there's no user yet or no saccoId.
@@ -239,7 +246,15 @@ export function Profile() {
                     </div>
 
                     {/* Actions */}
-                    <div className="mt-6 flex justify-end border-t pt-4">
+                    <div className="mt-6 flex justify-end gap-2 border-t pt-4">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setPasswordOpen(true)}
+                        >
+                            <KeyRound className="mr-1.5 size-3.5" />
+                            Change password
+                        </Button>
                         <Button
                             variant="outline"
                             size="sm"
@@ -252,6 +267,8 @@ export function Profile() {
                     </div>
                 </div>
             </div>
+
+            <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
 
             <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
                 <DialogContent className="sm:max-w-sm">
@@ -284,5 +301,136 @@ export function Profile() {
                 </DialogContent>
             </Dialog>
         </>
+    )
+}
+
+// ─── Change password ─────────────────────────────────────────────────────────
+// Changing a password bumps tokenVersion server-side, which kills every
+// outstanding session. The response carries a fresh access token, so we hand it
+// straight to setSession rather than bouncing the user back to the login screen.
+
+function ChangePasswordDialog({
+    open,
+    onOpenChange,
+}: {
+    open: boolean
+    onOpenChange: (open: boolean) => void
+}) {
+    const { setSession } = useAuth()
+    const [currentPassword, setCurrentPassword] = useState("")
+    const [newPassword, setNewPassword] = useState("")
+    const [confirmPassword, setConfirmPassword] = useState("")
+    const [localError, setLocalError] = useState<string | null>(null)
+
+    function reset() {
+        setCurrentPassword("")
+        setNewPassword("")
+        setConfirmPassword("")
+        setLocalError(null)
+    }
+
+    const mutation = useMutation({
+        mutationFn: () => changePasswordRequest(currentPassword, newPassword),
+        onSuccess: (data) => {
+            setSession(data)
+            toast.success("Password updated")
+            reset()
+            onOpenChange(false)
+        },
+        onError: (err: any) => {
+            setLocalError(err?.response?.data?.message ?? "Could not update your password.")
+        },
+    })
+
+    function handleSubmit(e: React.FormEvent) {
+        e.preventDefault()
+        setLocalError(null)
+
+        if (newPassword.length < 8) {
+            setLocalError("Your new password must be at least 8 characters.")
+            return
+        }
+        if (newPassword !== confirmPassword) {
+            setLocalError("The two new passwords don't match.")
+            return
+        }
+
+        mutation.mutate()
+    }
+
+    return (
+        <Dialog
+            open={open}
+            onOpenChange={(next) => {
+                if (!next) reset()
+                onOpenChange(next)
+            }}
+        >
+            <DialogContent className="sm:max-w-sm">
+                <form onSubmit={handleSubmit}>
+                    <DialogHeader>
+                        <DialogTitle className="text-base">Change password</DialogTitle>
+                        <DialogDescription>
+                            You'll stay signed in here, but any other device will be signed out.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-4 py-4">
+                        <div className="space-y-1.5">
+                            <Label htmlFor="current-password">Current password</Label>
+                            <Input
+                                id="current-password"
+                                type="password"
+                                autoComplete="current-password"
+                                value={currentPassword}
+                                onChange={(e) => setCurrentPassword(e.target.value)}
+                            />
+                        </div>
+                        <div className="space-y-1.5">
+                            <Label htmlFor="profile-new-password">New password</Label>
+                            <Input
+                                id="profile-new-password"
+                                type="password"
+                                autoComplete="new-password"
+                                placeholder="At least 8 characters"
+                                value={newPassword}
+                                onChange={(e) => setNewPassword(e.target.value)}
+                            />
+                        </div>
+                        <div className="space-y-1.5">
+                            <Label htmlFor="profile-confirm-password">Confirm new password</Label>
+                            <Input
+                                id="profile-confirm-password"
+                                type="password"
+                                autoComplete="new-password"
+                                value={confirmPassword}
+                                onChange={(e) => setConfirmPassword(e.target.value)}
+                            />
+                        </div>
+
+                        {localError && (
+                            <p className="text-sm text-destructive">{localError}</p>
+                        )}
+                    </div>
+
+                    <DialogFooter className="gap-2 sm:gap-2">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => onOpenChange(false)}
+                        >
+                            Cancel
+                        </Button>
+                        <Button type="submit" size="sm" disabled={mutation.isPending}>
+                            {mutation.isPending && (
+                                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                            )}
+                            Update password
+                        </Button>
+                    </DialogFooter>
+                </form>
+            </DialogContent>
+        </Dialog>
     )
 }

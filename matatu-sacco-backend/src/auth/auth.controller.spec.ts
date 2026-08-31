@@ -47,6 +47,12 @@ const mockAuthService = () => ({
   createManager: jest.fn(),
   updateUser: jest.fn(),
   deleteUser: jest.fn(),
+  restoreUser: jest.fn(),
+  forgotPassword: jest.fn(),
+  verifyPasswordToken: jest.fn(),
+  resetPassword: jest.fn(),
+  changePassword: jest.fn(),
+  sendPasswordLinkForUser: jest.fn(),
 });
 
 const mockResponse = () => {
@@ -354,8 +360,7 @@ describe('AuthController', () => {
       fullName: 'Clerk One',
       email: 'clerk@example.com',
       phoneNumber: '0711111111',
-      password: 'secret123',
-      role: UserRole.CLERK,
+      role: UserRole.CLERK as UserRole.CLERK,
       saccoId: 'sacco-123',
       assignedStage: 'stage-a',
     };
@@ -399,7 +404,7 @@ describe('AuthController', () => {
       const req: any = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' } };
       authService.getUsers.mockResolvedValue(paginatedResult);
 
-      await controller.getUsers('someone-elses-sacco', undefined, undefined, undefined, req);
+      await controller.getUsers('someone-elses-sacco', undefined, undefined, undefined, undefined, req);
 
       expect(authService.getUsers).toHaveBeenCalledWith(
         expect.objectContaining({ saccoId: 'sacco-123' })
@@ -410,7 +415,7 @@ describe('AuthController', () => {
       const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
       authService.getUsers.mockResolvedValue(paginatedResult);
 
-      await controller.getUsers('sacco-999', undefined, undefined, undefined, req);
+      await controller.getUsers('sacco-999', undefined, undefined, undefined, undefined, req);
 
       expect(authService.getUsers).toHaveBeenCalledWith(
         expect.objectContaining({ saccoId: 'sacco-999' })
@@ -421,7 +426,7 @@ describe('AuthController', () => {
       const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
       authService.getUsers.mockResolvedValue(paginatedResult);
 
-      await controller.getUsers(undefined, undefined, undefined, undefined, req);
+      await controller.getUsers(undefined, undefined, undefined, undefined, undefined, req);
 
       expect(authService.getUsers).toHaveBeenCalledWith(
         expect.objectContaining({ saccoId: undefined })
@@ -432,7 +437,7 @@ describe('AuthController', () => {
       const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
       authService.getUsers.mockResolvedValue(paginatedResult);
 
-      await controller.getUsers(undefined, '3', '10', undefined, req);
+      await controller.getUsers(undefined, '3', '10', undefined, undefined, req);
 
       expect(authService.getUsers).toHaveBeenCalledWith(
         expect.objectContaining({ page: 3, limit: 10 })
@@ -443,7 +448,7 @@ describe('AuthController', () => {
       const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
       authService.getUsers.mockResolvedValue(paginatedResult);
 
-      await controller.getUsers(undefined, undefined, undefined, undefined, req);
+      await controller.getUsers(undefined, undefined, undefined, undefined, undefined, req);
 
       expect(authService.getUsers).toHaveBeenCalledWith(
         expect.objectContaining({ page: undefined, limit: undefined })
@@ -454,7 +459,7 @@ describe('AuthController', () => {
       const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
       authService.getUsers.mockResolvedValue(paginatedResult);
 
-      await controller.getUsers(undefined, undefined, undefined, 'jane', req);
+      await controller.getUsers(undefined, undefined, undefined, 'jane', undefined, req);
 
       expect(authService.getUsers).toHaveBeenCalledWith(
         expect.objectContaining({ search: 'jane' })
@@ -465,7 +470,7 @@ describe('AuthController', () => {
       const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
       authService.getUsers.mockResolvedValue(paginatedResult);
 
-      const result = await controller.getUsers(undefined, undefined, undefined, undefined, req);
+      const result = await controller.getUsers(undefined, undefined, undefined, undefined, undefined, req);
 
       expect(result).toEqual(paginatedResult);
     });
@@ -571,6 +576,139 @@ describe('AuthController', () => {
 
       await expect(controller.deleteUser('admin-1', req)).rejects.toThrow(
         'You cannot delete your own account.',
+      );
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Password flows
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('forgotPassword()', () => {
+    it('delegates the email to authService.forgotPassword', async () => {
+      const generic = { success: true, message: 'If that email is registered, a reset link is on its way.' };
+      authService.forgotPassword.mockResolvedValue(generic);
+
+      const result = await controller.forgotPassword({ email: 'jane@example.com' });
+
+      expect(authService.forgotPassword).toHaveBeenCalledWith('jane@example.com');
+      expect(result).toEqual(generic);
+    });
+  });
+
+  describe('verifyResetToken()', () => {
+    it('passes the query token through to the service', async () => {
+      authService.verifyPasswordToken.mockResolvedValue({ valid: true, purpose: 'invite' });
+
+      const result = await controller.verifyResetToken('raw-token');
+
+      expect(authService.verifyPasswordToken).toHaveBeenCalledWith('raw-token');
+      expect(result).toEqual({ valid: true, purpose: 'invite' });
+    });
+  });
+
+  describe('resetPassword()', () => {
+    it('passes the token and new password through to the service', async () => {
+      authService.resetPassword.mockResolvedValue({ success: true, message: 'Password set. You can now sign in.' });
+
+      await controller.resetPassword({ token: 'raw-token', password: 'brand-new-pass' });
+
+      expect(authService.resetPassword).toHaveBeenCalledWith('raw-token', 'brand-new-pass');
+    });
+  });
+
+  describe('changePassword()', () => {
+    const req: any = { user: { sub: 'user-uuid-1' } };
+
+    it('re-sets the refresh cookie and returns only the access token and user', async () => {
+      const res = mockResponse();
+      authService.changePassword.mockResolvedValue(mockAuthResponse);
+
+      const result = await controller.changePassword(
+        { currentPassword: 'current-pass', newPassword: 'a-different-pass' },
+        req,
+        res,
+      );
+
+      expect(authService.changePassword).toHaveBeenCalledWith(
+        'user-uuid-1',
+        'current-pass',
+        'a-different-pass',
+      );
+      expect(res.cookie).toHaveBeenCalledWith(
+        REFRESH_COOKIE_NAME,
+        mockTokenPair.refresh_token,
+        expect.objectContaining({ httpOnly: true, path: REFRESH_COOKIE_PATH }),
+      );
+      expect(result).toEqual({ access_token: mockTokenPair.access_token, user: mockUser });
+      expect(result).not.toHaveProperty('refresh_token');
+    });
+
+    it('does not touch the cookie when the current password is wrong', async () => {
+      const res = mockResponse();
+      authService.changePassword.mockRejectedValue(new UnauthorizedException());
+
+      await expect(
+        controller.changePassword(
+          { currentPassword: 'wrong', newPassword: 'a-different-pass' },
+          req,
+          res,
+        ),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(res.cookie).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getUsers() status filter', () => {
+    const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
+
+    it('passes the status filter through to the service', async () => {
+      authService.getUsers.mockResolvedValue({ data: [], meta: {} });
+
+      await controller.getUsers(undefined, undefined, undefined, undefined, 'removed', req);
+
+      expect(authService.getUsers).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'removed' }),
+      );
+    });
+  });
+
+  describe('restoreUser()', () => {
+    const req: any = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' } };
+
+    it('delegates to the service with the target id and requester', async () => {
+      authService.restoreUser.mockResolvedValue({ id: 'target-1', message: 'restored' });
+
+      await controller.restoreUser('target-1', req);
+
+      expect(authService.restoreUser).toHaveBeenCalledWith('target-1', req.user);
+    });
+
+    it('propagates cross-sacco authorization errors', async () => {
+      authService.restoreUser.mockRejectedValue(new UnauthorizedException());
+
+      await expect(controller.restoreUser('target-1', req)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+  });
+
+  describe('sendPasswordLink()', () => {
+    const req: any = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' } };
+
+    it('delegates to the service with the target id and requester', async () => {
+      authService.sendPasswordLinkForUser.mockResolvedValue({ success: true, purpose: 'invite' });
+
+      await controller.sendPasswordLink('staff-1', req);
+
+      expect(authService.sendPasswordLinkForUser).toHaveBeenCalledWith('staff-1', req.user);
+    });
+
+    it('propagates cross-sacco authorization errors', async () => {
+      authService.sendPasswordLinkForUser.mockRejectedValue(new UnauthorizedException());
+
+      await expect(controller.sendPasswordLink('staff-1', req)).rejects.toThrow(
+        UnauthorizedException,
       );
     });
   });

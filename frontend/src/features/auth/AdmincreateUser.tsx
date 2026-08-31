@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { useMutation } from "@tanstack/react-query"
 import { toast } from "sonner"
+import { Mail } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -30,16 +31,13 @@ const ROLE_OPTIONS = [
 const createUserSchema = z
     .object({
         fullName: z.string().min(2, "Full name is required"),
-        email: z.string().email("Invalid email").optional().or(z.literal("")),
+        // Required, not optional: the invite link is the only way this account
+        // ever gets a password.
+        email: z.string().min(1, "Email is required").email("Invalid email"),
         phoneNumber: z.string().min(10, "Enter a valid phone number").optional().or(z.literal("")),
-        password: z.string().min(8, "Password must be at least 8 characters"),
         role: z.enum(["SACCO_ADMIN", "CLERK", "DRIVER"]),
         saccoId: z.string().min(1, "Sacco is required"),
         assignedStage: z.string().optional(),
-    })
-    .refine((d) => !!d.email || !!d.phoneNumber, {
-        message: "Provide either an email or phone number",
-        path: ["email"],
     })
     .superRefine((data, ctx) => {
         if (data.role === "CLERK" && !data.assignedStage) {
@@ -65,22 +63,34 @@ export default function AdminCreateUser({ onCreated }: AdminCreateUserProps) {
             fullName: "",
             email: "",
             phoneNumber: "",
-            password: "",
             saccoId: "",
             role: undefined,
             assignedStage: "",
         },
     })
 
+    // The account is created either way — `inviteSent: false` only means the
+    // email didn't go out, which the admin fixes with "Resend invite" on the
+    // users table rather than by creating the user again.
+    function reportCreated(label: string, inviteSent: boolean, email: string) {
+        if (inviteSent) {
+            toast.success(`${label} — invite sent to ${email}`)
+        } else {
+            toast.warning(`${label}, but the invite email didn't send. Resend it from the users list.`)
+        }
+        form.reset()
+        onCreated?.()
+    }
+
     const staffMutation = useMutation({
         mutationFn: (payload: CreateStaffPayload) => createStaffRequest(payload),
-        onSuccess: () => { toast.success("Account created"); form.reset() },
+        onSuccess: (user) => reportCreated("Account created", user.inviteSent, user.email ?? ""),
         onError: (error: any) => toast.error(error?.response?.data?.message ?? "Failed to create account."),
     })
 
     const managerMutation = useMutation({
         mutationFn: (payload: CreateManagerPayload) => createManagerRequest(payload),
-        onSuccess: () => { toast.success("Sacco manager created"); form.reset() },
+        onSuccess: (user) => reportCreated("Sacco manager created", user.inviteSent, user.email ?? ""),
         onError: (error: any) => toast.error(error?.response?.data?.message ?? "Failed to create manager account."),
     })
 
@@ -100,7 +110,9 @@ export default function AdminCreateUser({ onCreated }: AdminCreateUserProps) {
         <Card className="w-full max-w-md mx-auto">
             <CardHeader>
                 <CardTitle>Add a user</CardTitle>
-                <CardDescription>Create a staff account or onboard a Sacco manager</CardDescription>
+                <CardDescription>
+                    Create a staff account or onboard a Sacco manager — they'll set their own password
+                </CardDescription>
             </CardHeader>
             <CardContent>
                 <form onSubmit={form.handleSubmit(onSubmit)}>
@@ -197,20 +209,17 @@ export default function AdminCreateUser({ onCreated }: AdminCreateUserProps) {
                             />
                         </div>
 
-                        <Controller
-                            name="password"
-                            control={form.control}
-                            render={({ field, fieldState }) => (
-                                <Field data-invalid={fieldState.invalid}>
-                                    <FieldLabel htmlFor="password">Password</FieldLabel>
-                                    <Input {...field} id="password" type="password" placeholder="••••••••" aria-invalid={fieldState.invalid} autoComplete="new-password" />
-                                    {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
-                                </Field>
-                            )}
-                        />
+                        <div className="flex items-start gap-2.5 rounded-lg bg-muted/50 p-3">
+                            <Mail className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                                No password needed. We'll email them a link to set their own —
+                                it's valid for 3 days, and you can resend it any time from the
+                                users list.
+                            </p>
+                        </div>
 
                         <Button type="submit" className="w-full" disabled={isPending}>
-                            {isPending ? "Creating..." : "Create user"}
+                            {isPending ? "Creating..." : "Create user & send invite"}
                         </Button>
                     </FieldGroup>
                 </form>

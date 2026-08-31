@@ -758,6 +758,9 @@ export class BookingService {
     status?: BookingStatus;
     tripId?: string;
     vehicleId?: string;
+    // A clerk works one stage, not the whole sacco. Same convention as
+    // RouteService.findAll and RouteQueueService: a stage is a route's origin.
+    assignedStage?: string;
   }): Promise<Booking[]> {
     const qb = this.bookingRepository
       .createQueryBuilder('b')
@@ -769,6 +772,9 @@ export class BookingService {
     if (filters?.tripId) qb.andWhere('b.tripId = :tripId', { tripId: filters.tripId });
     if (filters?.vehicleId) qb.andWhere('trip.vehicleId = :vehicleId', { vehicleId: filters.vehicleId });
     if (filters?.status) qb.andWhere('b.status = :status', { status: filters.status });
+    if (filters?.assignedStage) {
+      qb.andWhere('route.origin = :assignedStage', { assignedStage: filters.assignedStage });
+    }
 
     // ── Date filtering: exact day OR a range, not both ──────────────────
     if (filters?.travelDate) {
@@ -792,13 +798,33 @@ export class BookingService {
     return booking;
   }
 
+  /**
+   * A clerk may only touch bookings departing from their own stage. Undefined
+   * for admins, who aren't stage-bound. Without this the list filter would be
+   * cosmetic — anyone could still reach another stage's booking by id.
+   */
+  assertStageAccess(booking: Booking, assignedStage?: string): void {
+    if (!assignedStage) return;
+    if (booking.route?.origin !== assignedStage) {
+      throw new ForbiddenException(
+        `This booking departs from "${booking.route?.origin}" — you are assigned to "${assignedStage}".`,
+      );
+    }
+  }
+
   // ─── Update (board / cancel / no-show) ──────────────────────────────────
-  async update(id: string, dto: UpdateBookingDto, saccoId?: string): Promise<Booking> {
+  async update(
+    id: string,
+    dto: UpdateBookingDto,
+    saccoId?: string,
+    assignedStage?: string,
+  ): Promise<Booking> {
     const booking = await this.findOne(id);
 
     if (saccoId && booking.saccoId !== saccoId) {
       throw new ForbiddenException('Access denied to this booking.');
     }
+    this.assertStageAccess(booking, assignedStage);
 
     if (dto.status === BookingStatus.BOARDED && booking.status !== BookingStatus.CONFIRMED) {
       throw new BadRequestException('Only a CONFIRMED booking with a seat can be marked BOARDED.');
@@ -820,11 +846,12 @@ export class BookingService {
   // ─── Cancel — frees the seat implicitly (capacity checks are always
   // live COUNT/SELECT queries, so a CANCELLED booking just stops counting
   // and its seat number becomes selectable again).
-  async cancel(id: string, saccoId?: string): Promise<Booking> {
+  async cancel(id: string, saccoId?: string, assignedStage?: string): Promise<Booking> {
     const booking = await this.findOne(id);
     if (saccoId && booking.saccoId !== saccoId) {
       throw new ForbiddenException('Access denied to this booking.');
     }
+    this.assertStageAccess(booking, assignedStage);
     if (booking.status === BookingStatus.BOARDED) {
       throw new BadRequestException('Cannot cancel a booking that has already boarded.');
     }

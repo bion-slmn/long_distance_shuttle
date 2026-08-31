@@ -34,6 +34,11 @@ services:
       - redis
     environment:
       TZ: Africa/Nairobi
+      # The Dockerfile bakes NODE_ENV=production for real deployments. Locally
+      # this image is served over plain http://localhost, where the resulting
+      # `Secure` refresh cookie is dropped by the browser — login works, then
+      # every page refresh 401s. Override it back to development here.
+      NODE_ENV: development
     env_file:
       - .env
     ports:

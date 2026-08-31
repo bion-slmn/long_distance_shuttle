@@ -291,14 +291,59 @@ export class PaymentService {
     }
 
 
+    /**
+     * Whether a payment belongs to a booking departing from `assignedStage`.
+     * Used by the by-id endpoints so a clerk can't reach another stage's
+     * payment directly once it's filtered out of their list.
+     */
+    async isForStage(payment: Payment, assignedStage: string): Promise<boolean> {
+        if (payment.referenceType !== PaymentReferenceType.BOOKING) return false;
+
+        const rows = await this.paymentRepository.manager.query(
+            `SELECT 1 FROM bookings b
+             JOIN routes r ON r.id = b."routeId"
+             WHERE b.id::text = $1 AND r.origin = $2
+             LIMIT 1`,
+            [payment.referenceId, assignedStage],
+        );
+        return rows.length > 0;
+    }
+
     async findBySacco(
         saccoId: string | undefined,
-        filters: { from?: string; to?: string; status?: PaymentStatus; method?: PaymentMethod },
+        filters: {
+            from?: string;
+            to?: string;
+            status?: PaymentStatus;
+            method?: PaymentMethod;
+            // Narrows a clerk to their own stage. See clerkStage().
+            assignedStage?: string;
+        },
     ): Promise<Payment[]> {
         const qb = this.paymentRepository.createQueryBuilder('payment');
 
         if (saccoId) {
             qb.andWhere('payment.saccoId = :saccoId', { saccoId });
+        }
+
+        // A payment's stage lives two hops away — payment → booking → route —
+        // and `referenceId` is a plain varchar with no FK, so this is an EXISTS
+        // against the booking rather than a join. Non-booking payment types are
+        // excluded by construction, which is correct for a stage clerk.
+        if (filters.assignedStage) {
+            qb.andWhere(
+                `payment.referenceType = :bookingRef
+                 AND EXISTS (
+                     SELECT 1 FROM bookings b
+                     JOIN routes r ON r.id = b."routeId"
+                     WHERE b.id::text = payment."referenceId"
+                       AND r.origin = :assignedStage
+                 )`,
+                {
+                    bookingRef: PaymentReferenceType.BOOKING,
+                    assignedStage: filters.assignedStage,
+                },
+            );
         }
 
         if (filters.from) {

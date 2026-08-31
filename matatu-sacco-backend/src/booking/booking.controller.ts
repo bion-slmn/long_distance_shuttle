@@ -29,6 +29,7 @@ import { Public } from 'src/decorators/public.decorator';
 import { JwtService } from '@nestjs/jwt';
 import { TicketsAuthGuard } from 'src/guards/tickets-auth.guard';
 import { TicketEmail } from 'src/decorators/ticket-email.decorator';
+import { clerkStage } from 'src/common/utils/clerk-stage.util';
 
 @Controller('bookings')
 export class BookingController {
@@ -102,6 +103,7 @@ export class BookingController {
     const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
     return this.bookingService.findAll({
       saccoId: isSuperAdmin ? saccoIdParam : user.saccoId,
+      assignedStage: clerkStage(user),
       routeId,
       travelDate,
       from,
@@ -182,6 +184,7 @@ export class BookingController {
     if (user.role !== UserRole.SUPER_ADMIN && booking.saccoId !== user.saccoId) {
       throw new ForbiddenException('Access denied to this booking.');
     }
+    this.bookingService.assertStageAccess(booking, clerkStage(user));
     return booking;
   }
 
@@ -195,7 +198,12 @@ export class BookingController {
     @CurrentUser() user: any,
   ) {
     const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
-    return this.bookingService.update(id, dto, isSuperAdmin ? undefined : user.saccoId);
+    return this.bookingService.update(
+      id,
+      dto,
+      isSuperAdmin ? undefined : user.saccoId,
+      clerkStage(user),
+    );
   }
 
   @Get('stats/today-passengers')
@@ -220,7 +228,11 @@ export class BookingController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
   cancel(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: any) {
     const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
-    return this.bookingService.cancel(id, isSuperAdmin ? undefined : user.saccoId);
+    return this.bookingService.cancel(
+      id,
+      isSuperAdmin ? undefined : user.saccoId,
+      clerkStage(user),
+    );
   }
 
   // ── GET /bookings/earnings/today ──────────────────────────────────────
