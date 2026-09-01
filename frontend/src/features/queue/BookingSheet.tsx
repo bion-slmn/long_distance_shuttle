@@ -40,6 +40,8 @@ import {
     MpesaTransactionMatchStatus,
     type MpesaTransaction,
 } from "@/api/paymentApi"
+import { useSaccoPaymentOptions } from "@/hooks/useSaccoPaymentOptions"
+import { useAuth } from "@/features/auth/AuthContext"
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -68,7 +70,7 @@ export interface BookingSheetProps {
     fare?: number
     isSubmitting?: boolean
     onSubmit: (payload: BookingFormValues) => Promise<Booking[]>
-    route?: { origin: string; destination: string; id: string }
+    route?: { origin: string; destination: string; id: string; saccoId?: string }
     travelDate: string
     /**
      * Set when reopening the sheet to retry a payment that failed. Reuses the
@@ -89,6 +91,27 @@ function normalizePhone(phone: string): string {
 function nextSeatSelection(prev: number[], seat: number, singleSelect: boolean): number[] {
     if (singleSelect) return prev.includes(seat) ? [] : [seat]
     return prev.includes(seat) ? prev.filter((s) => s !== seat) : [...prev, seat]
+}
+
+/**
+ * The method the sheet opens on. Cash is the default — it's the one payment
+ * a clerk can always take, and it needs no working integration behind it.
+ * Only a sacco that has switched cash off falls through to M-Pesa.
+ */
+function defaultPaymentMethod(
+    cashEnabled: boolean,
+    mpesaEnabled: boolean,
+): PaymentMethodType {
+    if (cashEnabled || !mpesaEnabled) return PaymentMethod.CASH
+    return PaymentMethod.MPESA
+}
+
+function isPaymentMethodAllowed(
+    method: PaymentMethodType,
+    cashEnabled: boolean,
+    mpesaEnabled: boolean,
+): boolean {
+    return method === PaymentMethod.MPESA ? mpesaEnabled : cashEnabled
 }
 
 function isPromptFlow(paymentMethod: PaymentMethodType, mpesaMode: MpesaMode): boolean {
@@ -129,13 +152,22 @@ export function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitti
 
     const [name, setName] = useState("")
     const [phone, setPhone] = useState("")
-    const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>(PaymentMethod.MPESA)
+    const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>(PaymentMethod.CASH)
     const [selectedSeats, setSelectedSeats] = useState<number[]>([])
 
     const [mpesaMode, setMpesaMode] = useState<MpesaMode>("prompt")
     const [selectedTransactionId, setSelectedTransactionId] = useState<string | null>(null)
 
     const queryClient = useQueryClient()
+
+    // Both M-Pesa pills push money through this sacco's own Daraja
+    // credentials, so neither is offerable until the sacco has configured
+    // M-Pesa and left it switched on. The route's sacco is the one that gets
+    // paid; the clerk's own sacco only stands in if a caller passed a route
+    // without one.
+    const { user } = useAuth()
+    const { mpesaEnabled, cashEnabled, isLoading: paymentOptionsLoading } =
+        useSaccoPaymentOptions(route?.saccoId ?? user?.saccoId ?? undefined)
 
     const seatMapKey = ["seat-map", route?.id, travelDate]
 
@@ -229,7 +261,7 @@ export function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitti
             // re-key a passenger who is standing right in front of them.
             setName(retryBooking?.passengerName ?? "")
             setPhone(retryBooking?.passengerPhone ?? "")
-            setPaymentMethod(PaymentMethod.MPESA)
+            setPaymentMethod(defaultPaymentMethod(cashEnabled, mpesaEnabled))
             setSelectedSeats(retryBooking?.seatNumber ? [retryBooking.seatNumber] : [])
             setMpesaMode("prompt")
             setSelectedTransactionId(null)
@@ -240,6 +272,19 @@ export function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitti
     useEffect(() => {
         setSelectedTransactionId(null)
     }, [normalizedPhone, mpesaMode])
+
+    // The configuration read usually lands after the sheet is already open,
+    // and a sacco can switch M-Pesa off mid-shift — so a method that stops
+    // being accepted falls back rather than sitting there selected, ready to
+    // fire an STK push at a shortcode that isn't there.
+    useEffect(() => {
+        if (!open) return
+        if (isPaymentMethodAllowed(paymentMethod, cashEnabled, mpesaEnabled)) return
+        setPaymentMethod(defaultPaymentMethod(cashEnabled, mpesaEnabled))
+        setMpesaMode("prompt")
+        setSelectedTransactionId(null)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open, paymentMethod, cashEnabled, mpesaEnabled])
 
     // Manual match = exactly 1 seat. Trim automatically so the clerk never
     // hits a validation wall after selecting seats.
@@ -254,8 +299,14 @@ export function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitti
     const total = unitFare * seats
 
     const manualMatchValid = !manualMatch || (seats === 1 && !!selectedTransactionId)
+    const paymentMethodAllowed = isPaymentMethodAllowed(paymentMethod, cashEnabled, mpesaEnabled)
     const canSubmit =
-        seats > 0 && phone.trim().length > 0 && !isSubmitting && !isFull && manualMatchValid
+        seats > 0 &&
+        phone.trim().length > 0 &&
+        !isSubmitting &&
+        !isFull &&
+        manualMatchValid &&
+        paymentMethodAllowed
 
     const handleSubmit = async () => {
         if (!canSubmit) return
@@ -403,11 +454,22 @@ export function BookingSheet({ open, onOpenChange, side, entry, fare, isSubmitti
                                 paymentMethod={paymentMethod}
                                 mpesaMode={mpesaMode}
                                 disabled={isSoldOut}
+                                cashEnabled={cashEnabled}
+                                mpesaEnabled={mpesaEnabled}
                                 onSelect={(method, mode) => {
                                     setPaymentMethod(method)
                                     setMpesaMode(mode)
                                 }}
                             />
+
+                            {/* Say why the green pills are dead rather than
+                                leaving the clerk tapping at them. */}
+                            {!mpesaEnabled && !paymentOptionsLoading && (
+                                <p className="text-xs text-muted-foreground/70 px-1">
+                                    M-Pesa isn't set up for this sacco — cash only. A sacco
+                                    admin can enable it in Settings.
+                                </p>
+                            )}
 
                             {/* Inline manual match — replaces the old Dialog */}
                             {mpesaMode === "manual" && (
@@ -494,22 +556,31 @@ function PaymentMethodPills({
     paymentMethod,
     mpesaMode,
     disabled,
+    cashEnabled,
+    mpesaEnabled,
     onSelect,
 }: {
     paymentMethod: PaymentMethodType
     mpesaMode: MpesaMode
     disabled: boolean
+    cashEnabled: boolean
+    mpesaEnabled: boolean
     onSelect: (method: PaymentMethodType, mode: MpesaMode) => void
 }) {
+    const mpesaTitle = mpesaEnabled
+        ? undefined
+        : "M-Pesa is not enabled for this sacco"
+
     return (
         <div className="flex gap-1.5 rounded-lg bg-muted p-1">
             {/* Cash — inverted (white/light bg, green text) */}
             <button
                 type="button"
                 onClick={() => onSelect(PaymentMethod.CASH, "prompt")}
-                disabled={disabled}
+                disabled={disabled || !cashEnabled}
+                title={cashEnabled ? undefined : "Cash is not accepted by this sacco"}
                 className={cn(
-                    "flex-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50",
+                    "flex-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 disabled:pointer-events-none",
                     paymentMethod === PaymentMethod.CASH
                         ? "bg-background text-emerald-600 shadow-sm ring-1 ring-emerald-600/50"
                         : "text-muted-foreground hover:bg-background/50"
@@ -523,9 +594,10 @@ function PaymentMethodPills({
             <button
                 type="button"
                 onClick={() => onSelect(PaymentMethod.MPESA, "prompt")}
-                disabled={disabled}
+                disabled={disabled || !mpesaEnabled}
+                title={mpesaTitle}
                 className={cn(
-                    "flex-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50",
+                    "flex-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 disabled:pointer-events-none",
                     paymentMethod === PaymentMethod.MPESA && mpesaMode === "prompt"
                         ? "bg-emerald-600 text-white shadow-sm"
                         : "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
@@ -539,9 +611,10 @@ function PaymentMethodPills({
             <button
                 type="button"
                 onClick={() => onSelect(PaymentMethod.MPESA, "manual")}
-                disabled={disabled}
+                disabled={disabled || !mpesaEnabled}
+                title={mpesaTitle}
                 className={cn(
-                    "flex-1 rounded-md py-2 text-xs font-semibold flex items-center justify-center transition-all disabled:opacity-50",
+                    "flex-1 rounded-md py-2 text-xs font-semibold flex items-center justify-center transition-all disabled:opacity-50 disabled:pointer-events-none",
                     paymentMethod === PaymentMethod.MPESA && mpesaMode === "manual"
                         ? "bg-emerald-600 text-white shadow-sm"
                         : "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"

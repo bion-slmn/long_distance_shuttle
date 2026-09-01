@@ -28,6 +28,15 @@ import { UpdateSaccoSettingsDto } from './dto/update-sacco-settings.dto';
 // than silently reporting zero commission.
 export const DEFAULT_COMMISSION_RATE = 10;
 
+export interface PaymentOptions {
+    saccoId: string;
+    acceptsCash: boolean;
+    acceptsMpesa: boolean;
+    mpesaConfigured: boolean;
+    /** Only ever the public shortcode — never any credential. */
+    mpesaShortcode: string | null;
+}
+
 @Injectable()
 export class SaccoSettingsService {
     private readonly logger = new Logger(SaccoSettingsService.name);
@@ -71,6 +80,26 @@ export class SaccoSettingsService {
             throw new NotFoundException(`Settings for sacco "${saccoId}" not found.`);
         }
         return settings;
+    }
+
+    // ── Payment options — the clerk-facing slice of settings ──────────────
+    // The booking sheet has to know which payment pills to offer, but a clerk
+    // has no business reading commission rates or pre-booking limits. This
+    // returns only what the sheet needs, so the read can be opened up to
+    // CLERK without widening access to the whole settings row.
+    //
+    // acceptsMpesa and mpesaConfigured are reported separately: a sacco that
+    // has switched M-Pesa off still has credentials on file, and only the
+    // combination of the two means "an STK push will actually work".
+    async getPaymentOptions(saccoId: string): Promise<PaymentOptions> {
+        const settings = await this.findOne(saccoId);
+        return {
+            saccoId: settings.saccoId,
+            acceptsCash: settings.acceptsCash,
+            acceptsMpesa: settings.acceptsMpesa,
+            mpesaConfigured: settings.mpesaConfigured,
+            mpesaShortcode: settings.mpesaShortcode ?? null,
+        };
     }
 
     // commissionRate is a PERCENTAGE in a numeric(5,2) column, and pg hands

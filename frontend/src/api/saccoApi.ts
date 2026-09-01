@@ -256,6 +256,27 @@ export const getSaccoSettingsRequest = async (
     return data;
 };
 
+// The clerk-readable slice of settings. Deliberately narrow — the booking
+// sheet needs to know which payment pills to offer, and nothing else from
+// the settings row is safe to hand a clerk.
+export interface SaccoPaymentOptions {
+    saccoId: string;
+    acceptsCash: boolean;
+    acceptsMpesa: boolean;
+    mpesaConfigured: boolean;
+    mpesaShortcode: string | null;
+}
+
+// GET /saccos/:saccoId/settings/payment-options — SUPER_ADMIN, SACCO_ADMIN, CLERK
+export const getSaccoPaymentOptionsRequest = async (
+    saccoId: string,
+): Promise<SaccoPaymentOptions> => {
+    const { data } = await api.get<SaccoPaymentOptions>(
+        `/saccos/${saccoId}/settings/payment-options`,
+    );
+    return data;
+};
+
 // PATCH /saccos/:saccoId/settings — SUPER_ADMIN, SACCO_ADMIN (own sacco only)
 export const updateSaccoSettingsRequest = async (
     saccoId: string,

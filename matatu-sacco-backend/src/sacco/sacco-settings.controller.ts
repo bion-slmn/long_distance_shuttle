@@ -25,6 +25,20 @@ export class SaccoSettingsController {
         return this.settingsService.findOne(saccoId);
     }
 
+    // ── Clerk-facing: which payment methods the booking sheet may offer ───
+    // Deliberately narrower than @Get() above — it returns no commission
+    // rate and no pre-booking limits, which is what lets CLERK read it. Must
+    // stay a distinct path from @Get(), which remains admin-only.
+    @Get('payment-options')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
+    getPaymentOptions(
+        @Param('saccoId') saccoId: string,
+        @CurrentUser() user: any,
+    ) {
+        this.assertSaccoAccess(user, saccoId);
+        return this.settingsService.getPaymentOptions(saccoId);
+    }
+
     @Patch()
     @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
     update(
@@ -57,7 +71,7 @@ export class SaccoSettingsController {
         return this.settingsService.disableMpesa(saccoId);
     }
 
-    // A SACCO_ADMIN may only touch their own sacco's settings —
+    // A SACCO_ADMIN or CLERK may only touch their own sacco's settings —
     // SUPER_ADMIN bypasses this check entirely.
     private assertSaccoAccess(user: any, saccoId: string): void {
         if (user.role === UserRole.SUPER_ADMIN) return;
