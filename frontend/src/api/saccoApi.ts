@@ -73,6 +73,8 @@ export interface SaccoPerformanceSummary {
     grossFaresThisWeek: number;
     lastActiveDate: string | null;
     status: 'Healthy' | 'Low Activity' | 'Inactive';
+    /** Credentials on file AND not switched off — i.e. can actually take M-Pesa. */
+    mpesaReady: boolean;
 }
 
 // GET /saccos/stats/performance — SUPER_ADMIN (all saccos) or SACCO_ADMIN (own sacco only)

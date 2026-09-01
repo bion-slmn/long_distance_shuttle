@@ -11,6 +11,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { MpesaTransaction } from './entities/mpesa.entity';
 import { BullModule } from '@nestjs/bullmq';
 import { PaymentReconcileProcessor } from './payment-reconcile.processor';
+import { PaymentReconcileSweeper } from './payment-reconcile.sweeper';
 
 @Module({
     imports: [
@@ -25,7 +26,12 @@ import { PaymentReconcileProcessor } from './payment-reconcile.processor';
     // here the queue still accepts jobs — they just sit in `delayed` forever,
     // and the "nothing stays PROCESSING forever" guarantee the reconcile
     // ladder is built on silently does not hold.
-    providers: [PaymentService, MpesaService, PaymentReconcileProcessor],
+    // The sweeper is registered alongside the processor for the same reason
+    // the comment above exists: a reconcile component that is written but not
+    // provided fails silently. It is deliberately NOT part of the processor —
+    // the processor is the thing that stops working when Redis is unavailable,
+    // and the sweeper is the thing that has to notice.
+    providers: [PaymentService, MpesaService, PaymentReconcileProcessor, PaymentReconcileSweeper],
     exports: [PaymentService],
 })
 export class PaymentModule { }

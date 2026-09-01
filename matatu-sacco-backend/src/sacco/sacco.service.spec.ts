@@ -72,6 +72,10 @@ describe('SaccoService', () => {
 
     saccoSettingsService = {
       createDefaults: jest.fn().mockResolvedValue(undefined),
+      // getSaccoPerformanceSummaries reads M-Pesa readiness per sacco; an
+      // empty map means "nothing configured", which is what the existing
+      // performance assertions assume.
+      getMpesaStatuses: jest.fn().mockResolvedValue(new Map()),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -633,6 +637,7 @@ describe('SaccoService', () => {
         grossFaresThisWeek: 20000,
         lastActiveDate: '2026-08-16',
         status: 'Healthy',
+        mpesaReady: false, // no settings row stubbed → nothing configured
       });
     });
 

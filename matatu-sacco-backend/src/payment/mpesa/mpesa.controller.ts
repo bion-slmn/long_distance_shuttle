@@ -15,6 +15,8 @@ import { MpesaCallbackDto } from '../dto/mpesa-callback.dto';
 import { Public } from 'src/decorators/public.decorator';
 import { PaymentService } from '../payment.service';
 import { GetTransactionsByPhoneDto } from '../dto/get-transactions-by-phone.dto';
+import { Roles } from 'src/decorators/roles.decorator';
+import { UserRole } from 'src/auth/entities/user.entity';
 
 // ─── Controller ─────────────────────────────────────────────────────────
 // Endpoints living here:
@@ -50,6 +52,16 @@ export class MpesaController {
         const dateTo = query.dateTo ? new Date(query.dateTo) : undefined;
 
         return this.mpesaService.getTransactionsByPhone(query.phone, dateFrom, dateTo);
+    }
+
+    // ── How much C2B money is sitting unattached ───────────────────────
+    // Staff-only (no @Public()). Registered before nothing else on this
+    // path, but kept distinct from @Get('transactions') above so neither
+    // shadows the other.
+    @Get('transactions/unmatched-summary')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+    getUnmatchedSummary() {
+        return this.mpesaService.getUnmatchedSummary();
     }
 
     // ── Safaricom's async STK callback ──────────────────────────────────

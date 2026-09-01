@@ -299,6 +299,36 @@ export async function getRevenueTrendRequest(
     return res.data;
 }
 
+// Today's volume and, more usefully, whether the money landed. There is no
+// commission model during the pilot, so grossFares is what the saccos
+// collected — not platform income.
+export interface TodayBookingSummary {
+    saccoId: string | null;
+    date: string;
+    total: number;
+    paid: number;
+    pending: number;
+    failed: number;
+    refunded: number;
+    cancelled: number;
+    cash: number;
+    mpesa: number;
+    grossFares: number;
+}
+
+export async function getTodayBookingSummaryRequest(
+    saccoId?: string,
+): Promise<TodayBookingSummary> {
+    const params = new URLSearchParams();
+    if (saccoId) params.set("saccoId", saccoId);
+    const query = params.toString();
+
+    const { data } = await api.get<TodayBookingSummary>(
+        `/bookings/stats/today-summary${query ? `?${query}` : ""}`,
+    );
+    return data;
+}
+
 export interface UniquePassengerStats {
     saccoId: string | null;
     thisWeekUnique: number;

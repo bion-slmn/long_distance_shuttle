@@ -223,3 +223,21 @@ export async function getMpesaTransactionsByPhoneRequest(
     const res = await api.get(`/payment/mpesa/transactions?${params.toString()}`);
     return res.data;
 }
+
+// ─── Unmatched C2B money ─────────────────────────────────────────────────
+// Passengers who pay the paybill directly land here with nothing to attach
+// the payment to. Until a clerk matches one, it's money received against no
+// seat — platform-wide, since mpesa_transactions carry no saccoId.
+
+export interface UnmatchedMpesaSummary {
+    count: number;
+    totalAmount: number;
+    oldestTransactionTime: string | null;
+}
+
+export async function getUnmatchedMpesaSummaryRequest(): Promise<UnmatchedMpesaSummary> {
+    const { data } = await api.get<UnmatchedMpesaSummary>(
+        "/payment/mpesa/transactions/unmatched-summary",
+    );
+    return data;
+}

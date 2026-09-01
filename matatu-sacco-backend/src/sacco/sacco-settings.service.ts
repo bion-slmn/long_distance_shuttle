@@ -145,6 +145,33 @@ export class SaccoSettingsService {
         return rates;
     }
 
+    /**
+     * M-Pesa readiness for many saccos in one read — the pilot's adoption
+     * question, and the same bulk shape as getCommissionRates so the
+     * performance table doesn't issue a settings query per row.
+     *
+     * A sacco missing a settings row reads as not ready, which is the honest
+     * answer: nothing has been configured for it.
+     */
+    async getMpesaStatuses(
+        saccoIds: string[],
+    ): Promise<Map<string, { acceptsMpesa: boolean; mpesaConfigured: boolean }>> {
+        const unique = [...new Set(saccoIds)];
+        if (unique.length === 0) return new Map();
+
+        const rows = await this.settingsRepository.find({
+            where: { saccoId: In(unique) },
+            select: { saccoId: true, acceptsMpesa: true, mpesaConfigured: true },
+        });
+
+        return new Map(
+            rows.map((r) => [
+                r.saccoId,
+                { acceptsMpesa: r.acceptsMpesa, mpesaConfigured: r.mpesaConfigured },
+            ]),
+        );
+    }
+
     // ── Update general operational settings ─────────────────────────────────
     // MVP: only commissionRate, isAcceptingBookings, acceptsCash are
     // editable. Pre-booking limits are intentionally NOT handled here —

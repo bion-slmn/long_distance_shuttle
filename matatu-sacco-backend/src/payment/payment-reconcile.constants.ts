@@ -59,3 +59,33 @@ export const TERMINAL_FAILURE_RESULT_CODES = new Set([
 // seat after the payment can no longer succeed. One deadline, one place to
 // change it.
 export const SEAT_HOLD_MS = RECONCILE_DELAYS_MS.reduce((sum, ms) => sum + ms, 0);
+
+// ── Reconcile sweeper ────────────────────────────────────────────────────
+// The ladder above lives entirely in Redis as delayed BullMQ jobs, which
+// makes Redis the only record of "which payments still need watching". It
+// isn't a durable one: a payment saved as PROCESSING whose enqueue never
+// reached Redis (outage, crash, or an ioredis offline-queue command lost to a
+// restart) has no job, and therefore no ladder, and therefore no force-expiry
+// — the exact hole that left 17 payments PROCESSING, the oldest for weeks.
+//
+// The sweeper closes it by re-deriving that list from Postgres, where the
+// PROCESSING rows themselves are the durable record.
+
+// How often the sweeper re-derives the list. Deliberately far coarser than
+// the ladder: this is a backstop for jobs that never reached Redis, not a
+// second reconcile path. Every payment it settles in the terminal branch
+// costs a Daraja status query, and Daraja answers 429 to callers that ask too
+// often — a tight sweep would spend that budget re-asking about payments the
+// ladder is already handling perfectly well.
+export const SWEEP_INTERVAL_MS = 30 * 60_000; // 30 minutes
+
+// Most payments examined per sweep. Bounds the Daraja calls one tick can make;
+// at a 30-minute cadence the sustained rate stays far under any published
+// limit, while a backlog still drains within a few ticks.
+export const SWEEP_BATCH_LIMIT = 25;
+
+// Past this age a status query is pointless: Daraja will not give a useful
+// answer for a checkout this old, and asking burns rate-limit budget needed
+// for payments that can still resolve. These skip the query and go straight
+// to force-expiry.
+export const SWEEP_QUERY_MAX_AGE_MS = 24 * 60 * 60_000; // 24 hours

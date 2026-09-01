@@ -235,6 +235,25 @@ export class BookingController {
     );
   }
 
+  // ── GET /bookings/stats/today-summary ─────────────────────────────────
+  // Volume plus payment health for today, in one call. Feeds the dashboard
+  // tiles that used to be hardcoded.
+  @Get('stats/today-summary')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+  getTodayBookingSummary(
+    @Query('saccoId') saccoId: string | undefined,
+    @CurrentUser() user: any,
+  ) {
+    if (user.role === UserRole.SACCO_ADMIN) {
+      if (!user.saccoId) {
+        throw new ForbiddenException('You are not assigned to a sacco.');
+      }
+      saccoId = user.saccoId;
+    }
+    return this.bookingService.getTodayBookingSummary(saccoId);
+  }
+
   // ── GET /bookings/earnings/today ──────────────────────────────────────
   @Get('earnings/today')
   @UseGuards(JwtAuthGuard, RolesGuard)

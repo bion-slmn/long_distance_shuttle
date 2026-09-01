@@ -91,6 +91,24 @@ export interface AvailabilityResult {
   };
 }
 
+// A pilot-stage read of the day: how many bookings there are and, more to
+// the point, whether their money actually landed. There is no commission
+// model yet, so `grossFares` is what the saccos collected — not platform
+// income. Counts are of bookings for today's travelDate.
+export interface TodayBookingSummary {
+  saccoId: string | null;
+  date: string;
+  total: number;      // every booking for today, cancelled ones included
+  paid: number;
+  pending: number;    // money still in flight — these seats are held, not sold
+  failed: number;
+  refunded: number;
+  cancelled: number;
+  cash: number;       // non-cancelled, split by how the passenger paid
+  mpesa: number;
+  grossFares: number; // PAID only, matching getTodayEarnings' basis
+}
+
 @Injectable()
 export class BookingService {
   private readonly logger = new Logger(BookingService.name);
@@ -846,6 +864,26 @@ export class BookingService {
 
   async markPaymentFailed(id: string): Promise<Booking> {
     const booking = await this.findOne(id);
+
+    // A payment.failed can arrive long after the booking itself was settled:
+    // the reconcile sweeper picks up rows the ladder never reached, and a
+    // stale PROCESSING row says nothing about whether the money actually
+    // landed — the callback may have paid this booking days ago while the
+    // payment row was orphaned. confirmPayment guards the mirror case (money
+    // arriving on a booking we already gave up on); this is the same care in
+    // the other direction. Cancelling a booking that is paid, or one whose
+    // passenger is already on the vehicle, is not something a backstop gets to
+    // do on the strength of a row it failed to keep up to date.
+    if (
+      booking.paymentStatus === PaymentStatus.PAID ||
+      booking.status === BookingStatus.BOARDED
+    ) {
+      this.logger.warn(
+        `Ignoring payment-failed for booking ${id} — already ${booking.status}/${booking.paymentStatus}`,
+      );
+      return booking;
+    }
+
     booking.paymentStatus = PaymentStatus.FAILED;
     booking.status = BookingStatus.CANCELLED; // ← payment never completed — this booking never happened
     booking.holdExpiresAt = null; // release the seat now rather than waiting out the clock
@@ -1340,6 +1378,80 @@ export class BookingService {
   // style volume, same spirit as getTodayEarnings.
   //
   // saccoId omitted → platform-wide (super admin view).
+  // ── Today at a glance: volume AND payment health in one read ──────────
+  // The dashboard used to carry a hardcoded booking count and nothing at all
+  // about payments, which is the wrong way round for a pilot — the number
+  // that matters is not how many bookings there were but how many of them
+  // took money successfully.
+  //
+  // One grouped query answers all of it: grouping by the three status
+  // columns at once gives every breakdown the caller needs without a query
+  // per tile, and the totals can't disagree with each other the way separate
+  // counts would.
+  async getTodayBookingSummary(saccoId?: string): Promise<TodayBookingSummary> {
+    const today = this.toDateString(new Date());
+
+    const qb = this.bookingRepository
+      .createQueryBuilder('b')
+      .select('b.paymentStatus', 'paymentStatus')
+      .addSelect('b.paymentMethod', 'paymentMethod')
+      .addSelect('b.status', 'status')
+      .addSelect('COUNT(*)', 'count')
+      .addSelect('SUM(b.fare)', 'fares')
+      .where('b.travelDate = :today', { today })
+      .groupBy('b.paymentStatus')
+      .addGroupBy('b.paymentMethod')
+      .addGroupBy('b.status');
+
+    if (saccoId) qb.andWhere('b.saccoId = :saccoId', { saccoId });
+
+    const rows = await qb.getRawMany<{
+      paymentStatus: PaymentStatus;
+      paymentMethod: PaymentMethod;
+      status: BookingStatus;
+      count: string;
+      fares: string | null;
+    }>();
+
+    const summary: TodayBookingSummary = {
+      saccoId: saccoId ?? null,
+      date: today,
+      total: 0,
+      paid: 0,
+      pending: 0,
+      failed: 0,
+      refunded: 0,
+      cancelled: 0,
+      cash: 0,
+      mpesa: 0,
+      grossFares: 0,
+    };
+
+    for (const row of rows) {
+      const count = Number(row.count);
+      summary.total += count;
+
+      if (row.status === BookingStatus.CANCELLED) {
+        summary.cancelled += count;
+      } else {
+        // A cancelled booking's payment method says nothing about how the
+        // sacco is being paid, so the cash/M-Pesa split ignores them.
+        if (row.paymentMethod === PaymentMethod.CASH) summary.cash += count;
+        if (row.paymentMethod === PaymentMethod.MPESA) summary.mpesa += count;
+      }
+
+      if (row.paymentStatus === PaymentStatus.PAID) {
+        summary.paid += count;
+        summary.grossFares += Number(row.fares ?? 0);
+      }
+      if (row.paymentStatus === PaymentStatus.PENDING) summary.pending += count;
+      if (row.paymentStatus === PaymentStatus.FAILED) summary.failed += count;
+      if (row.paymentStatus === PaymentStatus.REFUNDED) summary.refunded += count;
+    }
+
+    return summary;
+  }
+
   async getTodayPassengerStats(saccoId?: string): Promise<TodayPassengerStats> {
     const now = new Date();
     const today = this.toDateString(now);

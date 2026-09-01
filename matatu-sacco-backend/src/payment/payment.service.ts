@@ -18,7 +18,7 @@ import {
     ALWAYS_TERMINAL_RESULT_CODES,
     TERMINAL_FAILURE_RESULT_CODES,
 } from './payment-reconcile.constants';
-import { MpesaTransactionMatchStatus } from './entities/mpesa.entity';
+import { MpesaTransaction, MpesaTransactionMatchStatus } from './entities/mpesa.entity';
 
 // ─── Event payload contracts ────────────────────────────────────────────
 // BookingService (or anything else) subscribes to these via @OnEvent.
@@ -66,6 +66,20 @@ type QueryStkStatusResult = {
     resultDesc: string;
     errorCode: string | null;
 };
+
+/**
+ * Result of settleFromStatusQuery.
+ *
+ * `answered` distinguishes the two ways a reconcile can end without a verdict:
+ * Daraja said "still in flight" (answered — a real reading), or Daraja said
+ * nothing at all because it was unreachable or rate-limited (not answered —
+ * an absent reading). Collapsing the two is how a backstop ends up expiring
+ * payments it never managed to check.
+ */
+export interface ReconcileOutcome {
+    payment: Payment;
+    answered: boolean;
+}
 
 interface ParsedCallback {
     checkoutRequestId: string;
@@ -208,6 +222,11 @@ export class PaymentService {
                 `Payment ${payment.id} SUCCESS (receipt=${parsed.mpesaReceiptNumber})`,
             );
 
+            // handleStkCallback stored this very receipt as UNMATCHED moments
+            // ago. Claim it now, while we still know which booking and payment
+            // it settled — see matchStoredTransaction.
+            await this.matchStoredTransaction(payment, 'STK_CALLBACK');
+
             this.eventEmitter.emit('payment.succeeded', {
                 paymentId: payment.id,
                 referenceType: payment.referenceType,
@@ -249,6 +268,22 @@ export class PaymentService {
         const payment = await this.paymentRepository.findOne({ where: { id } });
         if (!payment) throw new NotFoundException(`Payment "${id}" not found.`);
         return payment;
+    }
+
+    // The reconcile sweeper's input: what the DATABASE says still needs
+    // watching, independent of whether Redis ever heard about it. This is the
+    // whole point — a PROCESSING row is durable, the delayed job that was
+    // supposed to settle it is not.
+    //
+    // Oldest first, and capped: the oldest rows have kept a passenger in limbo
+    // longest, and they are also the cheapest to settle, since anything past
+    // SWEEP_QUERY_MAX_AGE_MS force-expires without costing a Daraja call.
+    async findProcessingPayments(limit: number): Promise<Payment[]> {
+        return this.paymentRepository.find({
+            where: { status: PaymentStatus.PROCESSING },
+            order: { createdAt: 'ASC' },
+            take: limit,
+        });
     }
 
     async findByReference(
@@ -431,14 +466,7 @@ export class PaymentService {
 
         payment.mpesaReceiptNumber = transaction.mpesaReceiptNumber;
 
-        if (transaction.matchStatus === MpesaTransactionMatchStatus.UNMATCHED) {
-            await this.mpesaService.matchTransaction(
-                transaction.id,
-                payment.referenceId,
-                payment.id,
-                'reconcile',
-            );
-        }
+        await this.matchStoredTransaction(payment, 'reconcile', transaction);
 
         this.logger.log(
             `Payment ${payment.id} confirmed by status query; receipt ` +
@@ -446,7 +474,88 @@ export class PaymentService {
         );
     }
 
+    /**
+     * Claim the stored M-Pesa receipt that settled this payment.
+     *
+     * Every receipt lands UNMATCHED — storeTransaction sees a Safaricom
+     * payload, not the payment that solicited it. Left that way, an STK
+     * receipt that just confirmed a booking keeps counting toward the
+     * unmatched summary: it reads as money in the account against no seat,
+     * and a clerk goes hunting for a match that was never missing.
+     *
+     * Pass `known` when the caller already holds the row; otherwise it is
+     * looked up by the payment's checkout id.
+     *
+     * Bookkeeping only. The money moved and the booking is confirmed whether
+     * or not this lands, so every failure is logged rather than allowed to
+     * break settlement — including losing the race to reconcile, which leaves
+     * the receipt correctly matched anyway.
+     */
+    private async matchStoredTransaction(
+        payment: Payment,
+        matchedBy: string,
+        known?: MpesaTransaction,
+    ): Promise<void> {
+        // matchedBookingId means what it says; a future non-booking payment
+        // has no business writing its reference id there.
+        if (payment.referenceType !== PaymentReferenceType.BOOKING) return;
+        if (!known && !payment.checkoutRequestId) return;
+
+        try {
+            const transaction =
+                known ??
+                (await this.mpesaService.findTransactionByCheckoutRequestId(
+                    payment.checkoutRequestId,
+                ));
+
+            if (!transaction) {
+                this.logger.warn(
+                    `Payment ${payment.id} succeeded but no stored M-Pesa transaction matches ` +
+                    `checkoutRequestId=${payment.checkoutRequestId} — receipt left unmatched.`,
+                );
+                return;
+            }
+
+            if (transaction.matchStatus !== MpesaTransactionMatchStatus.UNMATCHED) return;
+
+            await this.mpesaService.matchTransaction(
+                transaction.id,
+                payment.referenceId,
+                payment.id,
+                matchedBy,
+            );
+
+            this.logger.log(
+                `M-Pesa transaction ${transaction.mpesaReceiptNumber} matched to booking ` +
+                `${payment.referenceId} (payment ${payment.id}, via ${matchedBy})`,
+            );
+        } catch (err: any) {
+            this.logger.warn(
+                `Could not mark the M-Pesa transaction for payment ${payment.id} as matched ` +
+                `(via ${matchedBy}): ${err.message}`,
+            );
+        }
+    }
+
+    // Thin wrapper keeping the original signature for callers that only want
+    // the resulting row: the public reconcile endpoint and the ladder
+    // processor, both of which have their own next step regardless of whether
+    // Daraja actually answered.
     async reconcileStuckPayment(paymentId: string): Promise<Payment> {
+        return (await this.settleFromStatusQuery(paymentId)).payment;
+    }
+
+    /**
+     * Ask Daraja where this checkout stands and settle the row accordingly.
+     *
+     * `answered` is the part reconcileStuckPayment throws away: false means we
+     * got no verdict out of Daraja at all — unreachable, or rate-limited with a
+     * 429. That is "we don't know", and a caller that reads it as "no answer,
+     * therefore expired" would cancel bookings it never actually checked. The
+     * sweeper needs that distinction because its force-expiry is a conclusion;
+     * the 3-minute ladder does not, because its force-expiry IS the deadline.
+     */
+    async settleFromStatusQuery(paymentId: string): Promise<ReconcileOutcome> {
         const payment = await this.findById(paymentId);
 
         // EXPIRED is reconcilable, not final. Force-expiry is our own guess
@@ -457,7 +566,10 @@ export class PaymentService {
             payment.status === PaymentStatus.PROCESSING || payment.status === PaymentStatus.EXPIRED;
 
         if (!reconcilable || !payment.checkoutRequestId) {
-            return payment; // already settled by Safaricom, or no STK push was ever sent
+            // Already settled by Safaricom, or no STK push was ever sent. There
+            // is nothing to ask about, so this counts as answered: a caller
+            // must not read it as "Daraja is down".
+            return { payment, answered: true };
         }
 
         const previousStatus = payment.status;
@@ -470,9 +582,9 @@ export class PaymentService {
             // let the next poll/sweep attempt try again, rather than surface a
             // 503 through to the caller (e.g. the public reconcile endpoint).
             this.logger.warn(
-                `reconcileStuckPayment: could not reach M-Pesa for payment ${paymentId}: ${err.message}`,
+                `settleFromStatusQuery: could not reach M-Pesa for payment ${paymentId}: ${err.message}`,
             );
-            return payment;
+            return { payment, answered: false };
         }
 
         if (result.resultCode === 0) {
@@ -484,14 +596,16 @@ export class PaymentService {
             // the callback will resolve it, and failing that the reconcile
             // schedule force-expires it at the 3-minute ceiling.
             this.logger.log(
-                `reconcileStuckPayment: payment ${paymentId} still in flight ` +
+                `settleFromStatusQuery: payment ${paymentId} still in flight ` +
                 `(resultCode=${result.resultCode ?? 'none'} errorCode=${result.errorCode ?? 'none'} ` +
-                `"${result.resultDesc}") — leaving PROCESSING`,
+                `"${result.resultDesc}") — leaving ${payment.status}`,
             );
-            return payment;
+            // Answered: Daraja spoke, and what it said was "not yet". A caller
+            // may act on that — it is a real reading, not a missing one.
+            return { payment, answered: true };
         } else {
             this.logger.warn(
-                `reconcileStuckPayment: payment ${paymentId} FAILED via status query ` +
+                `settleFromStatusQuery: payment ${paymentId} FAILED via status query ` +
                 `(resultCode=${result.resultCode} "${result.resultDesc}")`,
             );
             payment.status = PaymentStatus.FAILED;
@@ -505,7 +619,7 @@ export class PaymentService {
         // Re-pressing "Check M-Pesa" on a payment that already settled the same
         // way shouldn't re-fire the booking side.
         if (saved.status === previousStatus) {
-            return saved;
+            return { payment: saved, answered: true };
         }
 
         if (saved.status === PaymentStatus.SUCCESS) {
@@ -527,7 +641,7 @@ export class PaymentService {
             } satisfies PaymentFailedEvent);
         }
 
-        return saved;
+        return { payment: saved, answered: true };
     }
 
     async reconcileByBookingId(bookingId: string): Promise<Payment> {

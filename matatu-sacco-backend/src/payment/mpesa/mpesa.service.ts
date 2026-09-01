@@ -513,6 +513,37 @@ export class MpesaService {
         return this.mpesaTransactionRepo.findOneByOrFail({ id: transactionId });
     }
 
+    // ── Unmatched C2B money, in one number ────────────────────────────────
+    // A passenger pays the paybill directly and the transaction lands here
+    // with nothing to attach it to. Until a clerk matches it, that is real
+    // money in the sacco's account against no seat — the single worst state
+    // this system can be in, and one nobody sees unless it's surfaced.
+    //
+    // Deliberately platform-wide: mpesa_transactions carry no saccoId (they
+    // are matched by phone and shortcode after the fact), so this is a
+    // super-admin view by construction.
+    async getUnmatchedSummary(): Promise<{
+        count: number;
+        totalAmount: number;
+        oldestTransactionTime: string | null;
+    }> {
+        const row = await this.mpesaTransactionRepo
+            .createQueryBuilder('t')
+            .select('COUNT(*)', 'count')
+            .addSelect('COALESCE(SUM(t.amount), 0)', 'totalAmount')
+            .addSelect('MIN(t.transactionTime)', 'oldest')
+            .where('t.matchStatus = :status', {
+                status: MpesaTransactionMatchStatus.UNMATCHED,
+            })
+            .getRawOne<{ count: string; totalAmount: string; oldest: Date | null }>();
+
+        return {
+            count: Number(row?.count ?? 0),
+            totalAmount: Number(row?.totalAmount ?? 0),
+            oldestTransactionTime: row?.oldest ? new Date(row.oldest).toISOString() : null,
+        };
+    }
+
     // Straight date-range filter, independent of phone.
     async getTransactionsByDateRange(
         dateFrom: Date,

@@ -271,6 +271,101 @@ describe('PaymentService', () => {
       );
     });
 
+    it('marks the stored STK receipt MATCHED against the booking it confirmed', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.findTransactionByCheckoutRequestId!.mockResolvedValue({
+        id: 'tx-1',
+        mpesaReceiptNumber: 'NLJ7RT61SV',
+        matchStatus: 'UNMATCHED',
+      });
+
+      await service.handleMpesaCallback(
+        {
+          checkoutRequestId: 'ws_CO_123',
+          resultCode: 0,
+          resultDesc: 'ok',
+          success: true,
+          mpesaReceiptNumber: 'NLJ7RT61SV',
+        },
+        rawBody,
+      );
+
+      expect(mpesaService.findTransactionByCheckoutRequestId).toHaveBeenCalledWith('ws_CO_123');
+      expect(mpesaService.matchTransaction).toHaveBeenCalledWith(
+        'tx-1',
+        payment.referenceId,
+        payment.id,
+        'STK_CALLBACK',
+      );
+    });
+
+    it('leaves a transaction another claim already matched alone', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.findTransactionByCheckoutRequestId!.mockResolvedValue({
+        id: 'tx-1',
+        mpesaReceiptNumber: 'NLJ7RT61SV',
+        matchStatus: 'MATCHED',
+      });
+
+      await service.handleMpesaCallback(
+        {
+          checkoutRequestId: 'ws_CO_123',
+          resultCode: 0,
+          resultDesc: 'ok',
+          success: true,
+          mpesaReceiptNumber: 'NLJ7RT61SV',
+        },
+        rawBody,
+      );
+
+      expect(mpesaService.matchTransaction).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.succeeded',
+        expect.objectContaining({ paymentId: payment.id }),
+      );
+    });
+
+    it('still confirms the booking when the receipt cannot be matched', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.findTransactionByCheckoutRequestId!.mockRejectedValue(
+        new Error('database is on fire'),
+      );
+
+      await service.handleMpesaCallback(
+        {
+          checkoutRequestId: 'ws_CO_123',
+          resultCode: 0,
+          resultDesc: 'ok',
+          success: true,
+          mpesaReceiptNumber: 'NLJ7RT61SV',
+        },
+        rawBody,
+      );
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.succeeded',
+        expect.objectContaining({
+          paymentId: payment.id,
+          mpesaReceiptNumber: 'NLJ7RT61SV',
+        }),
+      );
+    });
+
     it('marks a PROCESSING payment FAILED and emits payment.failed', async () => {
       const payment = basePayment({ status: PaymentStatus.PROCESSING });
       paymentRepository.findOne!.mockResolvedValue(payment);

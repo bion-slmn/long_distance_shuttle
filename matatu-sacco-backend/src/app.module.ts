@@ -20,6 +20,7 @@ import { MetricsModule } from './metrics/metrics.module';
 import { HealthModule } from './health/health.module';
 
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ScheduleModule } from '@nestjs/schedule';
 import { EmailModule } from './email/email.module';
 import { ReceiptModule } from './receipt/receipt.module';
 import { BullmqModule } from './redis/bullmq.module';
@@ -65,6 +66,8 @@ import { BullmqModule } from './redis/bullmq.module';
 
     PassportModule.register({ defaultStrategy: 'jwt' }),  // ← add
     EventEmitterModule.forRoot(),
+    // Drives PaymentReconcileSweeper's periodic tick.
+    ScheduleModule.forRoot(),
     SaccoModule,
     FleetModule,
     BookingModule,

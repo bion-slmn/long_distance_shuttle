@@ -76,6 +76,12 @@ export interface SaccoPerformanceSummary {
     grossFaresThisWeek: number;   // deliberately not "revenue" — no commission model yet
     lastActiveDate: string | null; // most recent trip.travelDate for this sacco
     status: 'Healthy' | 'Low Activity' | 'Inactive';
+    // Whether this sacco can actually take an M-Pesa payment: credentials on
+    // file AND not switched off. During the pilot a sacco stuck on cash
+    // because nobody ever entered its Daraja details is the most common way
+    // for it to look "quiet" — so it's reported alongside the activity
+    // numbers rather than buried in a settings screen.
+    mpesaReady: boolean;
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -105,8 +111,12 @@ export class SaccoService {
         const saccos = await this.fetchSaccos(includeInactive, saccoId);
         if (saccos.length === 0) return [];
 
-        const stats = await this.fetchSaccoWeeklyStats(saccoId);
-        return saccos.map((sacco) => this.buildSaccoSummary(sacco, stats));
+        const [stats, mpesaStatuses] = await Promise.all([
+            this.fetchSaccoWeeklyStats(saccoId),
+            this.saccoSettingsService.getMpesaStatuses(saccos.map((s) => s.id)),
+        ]);
+
+        return saccos.map((sacco) => this.buildSaccoSummary(sacco, stats, mpesaStatuses));
     }
 
     private async fetchSaccos(includeInactive: boolean, saccoId?: string) {
@@ -187,7 +197,11 @@ export class SaccoService {
         };
     }
 
-    private buildSaccoSummary(sacco: Sacco, stats: Awaited<ReturnType<typeof this.fetchSaccoWeeklyStats>>): SaccoPerformanceSummary {
+    private buildSaccoSummary(
+        sacco: Sacco,
+        stats: Awaited<ReturnType<typeof this.fetchSaccoWeeklyStats>>,
+        mpesaStatuses: Map<string, { acceptsMpesa: boolean; mpesaConfigured: boolean }>,
+    ): SaccoPerformanceSummary {
         const tripsThisWeek = stats.tripsThisWeek.get(sacco.id) ?? 0;
         const tripsLastWeek = stats.tripsLastWeek.get(sacco.id) ?? 0;
         const tripsChangePercent = tripsLastWeek > 0
@@ -211,6 +225,10 @@ export class SaccoService {
             grossFaresThisWeek: stats.grossFares.get(sacco.id) ?? 0,
             lastActiveDate,
             status,
+            mpesaReady: (() => {
+                const mpesa = mpesaStatuses.get(sacco.id);
+                return !!mpesa?.acceptsMpesa && !!mpesa?.mpesaConfigured;
+            })(),
         };
     }
 

@@ -34,54 +34,43 @@ import { changePasswordRequest } from "@/api/authApi"
 import { useSaccoName } from "@/hooks/useSaccoName"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-// Same role vocabulary as ROLE_META in SaccoUsersTable.tsx, extended here with
-// the extra tokens a hero-style header needs: a cover tint, badge colors, and
-// an icon that reads at a glance which seat this account holds.
+// Same role vocabulary as ROLE_META in SaccoUsersTable.tsx, plus the badge
+// tokens the hero header needs so the role reads at a glance. The cover behind
+// the avatar is deliberately *not* role-tinted — it uses the app's primary
+// colour so the page stays on-theme in both light and dark mode.
 
 const ROLE_META: Record<
     string,
     {
         label: string
         icon: React.ComponentType<{ className?: string }>
-        cover: string
         badge: string
-        ring: string
     }
 > = {
     SUPER_ADMIN: {
         label: "Super Admin",
         icon: ShieldCheck,
-        cover: "from-purple-500/15 via-purple-500/5 to-transparent",
-        badge: "bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-400",
-        ring: "ring-purple-500/20",
+        badge: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/30",
     },
     SACCO_ADMIN: {
         label: "Sacco Admin",
         icon: Building2,
-        cover: "from-blue-500/15 via-blue-500/5 to-transparent",
-        badge: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400",
-        ring: "ring-blue-500/20",
+        badge: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/30",
     },
     CLERK: {
         label: "Clerk",
         icon: ClipboardList,
-        cover: "from-emerald-500/15 via-emerald-500/5 to-transparent",
-        badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400",
-        ring: "ring-emerald-500/20",
+        badge: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30",
     },
     DRIVER: {
         label: "Driver",
         icon: Car,
-        cover: "from-amber-500/15 via-amber-500/5 to-transparent",
-        badge: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400",
-        ring: "ring-amber-500/20",
+        badge: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30",
     },
     PASSENGER: {
         label: "Passenger",
         icon: UserRound,
-        cover: "from-slate-500/15 via-slate-500/5 to-transparent",
-        badge: "bg-slate-100 text-slate-700 dark:bg-slate-500/15 dark:text-slate-400",
-        ring: "ring-slate-500/20",
+        badge: "bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-500/15 dark:text-slate-300 dark:border-slate-500/30",
     },
 }
 
@@ -108,14 +97,12 @@ function DetailTile({
     value: string
 }) {
     return (
-        <div className="flex items-start gap-3 rounded-lg bg-muted/40 p-3">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-background">
-                <Icon className="size-4 text-muted-foreground" />
+        <div className="rounded-xl border bg-card p-4 shadow-sm transition-shadow hover:shadow-md">
+            <div className="mb-3 flex size-8 items-center justify-center rounded-lg bg-primary/10">
+                <Icon className="size-4 text-primary" />
             </div>
-            <div className="min-w-0">
-                <p className="text-[11px] text-muted-foreground">{label}</p>
-                <p className="truncate text-sm font-medium">{value}</p>
-            </div>
+            <p className="mb-1 text-[11px] font-medium text-muted-foreground">{label}</p>
+            <p className="break-words text-sm font-medium">{value}</p>
         </div>
     )
 }
@@ -124,18 +111,26 @@ function DetailTile({
 
 function ProfileSkeleton() {
     return (
-        <div className="mx-auto max-w-2xl overflow-hidden rounded-xl border">
-            <Skeleton className="h-24 w-full rounded-none" />
-            <div className="px-6 pb-6">
-                <Skeleton className="-mt-10 size-20 rounded-full ring-4 ring-background" />
-                <div className="mt-4 space-y-2">
-                    <Skeleton className="h-5 w-40" />
-                    <Skeleton className="h-4 w-24" />
-                </div>
-                <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    {Array.from({ length: 4 }).map((_, i) => (
-                        <Skeleton key={i} className="h-14 rounded-lg" />
-                    ))}
+        <div className="mx-auto w-full max-w-3xl p-4 sm:p-6">
+            <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+                <Skeleton className="h-32 w-full rounded-none sm:h-40" />
+                <div className="px-4 pb-6 sm:px-8">
+                    <div className="-mt-16 flex flex-col items-center sm:flex-row sm:items-end sm:gap-6">
+                        <Skeleton className="size-32 rounded-full ring-4 ring-card" />
+                        <div className="mt-4 flex flex-col items-center gap-2 sm:mb-2 sm:mt-0 sm:items-start">
+                            <Skeleton className="h-7 w-48" />
+                            <Skeleton className="h-6 w-28 rounded-full" />
+                        </div>
+                    </div>
+                    <div className="mt-6 grid grid-cols-1 gap-4 sm:mt-8 sm:grid-cols-2">
+                        {Array.from({ length: 4 }).map((_, i) => (
+                            <Skeleton key={i} className="h-28 rounded-xl" />
+                        ))}
+                    </div>
+                    <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-end">
+                        <Skeleton className="h-11 w-full rounded-lg sm:w-44" />
+                        <Skeleton className="h-11 w-full rounded-lg sm:w-32" />
+                    </div>
                 </div>
             </div>
         </div>
@@ -157,8 +152,10 @@ export function Profile() {
 
     if (!user) {
         return (
-            <div className="mx-auto max-w-2xl rounded-xl border p-6 text-center text-sm text-muted-foreground">
-                You're not signed in.
+            <div className="mx-auto max-w-3xl p-4 sm:p-6">
+                <div className="rounded-xl border p-6 text-center text-sm text-muted-foreground">
+                    You're not signed in.
+                </div>
             </div>
         )
     }
@@ -178,92 +175,89 @@ export function Profile() {
 
     return (
         <>
-            <div className="mx-auto max-w-2xl overflow-hidden rounded-xl border">
-                {/* Cover */}
-                <div className={cn("relative h-24 w-full bg-gradient-to-br", meta.cover)}>
-                    <span
-                        className={cn(
-                            "absolute right-4 top-4 inline-flex items-center gap-1.5 rounded-full bg-background/80 px-2.5 py-1 text-xs font-medium backdrop-blur",
-                            user.isActive ? "text-emerald-700 dark:text-emerald-400" : ""
-                        )}
-                    >
-                        <span
-                            className={cn(
-                                "size-1.5 rounded-full",
-                                user.isActive ? "bg-emerald-500" : ""
-                            )}
-                        />
-                    </span>
-                </div>
-
-                <div className="px-6 pb-6">
-                    {/* Avatar + identity */}
-                    <div className="-mt-10 flex items-end justify-between">
-                        <Avatar className={cn("size-20 ring-4 ring-background", meta.ring)}>
-                            <AvatarFallback className="bg-background text-lg font-semibold">
-                                {getInitials(user.fullName)}
-                            </AvatarFallback>
-                        </Avatar>
-                    </div>
-
-                    <div className="mt-4">
-                        <h2 className="text-xl font-semibold tracking-tight">
-                            {user.fullName}
-                        </h2>
-                        <span
-                            className={cn(
-                                "mt-1.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
-                                meta.badge
-                            )}
-                        >
-                            <RoleIcon className="size-3.5" />
-                            {meta.label}
+            <div className="mx-auto w-full max-w-3xl p-4 sm:p-6">
+                <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+                    {/* Cover */}
+                    <div className="flex h-32 w-full items-start justify-end bg-gradient-to-r from-primary to-primary/70 px-4 pt-4 sm:h-40 sm:px-8">
+                        <span className="inline-flex items-center gap-2 rounded-full border border-primary-foreground/30 bg-primary-foreground/20 px-3 py-1 text-xs font-medium text-primary-foreground backdrop-blur-md">
+                            <span
+                                className={cn(
+                                    "size-2 rounded-full",
+                                    user.isActive ? "bg-emerald-300" : "bg-rose-300"
+                                )}
+                            />
+                            {user.isActive ? "Active" : "Inactive"}
                         </span>
                     </div>
 
-                    {/* Details */}
-                    <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <DetailTile icon={Mail} label="Email" value={user.email ?? "—"} />
-                        <DetailTile
-                            icon={Phone}
-                            label="Phone number"
-                            value={user.phoneNumber ?? "—"}
-                        />
-                        {user.saccoId && (
-                            <DetailTile
-                                icon={Building2}
-                                label="Sacco"
-                                value={saccoName ?? "…"}
-                            />
-                        )}
-                        {user.assignedStage && (
-                            <DetailTile
-                                icon={MapPin}
-                                label="Assigned stage"
-                                value={user.assignedStage}
-                            />
-                        )}
-                    </div>
+                    <div className="px-4 pb-6 sm:px-8">
+                        {/* Avatar + identity */}
+                        <div className="-mt-16 flex flex-col items-center sm:flex-row sm:items-end sm:gap-6">
+                            <Avatar className="relative z-10 size-32 border-4 border-card bg-card shadow-md ring-4 ring-primary/15">
+                                <AvatarFallback className="bg-primary/10 text-2xl font-semibold text-primary">
+                                    {getInitials(user.fullName)}
+                                </AvatarFallback>
+                            </Avatar>
 
-                    {/* Actions */}
-                    <div className="mt-6 flex justify-end gap-2 border-t pt-4">
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setPasswordOpen(true)}
-                        >
-                            <KeyRound className="mr-1.5 size-3.5" />
-                            Change password
-                        </Button>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="text-destructive hover:text-destructive"
-                            onClick={() => setConfirmOpen(true)}
-                        >
-                            <LogOut className="mr-1.5 size-3.5" />
-                            Sign out
-                        </Button>
+                            <div className="mt-4 text-center sm:mb-2 sm:mt-0 sm:text-left">
+                                <h2 className="text-2xl font-semibold tracking-tight">
+                                    {user.fullName}
+                                </h2>
+                                <span
+                                    className={cn(
+                                        "mt-2 inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium",
+                                        meta.badge
+                                    )}
+                                >
+                                    <RoleIcon className="size-3.5" />
+                                    {meta.label}
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* Details */}
+                        <div className="mt-6 grid grid-cols-1 gap-4 sm:mt-8 sm:grid-cols-2">
+                            <DetailTile icon={Mail} label="Email" value={user.email ?? "—"} />
+                            <DetailTile
+                                icon={Phone}
+                                label="Phone number"
+                                value={user.phoneNumber ?? "—"}
+                            />
+                            {user.saccoId && (
+                                <DetailTile
+                                    icon={Building2}
+                                    label="Sacco"
+                                    value={saccoName ?? "…"}
+                                />
+                            )}
+                            {user.assignedStage && (
+                                <DetailTile
+                                    icon={MapPin}
+                                    label="Assigned stage"
+                                    value={user.assignedStage}
+                                />
+                            )}
+                        </div>
+
+                        {/* Actions */}
+                        <div className="mt-8 flex flex-col gap-3 border-t pt-6 sm:flex-row sm:justify-end">
+                            <Button
+                                variant="outline"
+                                className="h-11 w-full shadow-sm sm:w-auto"
+                                onClick={() => setPasswordOpen(true)}
+                            >
+                                <KeyRound className="mr-2 size-4" />
+                                Change password
+                            </Button>
+                            <Button
+                                variant="outline"
+                                className="h-11 w-full border-destructive text-destructive shadow-sm hover:bg-destructive/10 hover:text-destructive sm:w-auto"
+                                onClick={() => setConfirmOpen(true)}
+                            >
+                                <LogOut className="mr-2 size-4" />
+                                Sign out
+                            </Button>
+                        </div>
                     </div>
                 </div>
             </div>
