@@ -8,6 +8,7 @@ import { firstValueFrom } from 'rxjs';
 import { SaccoSettingsService } from '../../sacco/sacco-settings.service';
 import { InitiateStkPushDto } from '../dto/initiate-stk-push.dto';
 import { MpesaCallbackDto } from '../dto/mpesa-callback.dto';
+import { SimulateC2BPaymentDto } from '../dto/simulate-c2b-payment.dto';
 import { MpesaTransaction, MpesaTransactionMatchStatus, MpesaTransactionSource } from '../entities/mpesa.entity';
 
 
@@ -393,10 +394,28 @@ export class MpesaService {
     }
 
     // ── Handle a C2B confirmation: customer paid the paybill directly ─────
-    // Wire this to your Daraja ConfirmationURL controller route.
-    async handleC2BConfirmation(body: MpesaC2BConfirmationDto): Promise<void> {
-        await this.storeTransaction({
+    // Wired to PaymentController's /payment/c2b/confirmation route.
+    //
+    // The only sacco-identifying field Safaricom sends is BusinessShortCode,
+    // so that is how the money is attributed. An unknown shortcode is stored
+    // anyway (with saccoId null) — it is still real money in a real account
+    // and must not be dropped — but logged loudly, since only a SUPER_ADMIN
+    // will ever see it.
+    //
+    // Returns the stored row so the caller can try to settle whatever this
+    // money is for; null when Safaricom resent a receipt we already hold.
+    async handleC2BConfirmation(body: MpesaC2BConfirmationDto): Promise<MpesaTransaction | null> {
+        const saccoId = await this.saccoSettingsService.findSaccoIdByShortcode(body.BusinessShortCode);
+        if (!saccoId) {
+            this.logger.warn(
+                `C2B receipt ${body.TransID} (${body.TransAmount}) hit shortcode ${body.BusinessShortCode}, ` +
+                'which no configured sacco owns — stored unattributed.',
+            );
+        }
+
+        return this.storeTransaction({
             source: MpesaTransactionSource.C2B,
+            saccoId,
             mpesaReceiptNumber: body.TransID,
             checkoutRequestId: undefined,
             amount: Number(body.TransAmount),
@@ -414,6 +433,7 @@ export class MpesaService {
     // ── Shared persistence with idempotency against Safaricom retries ─────
     private async storeTransaction(data: {
         source: MpesaTransactionSource;
+        saccoId?: string | null;
         mpesaReceiptNumber: string;
         checkoutRequestId?: string;
         amount: number;
@@ -448,19 +468,66 @@ export class MpesaService {
 
     // ── Lookups ─────────────────────────────────────────────────────────
 
+    // Last 9 digits: the part of a Kenyan number that survives every format
+    // Safaricom uses (07XX, 2547XX, +2547XX, masked).
+    private phoneSuffix(phone: string): string {
+        return phone.replace(/\D/g, '').slice(-9);
+    }
+
+    async findTransactionByReceiptNumber(mpesaReceiptNumber: string): Promise<MpesaTransaction | null> {
+        return this.mpesaTransactionRepo.findOne({ where: { mpesaReceiptNumber } });
+    }
+
+    // ── The receipt that settled a payment we never got a callback for ────
+    // A paybill (C2B) confirmation carries no CheckoutRequestID, so an STK
+    // push whose callback was lost can only be tied to its receipt by what
+    // both sides know: sacco, phone, amount, and roughly when. Unmatched
+    // rows only — a receipt already attached to a booking is spoken for.
+    // Unattributed rows (saccoId null) are included: the money hit the right
+    // paybill even if the sacco lookup did not resolve at the time.
+    async findUnmatchedReceiptForPayment(criteria: {
+        saccoId: string;
+        payerPhone: string;
+        amount: number;
+        notBefore: Date;
+        notAfter: Date;
+    }): Promise<MpesaTransaction | null> {
+        const suffix = this.phoneSuffix(criteria.payerPhone);
+        if (suffix.length < 9) return null;
+
+        return this.mpesaTransactionRepo
+            .createQueryBuilder('t')
+            .where('t.matchStatus = :unmatched', { unmatched: MpesaTransactionMatchStatus.UNMATCHED })
+            .andWhere('(t.saccoId = :saccoId OR t.saccoId IS NULL)', { saccoId: criteria.saccoId })
+            .andWhere('t.payerPhone LIKE :suffix', { suffix: `%${suffix}` })
+            .andWhere('t.amount = :amount', { amount: Number(criteria.amount) })
+            .andWhere('t.transactionTime BETWEEN :notBefore AND :notAfter', {
+                notBefore: criteria.notBefore,
+                notAfter: criteria.notAfter,
+            })
+            .orderBy('t.transactionTime', 'ASC')
+            .getOne();
+    }
+
     // Matches on the last 9 digits since STK and C2B don't always report
     // the phone in the same format (masked vs unmasked, 254 vs not).
+    // saccoId narrows to money attributed to that sacco; omit for all saccos
+    // (SUPER_ADMIN only — the controller enforces that).
     async getTransactionsByPhone(
         phone: string,
         dateFrom?: Date,
         dateTo?: Date,
+        saccoId?: string,
     ): Promise<MpesaTransaction[]> {
-        const normalized = this.normalizePhone(phone);
-        const suffix = normalized.slice(-9);
+        const suffix = this.phoneSuffix(this.normalizePhone(phone));
 
         const qb = this.mpesaTransactionRepo
             .createQueryBuilder('t')
             .where('t.payerPhone LIKE :suffix', { suffix: `%${suffix}` });
+
+        if (saccoId) {
+            qb.andWhere('t.saccoId = :saccoId', { saccoId });
+        }
 
         if (dateFrom) {
             qb.andWhere('t.transactionTime >= :dateFrom', { dateFrom });
@@ -519,23 +586,28 @@ export class MpesaService {
     // money in the sacco's account against no seat — the single worst state
     // this system can be in, and one nobody sees unless it's surfaced.
     //
-    // Deliberately platform-wide: mpesa_transactions carry no saccoId (they
-    // are matched by phone and shortcode after the fact), so this is a
-    // super-admin view by construction.
-    async getUnmatchedSummary(): Promise<{
+    // With saccoId: only that sacco's money. Without: platform-wide, which
+    // also includes receipts no sacco could be attributed to (saccoId null) —
+    // the SUPER_ADMIN view, since nobody else can act on those.
+    async getUnmatchedSummary(saccoId?: string): Promise<{
         count: number;
         totalAmount: number;
         oldestTransactionTime: string | null;
     }> {
-        const row = await this.mpesaTransactionRepo
+        const qb = this.mpesaTransactionRepo
             .createQueryBuilder('t')
             .select('COUNT(*)', 'count')
             .addSelect('COALESCE(SUM(t.amount), 0)', 'totalAmount')
             .addSelect('MIN(t.transactionTime)', 'oldest')
             .where('t.matchStatus = :status', {
                 status: MpesaTransactionMatchStatus.UNMATCHED,
-            })
-            .getRawOne<{ count: string; totalAmount: string; oldest: Date | null }>();
+            });
+
+        if (saccoId) {
+            qb.andWhere('t.saccoId = :saccoId', { saccoId });
+        }
+
+        const row = await qb.getRawOne<{ count: string; totalAmount: string; oldest: Date | null }>();
 
         return {
             count: Number(row?.count ?? 0),
@@ -548,17 +620,23 @@ export class MpesaService {
     async getTransactionsByDateRange(
         dateFrom: Date,
         dateTo: Date,
+        saccoId?: string,
     ): Promise<MpesaTransaction[]> {
         return this.mpesaTransactionRepo.find({
-            where: { transactionTime: Between(dateFrom, dateTo) },
+            where: {
+                transactionTime: Between(dateFrom, dateTo),
+                ...(saccoId ? { saccoId } : {}),
+            },
             order: { transactionTime: 'DESC' },
         });
     }
 
     // ── Register C2B validation/confirmation URLs for a sacco's shortcode ──
-    // One-time setup call per shortcode — not hit on every payment. Run it
-    // once after a sacco's M-Pesa credentials are configured, or on demand
-    // from an admin action.
+    // One-time setup call per shortcode — not hit on every payment. Runs
+    // automatically after configureMpesa() (via MpesaC2bRegistrationListener)
+    // and on demand from POST /payment/mpesa/:saccoId/c2b/register. Either
+    // way the outcome is written to the sacco's settings row so the UI can
+    // show whether Daraja currently knows where to send paybill money.
     async registerC2BUrls(saccoId: string): Promise<{ responseDescription: string }> {
         const creds = await this.saccoSettingsService.getDecryptedMpesaCredentials(saccoId);
         const token = await this.getAccessToken(saccoId, creds.consumerKey, creds.consumerSecret);
@@ -566,6 +644,10 @@ export class MpesaService {
         const payload = {
             ShortCode: creds.shortcode,
             ResponseType: 'Completed',
+            // Daraja rejects callback URLs containing reserved words such as
+            // "mpesa" or "safaricom", so these routes live on PaymentController
+            // (@Controller 'payment'), NOT on MpesaController. A wrong path here
+            // fails silently: Safaricom POSTs to a 404 and the money never lands.
             ConfirmationURL: `${process.env.MPESA_CALLBACK_BASE_URL}/payment/c2b/confirmation`,
             ValidationURL: `${process.env.MPESA_CALLBACK_BASE_URL}/payment/c2b/validation`,
         };
@@ -581,13 +663,87 @@ export class MpesaService {
             );
 
             this.logger.log(`C2B URLs registered for sacco ${saccoId}: ${data.ResponseDescription}`);
+            await this.saccoSettingsService.recordC2bRegistration(saccoId, null);
             return { responseDescription: data.ResponseDescription };
         } catch (err: any) {
             this.invalidateToken(saccoId);
+            const daraja = err?.response?.data;
+            const reason = daraja?.errorMessage ?? err.message;
+            await this.saccoSettingsService
+                .recordC2bRegistration(saccoId, String(reason))
+                .catch((e) => this.logger.error(`Could not record C2B registration failure for sacco ${saccoId}: ${e.message}`));
             this.logger.error(
-                `C2B URL registration failed for sacco ${saccoId}: ${err?.response?.data?.errorMessage ?? err.message}`,
+                `C2B URL registration failed for sacco ${saccoId}: ${reason}` +
+                (daraja?.errorCode ? ` (code ${daraja.errorCode})` : '') +
+                ` [ConfirmationURL=${payload.ConfirmationURL}]`,
             );
-            throw new BadRequestException('Failed to register M-Pesa C2B URLs.');
+            // Surface Daraja's own reason: this is an admin setup action, and
+            // "Invalid ShortCode" vs "Invalid URL" send the admin to very
+            // different fixes.
+            throw new BadRequestException(`Failed to register M-Pesa C2B URLs: ${reason}`);
+        }
+    }
+
+    // ── Sandbox only: pretend a customer paid the paybill ─────────────────
+    // Calls Daraja's C2B simulate endpoint with the sacco's own stored
+    // credentials, so the whole loop (register URLs → Safaricom → our
+    // /c2b/confirmation route → mpesa_transactions) can be exercised from
+    // our API without hand-crafting curl calls against Safaricom. Daraja
+    // then POSTs the confirmation to /payment/c2b/confirmation exactly as
+    // it would for a real payment, so the server must be publicly reachable
+    // (ngrok in dev) and registerC2BUrls() must have run first.
+    //
+    // The simulate endpoint does not exist in production, and we refuse to
+    // even try there: a stray call against a live shortcode should be a
+    // loud 400, not a confusing Daraja error.
+    async simulateC2BPayment(
+        saccoId: string,
+        dto: SimulateC2BPaymentDto,
+    ): Promise<{ responseDescription: string; conversationId: string | null }> {
+        if (process.env.MPESA_ENV === 'production') {
+            throw new BadRequestException(
+                'C2B simulation is only available in the M-Pesa sandbox.',
+            );
+        }
+
+        const creds = await this.saccoSettingsService.getDecryptedMpesaCredentials(saccoId);
+        const token = await this.getAccessToken(saccoId, creds.consumerKey, creds.consumerSecret);
+
+        const payload = {
+            ShortCode: creds.shortcode,
+            CommandID: 'CustomerPayBillOnline',
+            Amount: Math.round(dto.amount),
+            // Daraja's sandbox only accepts its own test MSISDN.
+            Msisdn: dto.msisdn ?? '254708374149',
+            BillRefNumber: dto.billRefNumber,
+        };
+
+        try {
+            const { data } = await this.withRetry('simulateC2BPayment', () =>
+                firstValueFrom(
+                    this.httpService.post(`${DARAJA_BASE_URL}/mpesa/c2b/v1/simulate`, payload, {
+                        headers: { Authorization: `Bearer ${token}` },
+                        timeout: this.HTTP_TIMEOUT_MS,
+                    }),
+                ),
+            );
+
+            this.logger.log(
+                `C2B simulate accepted for sacco ${saccoId}: ${data.ResponseDescription} (ref=${dto.billRefNumber}, amount=${payload.Amount})`,
+            );
+
+            return {
+                responseDescription: data.ResponseDescription,
+                conversationId: data.ConversationID ?? data.OriginatorCoversationID ?? null,
+            };
+        } catch (err: any) {
+            this.invalidateToken(saccoId);
+            this.logger.error(
+                `C2B simulate failed for sacco ${saccoId}: ${err?.response?.data?.errorMessage ?? err.message}`,
+            );
+            throw new BadRequestException(
+                `Failed to simulate M-Pesa C2B payment: ${err?.response?.data?.errorMessage ?? err.message}`,
+            );
         }
     }
 }

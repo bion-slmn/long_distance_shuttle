@@ -12,6 +12,7 @@ import { MpesaTransaction } from './entities/mpesa.entity';
 import { BullModule } from '@nestjs/bullmq';
 import { PaymentReconcileProcessor } from './payment-reconcile.processor';
 import { PaymentReconcileSweeper } from './payment-reconcile.sweeper';
+import { MpesaC2bRegistrationListener } from './mpesa/mpesa-c2b-registration.listener';
 
 @Module({
     imports: [
@@ -31,7 +32,7 @@ import { PaymentReconcileSweeper } from './payment-reconcile.sweeper';
     // provided fails silently. It is deliberately NOT part of the processor —
     // the processor is the thing that stops working when Redis is unavailable,
     // and the sweeper is the thing that has to notice.
-    providers: [PaymentService, MpesaService, PaymentReconcileProcessor, PaymentReconcileSweeper],
+    providers: [PaymentService, MpesaService, PaymentReconcileProcessor, PaymentReconcileSweeper, MpesaC2bRegistrationListener],
     exports: [PaymentService],
 })
 export class PaymentModule { }

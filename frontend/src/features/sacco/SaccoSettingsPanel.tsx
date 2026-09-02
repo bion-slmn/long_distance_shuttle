@@ -24,7 +24,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { CreditCard, Loader2, ShieldCheck, Smartphone, Wallet } from "lucide-react"
+import { AlertTriangle, CreditCard, Loader2, RefreshCw, ShieldCheck, Smartphone, Wallet } from "lucide-react"
 import { toast } from "sonner"
 import {
     getSaccoSettingsRequest,
@@ -34,6 +34,7 @@ import {
     type ConfigureMpesaDto,
     type UpdateSaccoSettingsDto,
 } from "@/api/saccoApi"
+import { registerSaccoC2bUrlsRequest } from "@/api/paymentApi"
 import { useSaccoName } from "@/hooks/useSaccoName"
 import { ALL_ADMINS, RoleGuard } from "@/features/auth/RoleGuard"
 import { useAuth } from "../auth/AuthContext"
@@ -92,6 +93,18 @@ export function SaccoSettingsPanel() {
             toast.success("Settings updated")
         },
         onSettled: () => {
+            queryClient.invalidateQueries({ queryKey: ["sacco-settings", saccoId] })
+        },
+    })
+
+    const registerC2bMutation = useMutation({
+        mutationFn: () => registerSaccoC2bUrlsRequest(saccoId),
+        onSuccess: () => {
+            toast.success("Paybill callbacks registered with M-Pesa")
+            queryClient.invalidateQueries({ queryKey: ["sacco-settings", saccoId] })
+        },
+        onError: (err: any) => {
+            toast.error(err?.response?.data?.message ?? "Failed to register paybill callbacks")
             queryClient.invalidateQueries({ queryKey: ["sacco-settings", saccoId] })
         },
     })
@@ -232,6 +245,48 @@ export function SaccoSettingsPanel() {
                                 <span className="font-mono text-xs">
                                     {settings.mpesaShortcode ?? "—"}
                                 </span>
+                            </div>
+                        )}
+
+                        {settings.mpesaConfigured && (
+                            <div className="flex flex-col gap-2 rounded-md border px-3 py-2 text-left sm:flex-row sm:items-center sm:justify-between">
+                                <div className="flex items-start gap-2">
+                                    {settings.mpesaC2bRegisteredAt ? (
+                                        <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
+                                    ) : (
+                                        <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+                                    )}
+                                    <div className="space-y-0.5">
+                                        <p className="text-xs">
+                                            {settings.mpesaC2bRegisteredAt
+                                                ? "Direct paybill payments reach this system"
+                                                : "Direct paybill payments are NOT reaching this system"}
+                                        </p>
+                                        <p className="text-[11px] text-muted-foreground">
+                                            {settings.mpesaC2bRegisteredAt
+                                                ? `Callbacks registered ${new Date(settings.mpesaC2bRegisteredAt).toLocaleString()}`
+                                                : settings.mpesaC2bRegistrationError
+                                                    ? `M-Pesa said: ${settings.mpesaC2bRegistrationError}`
+                                                    : "Registration has not succeeded yet."}
+                                        </p>
+                                    </div>
+                                </div>
+                                {!settings.mpesaC2bRegisteredAt && (
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-8 shrink-0 gap-1.5 text-xs"
+                                        disabled={registerC2bMutation.isPending}
+                                        onClick={() => registerC2bMutation.mutate()}
+                                    >
+                                        {registerC2bMutation.isPending ? (
+                                            <Loader2 className="size-3.5 animate-spin" />
+                                        ) : (
+                                            <RefreshCw className="size-3.5" />
+                                        )}
+                                        Retry registration
+                                    </Button>
+                                )}
                             </div>
                         )}
 
@@ -452,8 +507,16 @@ function ConfigureMpesaDialog({
     const mutation = useMutation({
         mutationFn: (payload: ConfigureMpesaDto) =>
             configureSaccoMpesaRequest(saccoId, payload),
-        onSuccess: () => {
-            toast.success("M-Pesa configured")
+        onSuccess: (saved) => {
+            if (saved.mpesaC2bRegisteredAt) {
+                toast.success("M-Pesa configured and paybill callbacks registered")
+            } else {
+                toast.warning(
+                    saved.mpesaC2bRegistrationError
+                        ? `M-Pesa configured, but paybill callbacks were not registered: ${saved.mpesaC2bRegistrationError}`
+                        : "M-Pesa configured, but paybill callbacks were not registered. Retry from the settings panel.",
+                )
+            }
             onConfigured()
         },
         onError: (err: any) => {

@@ -7,10 +7,17 @@ import {
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { Sacco } from './sacco.entity';
 
 @Entity('sacco_settings')
+// A paybill can belong to exactly one sacco: incoming C2B money is attributed
+// by BusinessShortCode alone, so two saccos sharing one would be ambiguous.
+@Index('UQ_sacco_settings_mpesaShortcode', ['mpesaShortcode'], {
+  unique: true,
+  where: '"mpesaShortcode" IS NOT NULL',
+})
 export class SaccoSettings {
   @PrimaryColumn()
   declare saccoId: string;
@@ -58,6 +65,17 @@ export class SaccoSettings {
 
   @Column({ nullable: true, select: false })
   declare mpesaPasskeyEncrypted: string; // ← Daraja also requires a passkey for STK push
+
+  // ── C2B (direct paybill) callback registration with Daraja ──
+  // Set when registerC2BUrls() last succeeded for this shortcode; cleared
+  // whenever it fails. Registration is attempted automatically right after
+  // configureMpesa(), but Daraja is not always reachable, so an admin needs
+  // to be able to see "your paybill callbacks are NOT registered" and retry.
+  @Column({ type: 'timestamptz', nullable: true })
+  declare mpesaC2bRegisteredAt: Date | null;
+
+  @Column({ type: 'text', nullable: true })
+  declare mpesaC2bRegistrationError: string | null;
 
   @Column({ default: false })
   declare mpesaConfigured: boolean; // true only once all required fields are set

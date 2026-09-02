@@ -11,7 +11,11 @@ describe('MpesaService', () => {
     let service: MpesaService;
 
     let httpService: { get: jest.Mock; post: jest.Mock };
-    let saccoSettingsService: { getDecryptedMpesaCredentials: jest.Mock };
+    let saccoSettingsService: {
+        getDecryptedMpesaCredentials: jest.Mock;
+        findSaccoIdByShortcode: jest.Mock;
+        recordC2bRegistration: jest.Mock;
+    };
     let mpesaTransactionRepo: {
         create: jest.Mock;
         save: jest.Mock;
@@ -40,7 +44,11 @@ describe('MpesaService', () => {
         jest.useFakeTimers().setSystemTime(new Date('2024-01-15T12:15:30+03:00'));
 
         httpService = { get: jest.fn(), post: jest.fn() };
-        saccoSettingsService = { getDecryptedMpesaCredentials: jest.fn() };
+        saccoSettingsService = {
+            getDecryptedMpesaCredentials: jest.fn(),
+            findSaccoIdByShortcode: jest.fn().mockResolvedValue('sacco-1'),
+            recordC2bRegistration: jest.fn().mockResolvedValue(undefined),
+        };
 
         qb = {
             where: jest.fn().mockReturnThis(),
@@ -496,8 +504,30 @@ describe('MpesaService', () => {
                     payerName: 'John Doe',
                     billRefNumber: 'BK-42',
                     businessShortCode: '123456',
+                    saccoId: 'sacco-1',
                 }),
             );
+            expect(saccoSettingsService.findSaccoIdByShortcode).toHaveBeenCalledWith('123456');
+        });
+
+        it('stores an unknown shortcode unattributed (saccoId null) rather than dropping it', async () => {
+            saccoSettingsService.findSaccoIdByShortcode.mockResolvedValue(null);
+            mpesaTransactionRepo.save.mockResolvedValue({ id: 'tx-9' });
+            const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+
+            await service.handleC2BConfirmation({
+                TransactionType: 'Pay Bill',
+                TransID: 'OEI2AK4Q99',
+                TransTime: '20240115121530',
+                TransAmount: '500.00',
+                BusinessShortCode: '999999',
+                BillRefNumber: 'X',
+                MSISDN: '254712345678',
+            } as any);
+
+            expect(mpesaTransactionRepo.create.mock.calls[0][0].saccoId).toBeNull();
+            expect(mpesaTransactionRepo.save).toHaveBeenCalled();
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('999999'));
         });
 
         it('leaves payerName undefined when no name fields are present', async () => {
@@ -534,7 +564,7 @@ describe('MpesaService', () => {
                 MSISDN: '254712345678',
             } as any;
 
-            await expect(service.handleC2BConfirmation(body)).resolves.toBeUndefined();
+            await expect(service.handleC2BConfirmation(body)).resolves.toBeNull();
         });
 
         it('rethrows non-duplicate persistence errors', async () => {
@@ -637,6 +667,37 @@ describe('MpesaService', () => {
         });
     });
 
+    // ── sacco scoping ────────────────────────────────────────────────────────
+    describe('sacco scoping', () => {
+        it('getTransactionsByPhone adds a saccoId filter only when one is given', async () => {
+            qb.getMany.mockResolvedValue([]);
+
+            await service.getTransactionsByPhone('0712345678');
+            expect(qb.andWhere).not.toHaveBeenCalledWith('t.saccoId = :saccoId', expect.anything());
+
+            await service.getTransactionsByPhone('0712345678', undefined, undefined, 'sacco-1');
+            expect(qb.andWhere).toHaveBeenCalledWith('t.saccoId = :saccoId', { saccoId: 'sacco-1' });
+        });
+
+        it('getUnmatchedSummary is platform-wide without a saccoId and scoped with one', async () => {
+            const summaryQb: any = {
+                select: jest.fn().mockReturnThis(),
+                addSelect: jest.fn().mockReturnThis(),
+                where: jest.fn().mockReturnThis(),
+                andWhere: jest.fn().mockReturnThis(),
+                getRawOne: jest.fn().mockResolvedValue({ count: '2', totalAmount: '3000', oldest: null }),
+            };
+            mpesaTransactionRepo.createQueryBuilder.mockReturnValue(summaryQb);
+
+            const all = await service.getUnmatchedSummary();
+            expect(summaryQb.andWhere).not.toHaveBeenCalled();
+            expect(all).toEqual({ count: 2, totalAmount: 3000, oldestTransactionTime: null });
+
+            await service.getUnmatchedSummary('sacco-1');
+            expect(summaryQb.andWhere).toHaveBeenCalledWith('t.saccoId = :saccoId', { saccoId: 'sacco-1' });
+        });
+    });
+
     // ── getTransactionsByDateRange ────────────────────────────────────────────
     describe('getTransactionsByDateRange', () => {
         it('queries with a Between range ordered by most recent first', async () => {
@@ -652,6 +713,151 @@ describe('MpesaService', () => {
                 }),
             );
             expect(result).toEqual([{ id: 'tx-1' }]);
+        });
+    });
+
+    // ── registerC2BUrls ──────────────────────────────────────────────────────
+    describe('registerC2BUrls', () => {
+        const ORIGINAL_BASE = process.env.MPESA_CALLBACK_BASE_URL;
+
+        beforeEach(() => {
+            process.env.MPESA_CALLBACK_BASE_URL = 'https://example.ngrok.app';
+            httpService.get.mockReturnValue(
+                of({ data: { access_token: 'tok', expires_in: 3600 } }),
+            );
+        });
+
+        afterEach(() => {
+            process.env.MPESA_CALLBACK_BASE_URL = ORIGINAL_BASE;
+        });
+
+        it('registers /payment/c2b/* URLs (Daraja rejects paths containing "mpesa")', async () => {
+            httpService.post.mockReturnValue(
+                of({ data: { ResponseDescription: 'Success' } }),
+            );
+
+            const result = await service.registerC2BUrls(SACCO_ID);
+
+            const [url, payload] = httpService.post.mock.calls[0];
+            expect(url).toContain('/mpesa/c2b/v1/registerurl');
+            expect(payload).toEqual({
+                ShortCode: CREDS.shortcode,
+                ResponseType: 'Completed',
+                ConfirmationURL: 'https://example.ngrok.app/payment/c2b/confirmation',
+                ValidationURL: 'https://example.ngrok.app/payment/c2b/validation',
+            });
+            expect(payload.ConfirmationURL).not.toMatch(/mpesa/);
+            expect(payload.ValidationURL).not.toMatch(/mpesa/);
+            expect(result).toEqual({ responseDescription: 'Success' });
+            expect(saccoSettingsService.recordC2bRegistration).toHaveBeenCalledWith(SACCO_ID, null);
+        });
+
+        it('records Daraja\'s reason on the settings row and surfaces it when registration fails', async () => {
+            httpService.post.mockReturnValue(
+                throwError(() => ({
+                    message: 'Request failed with status code 500',
+                    response: {
+                        status: 500,
+                        data: { errorCode: '500.003.1001', errorMessage: 'Service is currently unreachable.' },
+                    },
+                })),
+            );
+
+            await expect(service.registerC2BUrls(SACCO_ID)).rejects.toThrow(
+                'Service is currently unreachable.',
+            );
+            expect(saccoSettingsService.recordC2bRegistration).toHaveBeenCalledWith(
+                SACCO_ID,
+                'Service is currently unreachable.',
+            );
+        });
+    });
+
+    // ── simulateC2BPayment ───────────────────────────────────────────────────
+    describe('simulateC2BPayment', () => {
+        const ORIGINAL_ENV = process.env.MPESA_ENV;
+
+        beforeEach(() => {
+            process.env.MPESA_ENV = 'sandbox';
+            httpService.get.mockReturnValue(
+                of({ data: { access_token: 'tok', expires_in: 3600 } }),
+            );
+        });
+
+        afterEach(() => {
+            process.env.MPESA_ENV = ORIGINAL_ENV;
+        });
+
+        it('posts a CustomerPayBillOnline simulate with the sacco shortcode and the sandbox test MSISDN by default', async () => {
+            httpService.post.mockReturnValue(
+                of({
+                    data: {
+                        ResponseDescription: 'Accept the service request successfully.',
+                        ConversationID: 'AG_1',
+                    },
+                }),
+            );
+
+            const result = await service.simulateC2BPayment(SACCO_ID, {
+                amount: 1499.6,
+                billRefNumber: 'NRB-MSA',
+            });
+
+            const [url, payload, opts] = httpService.post.mock.calls[0];
+            expect(url).toContain('/mpesa/c2b/v1/simulate');
+            expect(payload).toEqual({
+                ShortCode: CREDS.shortcode,
+                CommandID: 'CustomerPayBillOnline',
+                Amount: 1500,
+                Msisdn: '254708374149',
+                BillRefNumber: 'NRB-MSA',
+            });
+            expect(opts.headers.Authorization).toBe('Bearer tok');
+            expect(result).toEqual({
+                responseDescription: 'Accept the service request successfully.',
+                conversationId: 'AG_1',
+            });
+        });
+
+        it('honours an explicit msisdn', async () => {
+            httpService.post.mockReturnValue(of({ data: { ResponseDescription: 'ok' } }));
+
+            await service.simulateC2BPayment(SACCO_ID, {
+                amount: 10,
+                billRefNumber: 'X',
+                msisdn: '254712345678',
+            });
+
+            expect(httpService.post.mock.calls[0][1].Msisdn).toBe('254712345678');
+        });
+
+        it('refuses to run against production without touching Daraja', async () => {
+            process.env.MPESA_ENV = 'production';
+
+            await expect(
+                service.simulateC2BPayment(SACCO_ID, { amount: 10, billRefNumber: 'X' }),
+            ).rejects.toThrow(BadRequestException);
+
+            expect(saccoSettingsService.getDecryptedMpesaCredentials).not.toHaveBeenCalled();
+            expect(httpService.post).not.toHaveBeenCalled();
+        });
+
+        it('surfaces the Daraja error message and drops the cached token on failure', async () => {
+            httpService.post.mockReturnValue(
+                throwError(() => ({
+                    message: 'Request failed with status code 400',
+                    response: { status: 400, data: { errorMessage: 'Invalid ShortCode' } },
+                })),
+            );
+
+            await expect(
+                service.simulateC2BPayment(SACCO_ID, { amount: 10, billRefNumber: 'X' }),
+            ).rejects.toThrow('Invalid ShortCode');
+
+            // Token was discarded: the next call fetches a fresh one.
+            httpService.post.mockReturnValue(of({ data: { ResponseDescription: 'ok' } }));
+            await service.simulateC2BPayment(SACCO_ID, { amount: 10, billRefNumber: 'X' });
+            expect(httpService.get).toHaveBeenCalledTimes(2);
         });
     });
 });

@@ -6,8 +6,9 @@ describe('MpesaController', () => {
 
     let mpesaService: {
         getTransactionsByPhone: jest.Mock;
+        getUnmatchedSummary: jest.Mock;
         handleStkCallback: jest.Mock;
-        handleC2BConfirmation: jest.Mock;
+        simulateC2BPayment: jest.Mock;
     };
     let paymentService: { handleMpesaCallback: jest.Mock };
     let loggerErrorSpy: jest.SpyInstance;
@@ -18,8 +19,9 @@ describe('MpesaController', () => {
 
         mpesaService = {
             getTransactionsByPhone: jest.fn(),
+            getUnmatchedSummary: jest.fn(),
             handleStkCallback: jest.fn(),
-            handleC2BConfirmation: jest.fn(),
+            simulateC2BPayment: jest.fn(),
         };
         paymentService = { handleMpesaCallback: jest.fn() };
 
@@ -37,6 +39,10 @@ describe('MpesaController', () => {
             .mockImplementation(() => undefined);
     });
 
+    const superAdmin = { role: 'SUPER_ADMIN', saccoId: null };
+    const saccoAdmin = { role: 'SACCO_ADMIN', saccoId: 'sacco-1' };
+    const clerk = { role: 'CLERK', saccoId: 'sacco-1' };
+
     // ── GET /payment/mpesa/transactions ────────────────────────────────────
     describe('getTransactionsByPhone', () => {
         it('parses dateFrom/dateTo strings into Dates before delegating', async () => {
@@ -46,12 +52,13 @@ describe('MpesaController', () => {
                 phone: '0712345678',
                 dateFrom: '2024-01-01',
                 dateTo: '2024-01-31',
-            } as any);
+            } as any, superAdmin);
 
             expect(mpesaService.getTransactionsByPhone).toHaveBeenCalledWith(
                 '0712345678',
                 new Date('2024-01-01'),
                 new Date('2024-01-31'),
+                undefined,
             );
             expect(result).toEqual([{ id: 'tx-1' }]);
         });
@@ -61,13 +68,46 @@ describe('MpesaController', () => {
 
             await controller.getTransactionsByPhone({
                 phone: '0712345678',
-            } as any);
+            } as any, superAdmin);
 
             expect(mpesaService.getTransactionsByPhone).toHaveBeenCalledWith(
                 '0712345678',
                 undefined,
                 undefined,
+                undefined,
             );
+        });
+
+        it('scopes a clerk or sacco admin to their own sacco, ignoring ?saccoId', async () => {
+            mpesaService.getTransactionsByPhone.mockResolvedValue([]);
+
+            await controller.getTransactionsByPhone(
+                { phone: '0712345678', saccoId: 'someone-elses-sacco' } as any,
+                clerk,
+            );
+
+            expect(mpesaService.getTransactionsByPhone.mock.calls[0][3]).toBe('sacco-1');
+        });
+
+        it('lets a super admin narrow to one sacco via ?saccoId', async () => {
+            mpesaService.getTransactionsByPhone.mockResolvedValue([]);
+
+            await controller.getTransactionsByPhone(
+                { phone: '0712345678', saccoId: 'sacco-9' } as any,
+                superAdmin,
+            );
+
+            expect(mpesaService.getTransactionsByPhone.mock.calls[0][3]).toBe('sacco-9');
+        });
+
+        it('rejects a non-super-admin with no sacco assignment', async () => {
+            await expect(
+                controller.getTransactionsByPhone({ phone: '0712345678' } as any, {
+                    role: 'CLERK',
+                    saccoId: null,
+                }),
+            ).rejects.toThrow('not assigned to a sacco');
+            expect(mpesaService.getTransactionsByPhone).not.toHaveBeenCalled();
         });
 
         it('lets a service error propagate (not a Safaricom-facing endpoint)', async () => {
@@ -76,7 +116,7 @@ describe('MpesaController', () => {
             );
 
             await expect(
-                controller.getTransactionsByPhone({ phone: '0712345678' } as any),
+                controller.getTransactionsByPhone({ phone: '0712345678' } as any, superAdmin),
             ).rejects.toThrow('lookup failed');
         });
     });
@@ -154,60 +194,38 @@ describe('MpesaController', () => {
         });
     });
 
-    // ── POST /payment/mpesa/c2b/validation ─────────────────────────────────
-    describe('handleC2BValidation', () => {
-        it('logs the incoming payload and accepts by default', async () => {
-            const body = {
-                TransID: 'OEI2AK4Q16',
-                BillRefNumber: 'BK-42',
-                MSISDN: '254712345678',
-            };
+    // ── GET /payment/mpesa/transactions/unmatched-summary ──────────────────
+    describe('getUnmatchedSummary', () => {
+        it('is platform-wide for a super admin with no ?saccoId', async () => {
+            mpesaService.getUnmatchedSummary.mockResolvedValue({ count: 0 });
 
-            const result = await controller.handleC2BValidation(body);
+            await controller.getUnmatchedSummary(undefined, superAdmin);
 
-            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
-            expect(loggerLogSpy).toHaveBeenCalledWith(
-                expect.stringContaining('OEI2AK4Q16'),
-            );
+            expect(mpesaService.getUnmatchedSummary).toHaveBeenCalledWith(undefined);
         });
 
-        it('still accepts even with a malformed/empty body', async () => {
-            const result = await controller.handleC2BValidation(undefined as any);
+        it('is always the sacco admin\'s own sacco', async () => {
+            mpesaService.getUnmatchedSummary.mockResolvedValue({ count: 0 });
 
-            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+            await controller.getUnmatchedSummary('sacco-9', saccoAdmin);
+
+            expect(mpesaService.getUnmatchedSummary).toHaveBeenCalledWith('sacco-1');
         });
     });
 
-    // ── POST /payment/mpesa/c2b/confirmation ───────────────────────────────
-    describe('handleC2BConfirmation', () => {
-        const body = {
-            TransID: 'OEI2AK4Q16',
-            BillRefNumber: 'BK-42',
-            MSISDN: '254712345678',
-            TransAmount: '500.00',
-        };
+    // ── POST /payment/mpesa/:saccoId/c2b/simulate ──────────────────────────
+    describe('simulateC2BPayment', () => {
+        it('delegates to MpesaService with the sacco id and body', async () => {
+            mpesaService.simulateC2BPayment.mockResolvedValue({
+                responseDescription: 'ok',
+                conversationId: 'AG_1',
+            });
 
-        it('delegates to MpesaService and acknowledges receipt', async () => {
-            mpesaService.handleC2BConfirmation.mockResolvedValue(undefined);
+            const dto = { amount: 1500, billRefNumber: 'NRB-MSA' };
+            const result = await controller.simulateC2BPayment('sacco-1', dto as any);
 
-            const result = await controller.handleC2BConfirmation(body);
-
-            expect(mpesaService.handleC2BConfirmation).toHaveBeenCalledWith(body);
-            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
-        });
-
-        it('still acknowledges receipt when persistence throws', async () => {
-            mpesaService.handleC2BConfirmation.mockRejectedValue(
-                new Error('duplicate key'),
-            );
-
-            const result = await controller.handleC2BConfirmation(body);
-
-            expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
-            expect(loggerErrorSpy).toHaveBeenCalledWith(
-                expect.stringContaining('duplicate key'),
-                expect.anything(),
-            );
+            expect(mpesaService.simulateC2BPayment).toHaveBeenCalledWith('sacco-1', dto);
+            expect(result).toEqual({ responseDescription: 'ok', conversationId: 'AG_1' });
         });
     });
 });

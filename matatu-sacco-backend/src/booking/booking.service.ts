@@ -8,13 +8,13 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, Repository, IsNull } from 'typeorm';
 import { Booking, BookingSource, BookingStatus, PaymentMethod, PaymentStatus } from './entities/booking.entity';
 import { Trip, TripStatus } from '../trip/entities/trip.entity';
 import { Route } from '../route/entities/route.entity';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { UpdateBookingDto } from './dto/update-booking.dto';
-import { PaymentService } from 'src/payment/payment.service';
+import { PaymentService, type C2BReceiptUnmatchedEvent } from 'src/payment/payment.service';
 import {
   Payment,
   PaymentMethod as PaymentEntityMethod,
@@ -24,7 +24,7 @@ import {
 import { SaccoSettingsService } from 'src/sacco/sacco-settings.service';
 import { SaccoSettings } from 'src/sacco/entities/sacco-settings.entity';
 import { MpesaTransaction, MpesaTransactionMatchStatus } from 'src/payment/entities/mpesa.entity';
-import { SEAT_HOLD_MS } from 'src/payment/payment-reconcile.constants';
+import { SEAT_HOLD_MS, C2B_BOOKING_MATCH_WINDOW_MS } from 'src/payment/payment-reconcile.constants';
 
 export interface UniquePassengerStats {
   saccoId: string | null;
@@ -305,10 +305,18 @@ export class BookingService {
     booking: Booking,
     mpesaTransactionId: string,
   ): Promise<void> {
+    // A receipt attributed to a sacco may only settle that sacco's booking.
+    // Unattributed receipts (saccoId null — shortcode nobody has configured)
+    // are left matchable so a SUPER_ADMIN can still resolve them by hand.
+    const claimable = { id: mpesaTransactionId, matchStatus: MpesaTransactionMatchStatus.UNMATCHED };
     const result = await manager
       .getRepository(MpesaTransaction)
       .update(
-        { id: mpesaTransactionId, matchStatus: MpesaTransactionMatchStatus.UNMATCHED },
+        // Array = OR: unattributed, or attributed to this booking's sacco.
+        [
+          { ...claimable, saccoId: IsNull() },
+          { ...claimable, saccoId: booking.saccoId },
+        ],
         {
           matchStatus: MpesaTransactionMatchStatus.MATCHED,
           matchedBookingId: booking.id,
@@ -319,7 +327,7 @@ export class BookingService {
 
     if (result.affected === 0) {
       throw new ConflictException(
-        `M-Pesa transaction ${mpesaTransactionId} was already matched to another booking.`,
+        `M-Pesa transaction ${mpesaTransactionId} was already matched to another booking, or belongs to a different sacco.`,
       );
     }
 
@@ -860,6 +868,99 @@ export class BookingService {
       booking.status = BookingStatus.AWAITING_TRIP;
       return manager.save(booking);
     });
+  }
+
+  // ─── Paybill money that no payment row claimed ───────────────────────────
+  /**
+   * The passenger paid the paybill by hand instead of (or after) answering
+   * the STK prompt. Find the booking it is for and settle it, so the money
+   * does not sit in the clerk's unmatched queue.
+   *
+   * Two ways to identify the booking, strongest first:
+   *   1. BillRefNumber equals the booking short ref — the first 8 characters
+   *      of the booking id, which is what the STK prompt shows as the account
+   *      reference. An exact, passenger-typed pointer.
+   *   2. Same sacco, same phone (last 9 digits), same fare, still PENDING and
+   *      created recently. Newest first.
+   *
+   * The amount must equal the fare either way: a short payment is not a
+   * settlement, and an over-payment is a refund conversation — both are for
+   * a person. Anything not placed here stays UNMATCHED for the clerk.
+   */
+  async settleFromC2BReceipt(event: C2BReceiptUnmatchedEvent): Promise<Booking | null> {
+    const booking = await this.findBookingForC2BReceipt(event);
+    if (!booking) {
+      this.logger.log(
+        `C2B receipt ${event.mpesaReceiptNumber} (${event.amount} from ${event.payerPhone}, ` +
+        `ref "${event.billRefNumber ?? ''}") matches no pending booking — left for a clerk.`,
+      );
+      return null;
+    }
+
+    try {
+      await this.paymentService.recordC2BPayment({
+        bookingId: booking.id,
+        saccoId: booking.saccoId,
+        amount: Number(event.amount),
+        payerPhone: event.payerPhone,
+        mpesaReceiptNumber: event.mpesaReceiptNumber,
+        transactionId: event.transactionId,
+      });
+    } catch (err: any) {
+      // Someone (a clerk, a concurrent delivery) claimed the receipt first.
+      // Their match stands; this booking is not ours to settle.
+      this.logger.warn(
+        `C2B receipt ${event.mpesaReceiptNumber} could not be claimed for booking ${booking.id}: ${err.message}`,
+      );
+      return null;
+    }
+
+    this.logger.log(
+      `Booking ${booking.id} auto-settled from paybill receipt ${event.mpesaReceiptNumber} ` +
+      `(${event.billRefNumber && this.matchesShortRef(booking.id, event.billRefNumber) ? 'by account reference' : 'by phone and fare'})`,
+    );
+
+    return this.confirmPayment(booking.id, { mpesaReceiptNumber: event.mpesaReceiptNumber });
+  }
+
+  private matchesShortRef(bookingId: string, billRef: string): boolean {
+    return bookingId.slice(0, 8).toUpperCase() === billRef.trim().toUpperCase();
+  }
+
+  private async findBookingForC2BReceipt(event: C2BReceiptUnmatchedEvent): Promise<Booking | null> {
+    const amount = Number(event.amount);
+    const open = () =>
+      this.bookingRepository
+        .createQueryBuilder('b')
+        .where('b.saccoId = :saccoId', { saccoId: event.saccoId })
+        .andWhere('b.paymentMethod = :mpesa', { mpesa: PaymentMethod.MPESA })
+        .andWhere('b.paymentStatus != :paid', { paid: PaymentStatus.PAID })
+        .andWhere('b.status NOT IN (:...closed)', {
+          closed: [BookingStatus.BOARDED, BookingStatus.CANCELLED],
+        })
+        .andWhere('b.fare = :amount', { amount });
+
+    // 1. The passenger typed the booking short ref as the account number.
+    const ref = (event.billRefNumber ?? '').trim();
+    if (/^[0-9a-f]{8}$/i.test(ref)) {
+      const byRef = await open()
+        .andWhere('CAST(b.id AS text) ILIKE :ref', { ref: `${ref}%` })
+        .getOne();
+      if (byRef) return byRef;
+    }
+
+    // 2. Same phone and fare, pending, recent.
+    const suffix = event.payerPhone.replace(/\D/g, '').slice(-9);
+    if (suffix.length < 9) return null;
+
+    return open()
+      .andWhere('b.paymentStatus = :pending', { pending: PaymentStatus.PENDING })
+      .andWhere('b.passengerPhone LIKE :suffix', { suffix: `%${suffix}` })
+      .andWhere('b.createdAt >= :since', {
+        since: new Date(new Date(event.transactionTime).getTime() - C2B_BOOKING_MATCH_WINDOW_MS),
+      })
+      .orderBy('b.createdAt', 'DESC')
+      .getOne();
   }
 
   async markPaymentFailed(id: string): Promise<Booking> {

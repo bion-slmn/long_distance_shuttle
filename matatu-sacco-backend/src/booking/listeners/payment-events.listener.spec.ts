@@ -13,6 +13,7 @@ describe('PaymentEventsListener', () => {
         bookingService = {
             confirmPayment: jest.fn(),
             markPaymentFailed: jest.fn(),
+            settleFromC2BReceipt: jest.fn(),
         };
 
         const module: TestingModule = await Test.createTestingModule({
@@ -142,6 +143,35 @@ describe('PaymentEventsListener', () => {
             await expect(listener.handlePaymentFailed(event)).rejects.toThrow(
                 'Booking "missing-booking" not found.',
             );
+        });
+    });
+
+    // ─── handleC2BReceiptUnmatched ─────────────────────────────────────
+    describe('handleC2BReceiptUnmatched', () => {
+        const event = {
+            transactionId: 'tx-1',
+            saccoId: 'sacco-1',
+            amount: 500,
+            payerPhone: '254712345678',
+            billRefNumber: 'ABCD1234',
+            mpesaReceiptNumber: 'RKT1TEST001',
+            transactionTime: new Date(),
+        };
+
+        it('hands the receipt to BookingService to settle a pending booking', async () => {
+            bookingService.settleFromC2BReceipt!.mockResolvedValue({ id: 'booking-1' });
+
+            await listener.handleC2BReceiptUnmatched(event);
+
+            expect(bookingService.settleFromC2BReceipt).toHaveBeenCalledWith(event);
+        });
+
+        it('never throws — the webhook that fired it must still return 200', async () => {
+            bookingService.settleFromC2BReceipt!.mockRejectedValue(new Error('boom'));
+            const errorSpy = jest.spyOn((listener as any).logger, 'error').mockImplementation(() => undefined);
+
+            await expect(listener.handleC2BReceiptUnmatched(event)).resolves.toBeUndefined();
+            expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('boom'), expect.anything());
         });
     });
 });

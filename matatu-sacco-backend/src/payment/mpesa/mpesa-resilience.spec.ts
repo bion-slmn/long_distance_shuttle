@@ -12,7 +12,11 @@ import { MpesaService } from './mpesa.service';
 describe('MpesaService — resilience', () => {
     let service: MpesaService;
     let httpService: { get: jest.Mock; post: jest.Mock };
-    let saccoSettingsService: { getDecryptedMpesaCredentials: jest.Mock };
+    let saccoSettingsService: {
+        getDecryptedMpesaCredentials: jest.Mock;
+        findSaccoIdByShortcode: jest.Mock;
+        recordC2bRegistration: jest.Mock;
+    };
     let mpesaTransactionRepo: any;
 
     const SACCO_ID = 'sacco-1';
@@ -53,7 +57,11 @@ describe('MpesaService — resilience', () => {
         jest.useFakeTimers().setSystemTime(new Date('2024-01-15T12:15:30+03:00'));
 
         httpService = { get: jest.fn(), post: jest.fn() };
-        saccoSettingsService = { getDecryptedMpesaCredentials: jest.fn() };
+        saccoSettingsService = {
+            getDecryptedMpesaCredentials: jest.fn(),
+            findSaccoIdByShortcode: jest.fn().mockResolvedValue('sacco-1'),
+            recordC2bRegistration: jest.fn().mockResolvedValue(undefined),
+        };
         mpesaTransactionRepo = {
             create: jest.fn((d: any) => d),
             save: jest.fn(),

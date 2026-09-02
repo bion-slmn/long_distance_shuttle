@@ -10,6 +10,8 @@ describe('PaymentController', () => {
   let controller: PaymentController;
   let paymentService: jest.Mocked<PaymentService>;
   let mpesaService: jest.Mocked<MpesaService>;
+  let loggerErrorSpy: jest.SpyInstance;
+  let loggerLogSpy: jest.SpyInstance;
 
   beforeEach(() => {
     paymentService = {
@@ -20,23 +22,108 @@ describe('PaymentController', () => {
       findByReference: jest.fn(),
       findById: jest.fn(),
       isForStage: jest.fn(),
+      handleC2BReceipt: jest.fn(),
     } as unknown as jest.Mocked<PaymentService>;
 
-    mpesaService = {} as jest.Mocked<MpesaService>;
+    mpesaService = {
+      handleC2BConfirmation: jest.fn(),
+    } as unknown as jest.Mocked<MpesaService>;
 
     controller = new PaymentController(paymentService, mpesaService);
+
+    loggerErrorSpy = jest
+      .spyOn((controller as any).logger, 'error')
+      .mockImplementation(() => undefined);
+    loggerLogSpy = jest
+      .spyOn((controller as any).logger, 'log')
+      .mockImplementation(() => undefined);
+  });
+
+  // ── POST /payment/c2b/validation ───────────────────────────────────────
+  describe('handleC2BValidation', () => {
+    it('logs the incoming payload and accepts by default', async () => {
+      const body = { TransID: 'OEI2AK4Q16', BillRefNumber: 'BK-42', MSISDN: '254712345678' };
+
+      const result = await controller.handleC2BValidation(body);
+
+      expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+      expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining('OEI2AK4Q16'));
+    });
+
+    it('still accepts even with a malformed/empty body', async () => {
+      const result = await controller.handleC2BValidation(undefined as any);
+
+      expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+    });
+  });
+
+  // ── POST /payment/c2b/confirmation ─────────────────────────────────────
+  describe('handleC2BConfirmation', () => {
+    const body = {
+      TransID: 'OEI2AK4Q16',
+      BillRefNumber: 'BK-42',
+      MSISDN: '254712345678',
+      TransAmount: '500.00',
+    };
+
+    it('stores the receipt, tries to settle it, and acknowledges', async () => {
+      const stored = { id: 'tx-1', mpesaReceiptNumber: 'OEI2AK4Q16' } as any;
+      mpesaService.handleC2BConfirmation.mockResolvedValue(stored);
+      paymentService.handleC2BReceipt.mockResolvedValue(true);
+
+      const result = await controller.handleC2BConfirmation(body);
+
+      expect(mpesaService.handleC2BConfirmation).toHaveBeenCalledWith(body);
+      expect(paymentService.handleC2BReceipt).toHaveBeenCalledWith(stored);
+      expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+    });
+
+    it('does not re-settle a resent receipt we already hold', async () => {
+      mpesaService.handleC2BConfirmation.mockResolvedValue(null);
+
+      const result = await controller.handleC2BConfirmation(body);
+
+      expect(paymentService.handleC2BReceipt).not.toHaveBeenCalled();
+      expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+    });
+
+    it('still acknowledges when settling throws — the receipt is stored and a clerk can match it', async () => {
+      mpesaService.handleC2BConfirmation.mockResolvedValue({ id: 'tx-1' } as any);
+      paymentService.handleC2BReceipt.mockRejectedValue(new Error('db down'));
+
+      const result = await controller.handleC2BConfirmation(body);
+
+      expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining('db down'), expect.anything());
+    });
+
+    it('still acknowledges receipt when persistence throws', async () => {
+      mpesaService.handleC2BConfirmation.mockRejectedValue(new Error('duplicate key'));
+
+      const result = await controller.handleC2BConfirmation(body);
+
+      expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('duplicate key'),
+        expect.anything(),
+      );
+    });
   });
 
   // ── reconcile ────────────────────────────────────────────────────────
   describe('reconcile', () => {
     it('returns errorMessage from resultDesc when status is FAILED', async () => {
       paymentService.reconcileByBookingId.mockResolvedValue({
+        payment: {
         id: 'pay-1',
         status: PaymentStatus.FAILED,
         resultDesc: 'Request Cancelled by user.',
         initiationErrorMessage: null,
         mpesaReceiptNumber: null,
-      } as any);
+        } as any,
+        checkedWith: 'records',
+        mpesaCheckAvailableInSeconds: null,
+      });
 
       const result = await controller.reconcile('booking-1');
 
@@ -44,19 +131,26 @@ describe('PaymentController', () => {
       expect(result).toEqual({
         paymentId: 'pay-1',
         status: PaymentStatus.FAILED,
+        method: undefined,
         errorMessage: 'Request Cancelled by user.',
         mpesaReceiptNumber: null,
+        checkedWith: 'records',
+        mpesaCheckAvailableInSeconds: null,
       });
     });
 
     it('falls back to initiationErrorMessage when resultDesc is missing', async () => {
       paymentService.reconcileByBookingId.mockResolvedValue({
+        payment: {
         id: 'pay-2',
         status: PaymentStatus.FAILED,
         resultDesc: null,
         initiationErrorMessage: 'Timeout awaiting response.',
         mpesaReceiptNumber: null,
-      } as any);
+        } as any,
+        checkedWith: 'records',
+        mpesaCheckAvailableInSeconds: null,
+      });
 
       const result = await controller.reconcile('booking-2');
 
@@ -65,12 +159,16 @@ describe('PaymentController', () => {
 
     it('falls back to a generic message when neither error field is set', async () => {
       paymentService.reconcileByBookingId.mockResolvedValue({
+        payment: {
         id: 'pay-3',
         status: PaymentStatus.FAILED,
         resultDesc: null,
         initiationErrorMessage: null,
         mpesaReceiptNumber: null,
-      } as any);
+        } as any,
+        checkedWith: 'records',
+        mpesaCheckAvailableInSeconds: null,
+      });
 
       const result = await controller.reconcile('booking-3');
 
@@ -79,12 +177,16 @@ describe('PaymentController', () => {
 
     it('returns null errorMessage when status is not FAILED', async () => {
       paymentService.reconcileByBookingId.mockResolvedValue({
+        payment: {
         id: 'pay-4',
         status: PaymentStatus.SUCCESS,
         resultDesc: null,
         initiationErrorMessage: null,
         mpesaReceiptNumber: 'ABC123',
-      } as any);
+        } as any,
+        checkedWith: 'records',
+        mpesaCheckAvailableInSeconds: null,
+      });
 
       const result = await controller.reconcile('booking-4');
 
@@ -93,6 +195,9 @@ describe('PaymentController', () => {
         status: PaymentStatus.SUCCESS,
         errorMessage: null,
         mpesaReceiptNumber: 'ABC123',
+        method: undefined,
+        checkedWith: 'records',
+        mpesaCheckAvailableInSeconds: null,
       });
     });
   });

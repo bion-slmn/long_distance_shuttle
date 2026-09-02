@@ -217,6 +217,12 @@ export interface SaccoSettings {
     acceptsCash: boolean;
     mpesaShortcode?: string;
     mpesaConfigured: boolean;
+    // Whether Daraja currently knows where to POST direct-paybill (C2B)
+    // confirmations for this shortcode. Registration runs automatically
+    // after configureSaccoMpesaRequest; when it fails (Daraja outages are
+    // common) registeredAt is null and the error says why.
+    mpesaC2bRegisteredAt: string | null;
+    mpesaC2bRegistrationError: string | null;
     // ── Pre-booking limits — fixed MVP defaults, read-only for now ──
     // Not yet editable via updateSaccoSettingsRequest; included here so
     // the frontend can display current limits once needed (e.g. a

@@ -2,6 +2,7 @@
 import {
     Body,
     Controller,
+    ForbiddenException,
     Get,
     HttpCode,
     Logger,
@@ -15,8 +16,10 @@ import { MpesaCallbackDto } from '../dto/mpesa-callback.dto';
 import { Public } from 'src/decorators/public.decorator';
 import { PaymentService } from '../payment.service';
 import { GetTransactionsByPhoneDto } from '../dto/get-transactions-by-phone.dto';
+import { SimulateC2BPaymentDto } from '../dto/simulate-c2b-payment.dto';
 import { Roles } from 'src/decorators/roles.decorator';
 import { UserRole } from 'src/auth/entities/user.entity';
+import { CurrentUser } from 'src/decorators/current-user.decorator';
 
 // ─── Controller ─────────────────────────────────────────────────────────
 // Endpoints living here:
@@ -24,14 +27,15 @@ import { UserRole } from 'src/auth/entities/user.entity';
 //    protected, validated via InitiateStkPushDto.
 //  - POST /payment/mpesa/callback                → STK callback, called by
 //    Safaricom, public, unauthenticated, must always return 200 quickly.
-//  - POST /payment/mpesa/c2b/validation           → C2B pre-check, called by
-//    Safaricom only if validation is enabled on the shortcode. Must return
-//    Safaricom's exact ack/reject shape, quickly, never throw.
-//  - POST /payment/mpesa/c2b/confirmation         → C2B post-payment
-//    confirmation, called by Safaricom, public, unauthenticated, must
-//    always return 200 quickly or Daraja retries.
+//  - C2B validation/confirmation are NOT here: Daraja rejects callback URLs
+//    containing "mpesa", so they live on PaymentController as
+//    /payment/c2b/validation and /payment/c2b/confirmation.
 //  - GET  /payment/mpesa/transactions             → internal lookup, protected,
 //    filter by payer phone and an optional date range.
+//  - POST /payment/mpesa/:saccoId/c2b/register    → one-time URL registration.
+//  - POST /payment/mpesa/:saccoId/c2b/simulate    → sandbox only, admin-only:
+//    asks Daraja to fake a paybill payment so the confirmation round-trips
+//    through /c2b/confirmation like a real one.
 
 @Controller('payment/mpesa')
 export class MpesaController {
@@ -46,12 +50,23 @@ export class MpesaController {
     // Protected (no @Public()) — this is an internal/staff lookup, not a
     // Safaricom-facing endpoint. dateFrom/dateTo are optional ISO date
     // strings, e.g. ?phone=0712345678&dateFrom=2024-01-01&dateTo=2024-01-31
+    //
+    // Scoped: a SACCO_ADMIN or CLERK only ever sees money attributed to
+    // their own sacco. SUPER_ADMIN sees everything, or one sacco via ?saccoId=.
     @Get('transactions')
-    async getTransactionsByPhone(@Query() query: GetTransactionsByPhoneDto) {
+    async getTransactionsByPhone(
+        @Query() query: GetTransactionsByPhoneDto,
+        @CurrentUser() user: any,
+    ) {
         const dateFrom = query.dateFrom ? new Date(query.dateFrom) : undefined;
         const dateTo = query.dateTo ? new Date(query.dateTo) : undefined;
 
-        return this.mpesaService.getTransactionsByPhone(query.phone, dateFrom, dateTo);
+        return this.mpesaService.getTransactionsByPhone(
+            query.phone,
+            dateFrom,
+            dateTo,
+            this.saccoScope(user, query.saccoId),
+        );
     }
 
     // ── How much C2B money is sitting unattached ───────────────────────
@@ -60,8 +75,21 @@ export class MpesaController {
     // shadows the other.
     @Get('transactions/unmatched-summary')
     @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
-    getUnmatchedSummary() {
-        return this.mpesaService.getUnmatchedSummary();
+    getUnmatchedSummary(
+        @Query('saccoId') saccoId: string | undefined,
+        @CurrentUser() user: any,
+    ) {
+        return this.mpesaService.getUnmatchedSummary(this.saccoScope(user, saccoId));
+    }
+
+    // SUPER_ADMIN: the requested sacco, or undefined for all of them.
+    // Anyone else: their own sacco, full stop.
+    private saccoScope(user: any, requested?: string): string | undefined {
+        if (user?.role === UserRole.SUPER_ADMIN) return requested || undefined;
+        if (!user?.saccoId) {
+            throw new ForbiddenException('You are not assigned to a sacco.');
+        }
+        return user.saccoId;
     }
 
     // ── Safaricom's async STK callback ──────────────────────────────────
@@ -92,67 +120,26 @@ export class MpesaController {
         return { ResultCode: 0, ResultDesc: 'Accepted' };
     }
 
-    // ── C2B validation (optional, only hit if enabled on the shortcode) ──
-    // Public, unauthenticated. Safaricom calls this BEFORE completing the
-    // transaction and expects a synchronous accept/reject. Only relevant if
-    // ResponseType was registered such that validation is actually invoked —
-    // if it's off, Safaricom skips straight to /c2b/confirmation.
-    // Keep this fast and side-effect-free: no persistence here, that
-    // happens in the confirmation step once the payment is final.
-    @Public()
-    @Post('c2b/validation')
-    @HttpCode(200)
-    async handleC2BValidation(@Body() body: any) {
-        try {
-            this.logger.log(
-                `C2B validation received: TransID=${body?.TransID} BillRefNumber=${body?.BillRefNumber} MSISDN=${body?.MSISDN}`,
-            );
-
-            // Add any accept/reject logic here (e.g. does BillRefNumber match
-            // a known booking/account?). Defaulting to accept-all for now,
-            // matching ResponseType: "Completed" behavior on registration.
-        } catch (err: any) {
-            this.logger.error(`Failed to process M-Pesa C2B validation: ${err.message}`, err.stack);
-        }
-
-        // Daraja expects this exact shape to accept the transaction.
-        // To reject, respond with a non-zero ResultCode, e.g.
-        // { ResultCode: 'C2B00016', ResultDesc: 'Rejected' }
-        return { ResultCode: 0, ResultDesc: 'Accepted' };
-    }
-
-    // ── C2B confirmation (payment already completed) ─────────────────────
-    // Public, unauthenticated. Called AFTER the customer's payment has gone
-    // through — this is the one that should actually persist the transaction.
-    // Must always return 200 quickly or Daraja will retry the same payload.
-    // Never throw here — log and swallow instead.
-    @Public()
-    @Post('c2b/confirmation')
-    @HttpCode(200)
-    async handleC2BConfirmation(@Body() body: any) {
-        try {
-            this.logger.log(
-                `C2B confirmation received: TransID=${body?.TransID} BillRefNumber=${body?.BillRefNumber} MSISDN=${body?.MSISDN} Amount=${body?.TransAmount}`,
-            );
-
-            await this.mpesaService.handleC2BConfirmation(body);
-
-            // Hook into the same downstream matching logic as STK if C2B
-            // payments should also settle bookings/invoices automatically.
-            // await this.paymentService.handleMpesaC2BConfirmation(body);
-        } catch (err: any) {
-            this.logger.error(`Failed to process M-Pesa C2B confirmation: ${err.message}`, err.stack);
-        }
-
-        // Daraja expects this exact shape acknowledging receipt.
-        return { ResultCode: 0, ResultDesc: 'Accepted' };
-    }
-
     // ── One-time C2B URL registration for a sacco's shortcode ──────────────
     // Protected — an admin/setup action you trigger yourself, not a
-    // Safaricom-facing webhook. Import Param from @nestjs/common.
+    // Safaricom-facing webhook. Registers /payment/c2b/* (see MpesaService).
     @Post(':saccoId/c2b/register')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
     async registerC2BUrls(@Param('saccoId') saccoId: string) {
         return this.mpesaService.registerC2BUrls(saccoId);
+    }
+
+    // ── Sandbox-only: simulate a direct paybill payment ───────────────────
+    // Protected and admin-only. The service refuses this outright when
+    // MPESA_ENV is production. Daraja replies "accepted" immediately and
+    // then POSTs the confirmation to /payment/c2b/confirmation a few seconds later,
+    // so check mpesa_transactions (or the unmatched summary) after calling.
+    @Post(':saccoId/c2b/simulate')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN)
+    async simulateC2BPayment(
+        @Param('saccoId') saccoId: string,
+        @Body() dto: SimulateC2BPaymentDto,
+    ) {
+        return this.mpesaService.simulateC2BPayment(saccoId, dto);
     }
 }

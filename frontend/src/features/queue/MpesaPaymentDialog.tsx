@@ -1,5 +1,5 @@
 // src/features/queue/MpesaPaymentDialog.tsx
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
     CheckCircle2,
@@ -41,8 +41,6 @@ import { invalidateQueues } from "@/hooks/useRouteQueues"
 /** How long we keep polling an STK push before giving up on it. */
 const POLL_WINDOW_MS = 180_000
 const POLL_INTERVAL_MS = 3_000
-/** Fire one automatic reconcile just before the poll window closes. */
-const AUTO_RECONCILE_AFTER_MS = 175_000
 
 // ─── Pure helpers ───────────────────────────────────────────────────────────
 
@@ -61,14 +59,39 @@ function hasElapsed(startedAt: number | null, ms: number): boolean {
     return startedAt !== null && Date.now() - startedAt > ms
 }
 
-/** Tells the clerk what a manual reconcile actually turned up. */
+/**
+ * Tells the clerk what a manual check actually did. The button is local by
+ * default — it re-reads our records, where the callback, the paybill
+ * confirmation and the automatic checks all land — and only reaches
+ * Safaricom for a payment the automatic checks have given up on, at most
+ * once a minute. The wording has to say which happened, or a clerk will
+ * mash it believing each press asks Safaricom.
+ */
 function toastReconcileResult(result: PaymentStatusForBooking) {
     if (result.status === "SUCCESS") return // the receipt view says it better
-    if (result.status === "FAILED" || result.status === "EXPIRED") {
+
+    const askedMpesa = result.checkedWith === "mpesa"
+    if (result.status === "FAILED") {
         toast.error(result.errorMessage ?? "M-Pesa reports this payment failed.")
         return
     }
-    toast.info("M-Pesa hasn't confirmed this payment yet — check again in a moment.")
+    if (result.status === "EXPIRED") {
+        if (askedMpesa) {
+            toast.error("Asked M-Pesa directly: no payment found for this booking.")
+        } else if (result.mpesaCheckAvailableInSeconds) {
+            toast.info(
+                `No payment in our records. M-Pesa was asked moments ago — you can ask again in ${result.mpesaCheckAvailableInSeconds}s.`
+            )
+        } else {
+            toast.info("No payment in our records yet.")
+        }
+        return
+    }
+    toast.info(
+        askedMpesa
+            ? "Asked M-Pesa directly: still not confirmed."
+            : "Not confirmed yet. M-Pesa is checked automatically at 2:30 and 3:00 — no need to keep pressing."
+    )
 }
 
 // ─── Dialog ─────────────────────────────────────────────────────────────────
@@ -95,21 +118,14 @@ export function MpesaPaymentDialog({
     const queryClient = useQueryClient()
 
     const [startedAt, setStartedAt] = useState<number | null>(null)
-    // One automatic reconcile per attempt — manual presses don't consume it.
-    const autoReconciledRef = useRef(false)
 
     useEffect(() => {
-        if (open) {
-            setStartedAt(Date.now())
-            autoReconciledRef.current = false
-        } else {
-            setStartedAt(null)
-        }
+        setStartedAt(open ? Date.now() : null)
     }, [open, booking.id])
 
     // Re-renders every second so the countdown and the time-based flags below
     // stay live even though startedAt itself never changes.
-    const [tick, setTick] = useState(0)
+    const [, setTick] = useState(0)
     useEffect(() => {
         if (!open) return
         const interval = setInterval(() => setTick((t) => t + 1), 1000)
@@ -139,8 +155,9 @@ export function MpesaPaymentDialog({
         hasElapsed(startedAt, POLL_WINDOW_MS) &&
         !paymentStatusQuery.isFetching
 
-    // Safaricom's callback isn't reliable, so we ask Daraja directly. Runs
-    // automatically just before we'd give up, and on demand from the button.
+    // On demand only. The backend's own schedule asks Safaricom at 2:30 and
+    // 3:00; this press re-reads our records (cheap, unlimited) and reaches
+    // Safaricom only once that schedule has given up — see toastReconcileResult.
     const reconcileMutation = useMutation({
         mutationFn: () => reconcilePaymentRequest(booking.id),
         onSuccess: (result) => {
@@ -153,24 +170,9 @@ export function MpesaPaymentDialog({
         try {
             toastReconcileResult(await reconcileMutation.mutateAsync())
         } catch {
-            toast.error("Couldn't reach M-Pesa. Try again in a moment.")
+            toast.error("Couldn't check right now. Try again in a moment.")
         }
     }
-
-    useEffect(() => {
-        if (
-            open &&
-            hasElapsed(startedAt, AUTO_RECONCILE_AFTER_MS) &&
-            !paymentSucceeded &&
-            !paymentFailed &&
-            !reconcileMutation.isPending &&
-            !autoReconciledRef.current
-        ) {
-            autoReconciledRef.current = true
-            reconcileMutation.mutate()
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, startedAt, paymentSucceeded, paymentFailed, tick])
 
     // Definitive seat number + receipt number for the receipt, straight from
     // the booking record once payment lands.
@@ -355,8 +357,8 @@ export function MpesaPaymentDialog({
                                             : "Check M-Pesa now"}
                                     </Button>
                                     <p className="text-center text-[11px] text-muted-foreground/60">
-                                        Asks Safaricom directly if the money came through, in case the
-                                        confirmation never reached us.
+                                        Checks our records for the confirmation. Safaricom is asked
+                                        automatically at 2:30 and 3:00 if it hasn't arrived.
                                     </p>
                                 </div>
                             </>

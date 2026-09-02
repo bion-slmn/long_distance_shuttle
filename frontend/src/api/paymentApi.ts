@@ -155,6 +155,13 @@ export interface PaymentStatusForBooking {
     method: string;
     errorMessage: string | null;
     mpesaReceiptNumber: string | null;
+    // Only on the reconcile response. "records" means we checked what we
+    // already hold (always); "mpesa" means Daraja was actually asked, which
+    // happens only for a payment the automatic checks gave up on. When Daraja
+    // was eligible but asked too recently, mpesaCheckAvailableInSeconds says
+    // how long until a press would reach it again.
+    checkedWith?: "records" | "mpesa";
+    mpesaCheckAvailableInSeconds?: number | null;
 }
 
 export async function reconcilePaymentRequest(
@@ -224,10 +231,24 @@ export async function getMpesaTransactionsByPhoneRequest(
     return res.data;
 }
 
+// ─── C2B (direct paybill) callback registration ──────────────────────────
+// Runs automatically when M-Pesa credentials are saved; this is the manual
+// retry for when Daraja was unreachable at the time. SUPER_ADMIN, SACCO_ADMIN.
+export async function registerSaccoC2bUrlsRequest(
+    saccoId: string,
+): Promise<{ responseDescription: string }> {
+    const { data } = await api.post<{ responseDescription: string }>(
+        `/payment/mpesa/${saccoId}/c2b/register`,
+    );
+    return data;
+}
+
 // ─── Unmatched C2B money ─────────────────────────────────────────────────
 // Passengers who pay the paybill directly land here with nothing to attach
 // the payment to. Until a clerk matches one, it's money received against no
-// seat — platform-wide, since mpesa_transactions carry no saccoId.
+// seat. Scoped server-side: a SACCO_ADMIN sees their own sacco, a
+// SUPER_ADMIN sees every sacco (including receipts no sacco could be
+// attributed to).
 
 export interface UnmatchedMpesaSummary {
     count: number;

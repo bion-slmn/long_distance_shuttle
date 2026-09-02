@@ -89,3 +89,33 @@ export const SWEEP_BATCH_LIMIT = 25;
 // for payments that can still resolve. These skip the query and go straight
 // to force-expiry.
 export const SWEEP_QUERY_MAX_AGE_MS = 24 * 60 * 60_000; // 24 hours
+
+// ── Matching a paybill (C2B) receipt to the money it settles ─────────────────
+// A paybill confirmation carries phone, amount, time and shortcode — never a
+// CheckoutRequestID. These windows bound how far apart "the STK push we sent"
+// and "the receipt Safaricom confirmed" may sit and still be the same money.
+
+// The receipt's TransTime is Safaricom's clock; initiatedAt is ours. Allow
+// the receipt to read slightly EARLIER than the push it belongs to.
+export const C2B_RECEIPT_MATCH_BEFORE_MS = 2 * 60_000;
+// How long after an STK push a paybill receipt from the same phone for the
+// same amount is still taken to be that push's money. Comfortably past the
+// 3-minute reconcile ladder, since this is exactly the path that rescues a
+// push whose callback never came.
+export const C2B_RECEIPT_MATCH_AFTER_MS = 30 * 60_000;
+// When no payment row claims a receipt, a PENDING booking in the same sacco
+// with the same phone and fare is settled by it — but only one this recent.
+// Older pending bookings are almost certainly abandoned, and attaching fresh
+// money to them would settle the wrong trip.
+export const C2B_BOOKING_MATCH_WINDOW_MS = 2 * 60 * 60_000;
+
+// ── Manual "Check M-Pesa" (the public reconcile endpoint) ────────────────────
+// The endpoint is local by default: it re-reads the payment and applies any
+// stored receipt, and a clerk may press it as often as they like. Daraja is
+// asked only for a payment the automatic ladder has given up on, and only if
+// nobody — ladder, sweeper, or another press — asked within this interval.
+export const MANUAL_STATUS_QUERY_MIN_INTERVAL_MS = 60_000;
+// A PROCESSING payment older than the whole ladder plus this slack is one
+// the ladder never finished (Redis down, worker dead). It gets the same
+// manual escape hatch an EXPIRED payment does.
+export const LADDER_OVERDUE_SLACK_MS = 30_000;

@@ -100,6 +100,7 @@ describe('BookingService — payment lifecycle and reporting', () => {
 
         paymentService = {
             initiateMpesaPayment: jest.fn().mockResolvedValue(undefined),
+            recordC2BPayment: jest.fn().mockResolvedValue({ paymentId: 'payment-9' }),
         };
 
         const module: TestingModule = await Test.createTestingModule({
@@ -307,6 +308,98 @@ describe('BookingService — payment lifecycle and reporting', () => {
             expect(clauses).toContain('b.routeId');
             expect(clauses).toContain('b.status');
             expect(clauses).toContain('b.tripId');
+        });
+    });
+
+    // ─── settleFromC2BReceipt ─────────────────────────────────────────────
+    describe('settleFromC2BReceipt', () => {
+        const receipt = (overrides: any = {}) => ({
+            transactionId: 'tx-1',
+            saccoId: SACCO_ID,
+            amount: 500,
+            payerPhone: '254700000000',
+            billRefNumber: null,
+            mpesaReceiptNumber: 'RKT1TEST001',
+            transactionTime: new Date(),
+            ...overrides,
+        });
+
+        const whereClauses = () =>
+            [...queryBuilder.where.mock.calls, ...queryBuilder.andWhere.mock.calls].map((c: any[]) => c[0]);
+
+        it('settles the pending booking with the same phone and fare', async () => {
+            const pending = existingBooking({
+                paymentStatus: PaymentStatus.PENDING,
+                status: BookingStatus.AWAITING_TRIP,
+                tripId: null,
+                seatNumber: null,
+            });
+            queryBuilder.getOne.mockResolvedValue(pending);
+            bookingRepository.findOne.mockResolvedValue(pending);
+
+            const result = await service.settleFromC2BReceipt(receipt());
+
+            expect(paymentService.recordC2BPayment).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    bookingId: 'booking-1',
+                    saccoId: SACCO_ID,
+                    amount: 500,
+                    mpesaReceiptNumber: 'RKT1TEST001',
+                    transactionId: 'tx-1',
+                }),
+            );
+            expect(result!.paymentStatus).toBe(PaymentStatus.PAID);
+            expect(result!.mpesaReceiptNumber).toBe('RKT1TEST001');
+            expect(result!.holdExpiresAt).toBeNull();
+            expect(whereClauses()).toEqual(
+                expect.arrayContaining([
+                    expect.stringContaining('b.fare = :amount'),
+                    expect.stringContaining('b.passengerPhone LIKE :suffix'),
+                    expect.stringContaining('b.paymentStatus = :pending'),
+                ]),
+            );
+        });
+
+        it('looks the booking up by account reference when the passenger typed the short ref', async () => {
+            const pending = existingBooking({ paymentStatus: PaymentStatus.PENDING });
+            queryBuilder.getOne.mockResolvedValueOnce(pending);
+            bookingRepository.findOne.mockResolvedValue(pending);
+
+            await service.settleFromC2BReceipt(receipt({ billRefNumber: 'BOOKING-' }));
+            // "BOOKING-" is not an 8-hex short ref, so only the phone path ran.
+            expect(whereClauses()).not.toEqual(
+                expect.arrayContaining([expect.stringContaining('ILIKE :ref')]),
+            );
+
+            jest.clearAllMocks();
+            queryBuilder.getOne.mockResolvedValueOnce(pending);
+            bookingRepository.findOne.mockResolvedValue(pending);
+
+            await service.settleFromC2BReceipt(receipt({ billRefNumber: 'a1b2c3d4' }));
+            expect(whereClauses()).toEqual(
+                expect.arrayContaining([expect.stringContaining('CAST(b.id AS text) ILIKE :ref')]),
+            );
+            expect(paymentService.recordC2BPayment).toHaveBeenCalled();
+        });
+
+        it('leaves the receipt for a clerk when no pending booking matches', async () => {
+            queryBuilder.getOne.mockResolvedValue(null);
+
+            const result = await service.settleFromC2BReceipt(receipt());
+
+            expect(result).toBeNull();
+            expect(paymentService.recordC2BPayment).not.toHaveBeenCalled();
+        });
+
+        it('does not confirm the booking when the receipt was claimed by someone else first', async () => {
+            const pending = existingBooking({ paymentStatus: PaymentStatus.PENDING });
+            queryBuilder.getOne.mockResolvedValue(pending);
+            paymentService.recordC2BPayment.mockRejectedValue(new Error('already matched'));
+
+            const result = await service.settleFromC2BReceipt(receipt());
+
+            expect(result).toBeNull();
+            expect(bookingRepository.save).not.toHaveBeenCalled();
         });
     });
 });

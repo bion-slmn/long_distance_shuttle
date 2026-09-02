@@ -35,23 +35,28 @@ export class PaymentController {
         private readonly mpesaService: MpesaService,
     ) { }
 
-    // ── Public: actively re-check a stuck payment against Daraja ────────────
-    // Called by the frontend as a last-resort check right before it would
-    // otherwise give up and show "payment failed" — Safaricom's callback
-    // isn't 100% reliable, so this queries the transaction status directly
-    // instead of only waiting on the webhook.
+    // ── Public: "Check M-Pesa" for a stuck payment ───────────────────────────
+    // Local by default: re-reads the payment and applies any receipt we
+    // already hold, so a clerk can press it freely. Daraja is asked only for
+    // a payment the automatic ladder has given up on, and at most once a
+    // minute per payment across every caller — see
+    // PaymentService.reconcileByBookingId.
     @Public()
     @Post('booking/:bookingId/reconcile')
     async reconcile(@Param('bookingId') bookingId: string) {
-        const payment = await this.paymentService.reconcileByBookingId(bookingId);
+        const { payment, checkedWith, mpesaCheckAvailableInSeconds } =
+            await this.paymentService.reconcileByBookingId(bookingId);
         return {
             paymentId: payment.id,
             status: payment.status,
+            method: payment.method,
             errorMessage:
                 payment.status === PaymentStatus.FAILED
                     ? payment.resultDesc ?? payment.initiationErrorMessage ?? 'Payment failed.'
                     : null,
             mpesaReceiptNumber: payment.mpesaReceiptNumber,
+            checkedWith,
+            mpesaCheckAvailableInSeconds,
         };
     }
 
@@ -63,6 +68,59 @@ export class PaymentController {
     @Get('booking/:bookingId/status')
     async getStatusForBooking(@Param('bookingId') bookingId: string) {
         return this.paymentService.getStatusByBookingId(bookingId);
+    }
+
+    // ── Public: Safaricom C2B validation (paybill hit directly, pre-check) ──
+    // Lives here rather than on MpesaController because Daraja rejects
+    // callback URLs containing "mpesa". Only invoked if validation is
+    // enabled on the shortcode; otherwise Safaricom goes straight to
+    // confirmation. Must return Safaricom's exact ack/reject shape quickly
+    // and never throw. Keep it side-effect-free: persistence happens in the
+    // confirmation step once the payment is final.
+    @Public()
+    @Post('c2b/validation')
+    @HttpCode(200)
+    async handleC2BValidation(@Body() body: any) {
+        try {
+            this.logger.log(
+                `C2B validation received: TransID=${body?.TransID} BillRefNumber=${body?.BillRefNumber} MSISDN=${body?.MSISDN}`,
+            );
+            // Accept-all for now. To reject, return a non-zero ResultCode,
+            // e.g. { ResultCode: 'C2B00016', ResultDesc: 'Rejected' }.
+        } catch (err: any) {
+            this.logger.error(`Failed to process M-Pesa C2B validation: ${err.message}`, err.stack);
+        }
+
+        return { ResultCode: 0, ResultDesc: 'Accepted' };
+    }
+
+    // ── Public: Safaricom C2B confirmation (payment already completed) ─────
+    // Called AFTER the customer's paybill payment has gone through. This is
+    // the one that persists the transaction (as UNMATCHED, for a clerk to
+    // attach to a booking). Must always return 200 quickly or Daraja retries
+    // the same payload — so never throw here, log and swallow instead.
+    @Public()
+    @Post('c2b/confirmation')
+    @HttpCode(200)
+    async handleC2BConfirmation(@Body() body: any) {
+        try {
+            this.logger.log(
+                `C2B confirmation received: TransID=${body?.TransID} BillRefNumber=${body?.BillRefNumber} MSISDN=${body?.MSISDN} Amount=${body?.TransAmount}`,
+            );
+
+            const stored = await this.mpesaService.handleC2BConfirmation(body);
+
+            // Try to settle what this money is for right now — the STK push
+            // whose callback was lost, or the pending booking the passenger
+            // paid by hand — so it never waits on a clerk unless it must.
+            if (stored) {
+                await this.paymentService.handleC2BReceipt(stored);
+            }
+        } catch (err: any) {
+            this.logger.error(`Failed to process M-Pesa C2B confirmation: ${err.message}`, err.stack);
+        }
+
+        return { ResultCode: 0, ResultDesc: 'Accepted' };
     }
 
     // ── STAFF ONLY below this line ────────────────────────────────────────

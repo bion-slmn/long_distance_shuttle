@@ -13,6 +13,7 @@ import {
 } from './entities/payment.entity';
 import { MpesaService } from './mpesa/mpesa.service';
 import { getQueueToken } from '@nestjs/bullmq';
+import { MpesaTransactionMatchStatus, MpesaTransactionSource } from './entities/mpesa.entity';
 
 type MockRepo<T = any> = Partial<Record<keyof Repository<T>, jest.Mock>>;
 
@@ -20,7 +21,7 @@ const createMockRepo = (): MockRepo<Payment> => ({
   create: jest.fn(),
   save: jest.fn(),
   findOne: jest.fn(),
-  update: jest.fn(),
+  update: jest.fn().mockResolvedValue({ affected: 1 }),
   createQueryBuilder: jest.fn(),
   // Raw-SQL escape hatch used by isForStage()
   manager: { query: jest.fn().mockResolvedValue([]) } as any,
@@ -65,6 +66,8 @@ describe('PaymentService', () => {
       // Receipt recovery for a reconcile-confirmed success — nothing stored
       // by default, so tests opt in.
       findTransactionByCheckoutRequestId: jest.fn().mockResolvedValue(null),
+      findTransactionByReceiptNumber: jest.fn().mockResolvedValue(null),
+      findUnmatchedReceiptForPayment: jest.fn().mockResolvedValue(null),
       matchTransaction: jest.fn(),
     };
     eventEmitter = {
@@ -660,8 +663,7 @@ describe('PaymentService', () => {
         mpesaReceiptNumber: null,
       });
       paymentRepository.findOne!.mockResolvedValue(payment);
-      paymentRepository.save!.mockImplementation(async (p) => p);
-      mpesaService.queryStkStatus!.mockResolvedValue({ resultCode: 0, resultDesc: 'Success' });
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
       mpesaService.findTransactionByCheckoutRequestId!.mockResolvedValue({
         id: 'tx-1',
         mpesaReceiptNumber: 'NLJ7RT61SV',
@@ -670,12 +672,15 @@ describe('PaymentService', () => {
 
       const result = await service.reconcileStuckPayment('payment-1');
 
+      // The stored receipt IS the answer — Daraja is never asked.
+      expect(mpesaService.queryStkStatus).not.toHaveBeenCalled();
+      expect(result.status).toBe(PaymentStatus.SUCCESS);
       expect(result.mpesaReceiptNumber).toBe('NLJ7RT61SV');
       expect(mpesaService.matchTransaction).toHaveBeenCalledWith(
         'tx-1',
         payment.referenceId,
         payment.id,
-        'reconcile',
+        'reconcile:stored-receipt',
       );
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'payment.succeeded',
@@ -955,27 +960,126 @@ describe('PaymentService', () => {
     });
   });
 
-  describe('reconcileByBookingId', () => {
+  describe('reconcileByBookingId — the manual "Check M-Pesa" press', () => {
+    // Older than the whole ladder: the automatic checks are done with it.
+    const ladderDone = () => new Date(Date.now() - 10 * 60_000);
+
     it('throws NotFoundException if no payment exists for the booking', async () => {
       paymentRepository.findOne!.mockResolvedValue(null);
 
       await expect(service.reconcileByBookingId('booking-1')).rejects.toThrow(NotFoundException);
     });
 
-    it('delegates to reconcileStuckPayment using the found payment id', async () => {
+    it('checks records only while the ladder is still running — never Daraja', async () => {
       const payment = basePayment({
         status: PaymentStatus.PROCESSING,
         checkoutRequestId: 'ws_CO_123',
+        initiatedAt: new Date(Date.now() - 30_000),
       });
       paymentRepository.findOne!.mockResolvedValue(payment);
-      const spy = jest
-        .spyOn(service, 'reconcileStuckPayment')
-        .mockResolvedValue({ ...payment, status: PaymentStatus.SUCCESS });
 
       const result = await service.reconcileByBookingId('booking-1');
 
-      expect(spy).toHaveBeenCalledWith(payment.id);
-      expect(result.status).toBe(PaymentStatus.SUCCESS);
+      expect(mpesaService.queryStkStatus).not.toHaveBeenCalled();
+      expect(result.checkedWith).toBe('records');
+      expect(result.mpesaCheckAvailableInSeconds).toBeNull();
+      expect(result.payment.status).toBe(PaymentStatus.PROCESSING);
+    });
+
+    it('settles from a stored receipt without Daraja, whatever the age', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.EXPIRED,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: ladderDone(),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
+      mpesaService.findUnmatchedReceiptForPayment!.mockResolvedValue({
+        id: 'tx-1',
+        mpesaReceiptNumber: 'RKT1TEST001',
+        matchStatus: 'UNMATCHED',
+      });
+
+      const result = await service.reconcileByBookingId('booking-1');
+
+      expect(mpesaService.queryStkStatus).not.toHaveBeenCalled();
+      expect(result.checkedWith).toBe('records');
+      expect(result.payment.status).toBe(PaymentStatus.SUCCESS);
+      expect(result.payment.mpesaReceiptNumber).toBe('RKT1TEST001');
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.succeeded',
+        expect.objectContaining({ paymentId: 'payment-1' }),
+      );
+    });
+
+    it('asks Daraja for an EXPIRED payment nobody has asked about lately', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.EXPIRED,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: ladderDone(),
+        lastStatusQueryAt: new Date(Date.now() - 5 * 60_000),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
+      mpesaService.queryStkStatus!.mockResolvedValue({ resultCode: 0, resultDesc: 'Success' });
+
+      const result = await service.reconcileByBookingId('booking-1');
+
+      expect(mpesaService.queryStkStatus).toHaveBeenCalledTimes(1);
+      expect(result.checkedWith).toBe('mpesa');
+      expect(result.payment.status).toBe(PaymentStatus.SUCCESS);
+      // The ask was stamped so the next press within a minute is refused.
+      expect(paymentRepository.update).toHaveBeenCalledWith(
+        { id: 'payment-1' },
+        expect.objectContaining({ lastStatusQueryAt: expect.any(Date) }),
+      );
+    });
+
+    it('refuses to repeat a Daraja query asked within the last minute, and says when it can', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.EXPIRED,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: ladderDone(),
+        lastStatusQueryAt: new Date(Date.now() - 20_000),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+
+      const result = await service.reconcileByBookingId('booking-1');
+
+      expect(mpesaService.queryStkStatus).not.toHaveBeenCalled();
+      expect(result.checkedWith).toBe('records');
+      expect(result.mpesaCheckAvailableInSeconds).toBeGreaterThanOrEqual(39);
+      expect(result.mpesaCheckAvailableInSeconds).toBeLessThanOrEqual(40);
+    });
+
+    it('treats a PROCESSING payment the ladder never finished like an expired one', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: ladderDone(),
+        lastStatusQueryAt: null,
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
+      mpesaService.queryStkStatus!.mockResolvedValue({ resultCode: null, resultDesc: 'processing', errorCode: '500.001.1001' });
+
+      const result = await service.reconcileByBookingId('booking-1');
+
+      expect(mpesaService.queryStkStatus).toHaveBeenCalledTimes(1);
+      expect(result.checkedWith).toBe('mpesa');
+    });
+
+    it('never asks Daraja about a payment Safaricom already settled', async () => {
+      paymentRepository.findOne!.mockResolvedValue(
+        basePayment({ status: PaymentStatus.FAILED, checkoutRequestId: 'ws_CO_123', initiatedAt: ladderDone() }),
+      );
+
+      const result = await service.reconcileByBookingId('booking-1');
+
+      expect(mpesaService.queryStkStatus).not.toHaveBeenCalled();
+      expect(result.payment.status).toBe(PaymentStatus.FAILED);
     });
   });
 
@@ -1042,6 +1146,227 @@ describe('PaymentService', () => {
 
       expect(await service.isForStage(nonBooking, 'Kencom')).toBe(false);
       expect((paymentRepository.manager as any).query).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Paybill (C2B) receipts settle payments without Daraja ──────────────
+  const c2bReceipt = (overrides: any = {}) => ({
+    id: 'tx-1',
+    source: MpesaTransactionSource.C2B,
+    saccoId: 'sacco-1',
+    mpesaReceiptNumber: 'RKT1TEST001',
+    checkoutRequestId: null,
+    amount: '500.00',
+    payerPhone: '254712345678',
+    billRefNumber: 'NRB-MSA',
+    businessShortCode: '600984',
+    transactionTime: new Date(),
+    matchStatus: MpesaTransactionMatchStatus.UNMATCHED,
+    ...overrides,
+  });
+
+  describe('handleC2BReceipt', () => {
+    it('settles the in-flight STK payment from the same phone for the same amount', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        payerPhone: '0712345678',
+        initiatedAt: new Date(Date.now() - 60_000),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
+      const receipt = c2bReceipt();
+
+      const settled = await service.handleC2BReceipt(receipt as any);
+
+      expect(settled).toBe(true);
+      expect(paymentRepository.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'payment-1' }),
+        expect.objectContaining({ status: PaymentStatus.SUCCESS, mpesaReceiptNumber: 'RKT1TEST001' }),
+      );
+      expect(mpesaService.matchTransaction).toHaveBeenCalledWith('tx-1', 'booking-1', 'payment-1', 'C2B_CONFIRMATION');
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.succeeded',
+        expect.objectContaining({ paymentId: 'payment-1', mpesaReceiptNumber: 'RKT1TEST001' }),
+      );
+      expect(mpesaService.queryStkStatus).not.toHaveBeenCalled();
+    });
+
+    it('offers the receipt to bookings when no payment row claims it', async () => {
+      paymentRepository.findOne!.mockResolvedValue(null);
+      const receipt = c2bReceipt();
+
+      const settled = await service.handleC2BReceipt(receipt as any);
+
+      expect(settled).toBe(false);
+      expect(paymentRepository.update).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'mpesa.c2b.unmatched',
+        expect.objectContaining({
+          transactionId: 'tx-1',
+          saccoId: 'sacco-1',
+          amount: 500,
+          payerPhone: '254712345678',
+          billRefNumber: 'NRB-MSA',
+          mpesaReceiptNumber: 'RKT1TEST001',
+        }),
+      );
+    });
+
+    it('does nothing with a receipt no sacco owns', async () => {
+      const settled = await service.handleC2BReceipt(c2bReceipt({ saccoId: null }) as any);
+
+      expect(settled).toBe(false);
+      expect(paymentRepository.findOne).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('does nothing with a receipt that is already matched', async () => {
+      const settled = await service.handleC2BReceipt(
+        c2bReceipt({ matchStatus: MpesaTransactionMatchStatus.MATCHED }) as any,
+      );
+
+      expect(settled).toBe(false);
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('yields when the STK callback settled the payment first', async () => {
+      paymentRepository.findOne!.mockResolvedValue(
+        basePayment({ status: PaymentStatus.PROCESSING, initiatedAt: new Date() }),
+      );
+      paymentRepository.update!.mockResolvedValue({ affected: 0 });
+
+      const settled = await service.handleC2BReceipt(c2bReceipt() as any);
+
+      expect(settled).toBe(false);
+      expect(mpesaService.matchTransaction).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('settleFromStatusQuery — stored receipt before Daraja', () => {
+    it('settles from a stored paybill receipt and never queries Daraja', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: new Date(Date.now() - 5 * 60_000),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
+      mpesaService.findUnmatchedReceiptForPayment!.mockResolvedValue(c2bReceipt());
+
+      const outcome = await service.settleFromStatusQuery('payment-1');
+
+      expect(mpesaService.queryStkStatus).not.toHaveBeenCalled();
+      expect(mpesaService.findUnmatchedReceiptForPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: 'sacco-1', payerPhone: '0712345678', amount: 500 }),
+      );
+      expect(outcome.answered).toBe(true);
+      expect(outcome.payment.status).toBe(PaymentStatus.SUCCESS);
+      expect(outcome.payment.mpesaReceiptNumber).toBe('RKT1TEST001');
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.succeeded',
+        expect.objectContaining({ paymentId: 'payment-1', mpesaReceiptNumber: 'RKT1TEST001' }),
+      );
+    });
+
+    it('prefers the receipt stored under its own checkout id', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.EXPIRED,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: new Date(Date.now() - 5 * 60_000),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.update!.mockResolvedValue({ affected: 1 });
+      mpesaService.findTransactionByCheckoutRequestId!.mockResolvedValue(
+        c2bReceipt({ source: MpesaTransactionSource.STK_PUSH, checkoutRequestId: 'ws_CO_123' }),
+      );
+
+      const outcome = await service.settleFromStatusQuery('payment-1');
+
+      expect(mpesaService.findUnmatchedReceiptForPayment).not.toHaveBeenCalled();
+      expect(mpesaService.queryStkStatus).not.toHaveBeenCalled();
+      expect(outcome.payment.status).toBe(PaymentStatus.SUCCESS);
+    });
+
+    it('falls through to Daraja when nothing is stored', async () => {
+      const payment = basePayment({
+        status: PaymentStatus.PROCESSING,
+        checkoutRequestId: 'ws_CO_123',
+        initiatedAt: new Date(),
+      });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      mpesaService.queryStkStatus!.mockResolvedValue({ resultCode: null, resultDesc: 'processing', errorCode: '500.001.1001' });
+
+      await service.settleFromStatusQuery('payment-1');
+
+      expect(mpesaService.queryStkStatus).toHaveBeenCalled();
+    });
+  });
+
+  describe('recordC2BPayment', () => {
+    const input = {
+      bookingId: 'booking-1',
+      saccoId: 'sacco-1',
+      amount: 500,
+      payerPhone: '254712345678',
+      mpesaReceiptNumber: 'RKT1TEST001',
+      transactionId: 'tx-1',
+    };
+
+    it('creates a SUCCESS M-Pesa payment and claims the receipt', async () => {
+      paymentRepository.create!.mockImplementation((d) => d);
+      paymentRepository.save!.mockImplementation(async (p) => ({ id: 'payment-9', ...p }));
+      mpesaService.matchTransaction!.mockResolvedValue({});
+
+      const result = await service.recordC2BPayment(input);
+
+      expect(result).toEqual({ paymentId: 'payment-9' });
+      expect(paymentRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          referenceId: 'booking-1',
+          method: PaymentMethod.MPESA,
+          status: PaymentStatus.SUCCESS,
+          mpesaReceiptNumber: 'RKT1TEST001',
+        }),
+      );
+      expect(mpesaService.matchTransaction).toHaveBeenCalledWith('tx-1', 'booking-1', 'payment-9', 'C2B_AUTO_MATCH');
+    });
+
+    it('rolls the payment row back when the receipt was already claimed', async () => {
+      paymentRepository.create!.mockImplementation((d) => d);
+      paymentRepository.save!.mockImplementation(async (p) => ({ id: 'payment-9', ...p }));
+      paymentRepository.delete = jest.fn().mockResolvedValue({ affected: 1 });
+      mpesaService.matchTransaction!.mockRejectedValue(new Error('already matched'));
+
+      await expect(service.recordC2BPayment(input)).rejects.toThrow('already matched');
+      expect(paymentRepository.delete).toHaveBeenCalledWith({ id: 'payment-9' });
+    });
+  });
+
+  describe('handleMpesaCallback — receipt stored by the paybill path first', () => {
+    it('matches the stored row by receipt number when the checkout id finds nothing', async () => {
+      const payment = basePayment({ status: PaymentStatus.PROCESSING, checkoutRequestId: 'ws_CO_123' });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+      paymentRepository.save!.mockImplementation(async (p) => p);
+      mpesaService.findTransactionByCheckoutRequestId!.mockResolvedValue(null);
+      mpesaService.findTransactionByReceiptNumber!.mockResolvedValue(c2bReceipt());
+
+      await service.handleMpesaCallback(
+        {
+          checkoutRequestId: 'ws_CO_123',
+          resultCode: 0,
+          resultDesc: 'Success',
+          success: true,
+          amount: 500,
+          mpesaReceiptNumber: 'RKT1TEST001',
+          payerPhone: '254712345678',
+        },
+        {},
+      );
+
+      expect(mpesaService.findTransactionByReceiptNumber).toHaveBeenCalledWith('RKT1TEST001');
+      expect(mpesaService.matchTransaction).toHaveBeenCalledWith('tx-1', 'booking-1', 'payment-1', 'STK_CALLBACK');
     });
   });
 });

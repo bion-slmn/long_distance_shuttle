@@ -45,6 +45,14 @@ export class MpesaTransaction {
     @Column({ nullable: true })
     declare businessShortCode: string; // which till/paybill it hit — useful once a sacco has >1
 
+    // Which sacco this money belongs to. For C2B it is resolved from
+    // businessShortCode against sacco_settings.mpesaShortcode at receipt
+    // time; null means "no sacco has this shortcode configured" — money we
+    // hold but cannot attribute, which only a SUPER_ADMIN should see.
+    @Index()
+    @Column({ type: 'uuid', nullable: true })
+    declare saccoId: string | null;
+
     @Column({ type: 'timestamptz' })
     declare transactionTime: Date;   // was: string
 

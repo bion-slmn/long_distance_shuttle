@@ -89,6 +89,12 @@ export class Payment {
     @Column({ type: 'timestamptz', nullable: true })
     declare completedAt: Date; // when callback resolved it (success or fail)
 
+    // Last time ANY path (ladder, sweeper, manual check) asked Daraja about
+    // this checkout. Written by every caller so the manual "Check M-Pesa"
+    // button can refuse to repeat a question Daraja answered seconds ago.
+    @Column({ type: 'timestamptz', nullable: true })
+    declare lastStatusQueryAt: Date | null;
+
     // ── Push-initiation failure (synchronous Daraja rejection, not callback) ──
     @Column({ nullable: true })
     declare initiationErrorCode: string; // Daraja's errorCode, e.g. "404.001.03"

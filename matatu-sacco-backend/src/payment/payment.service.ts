@@ -1,7 +1,7 @@
 // src/payment/payment.service.ts
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Between, In, IsNull, Like, Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
     Payment,
@@ -17,6 +17,10 @@ import {
     RECONCILE_GRACE_MS,
     ALWAYS_TERMINAL_RESULT_CODES,
     TERMINAL_FAILURE_RESULT_CODES,
+    C2B_RECEIPT_MATCH_BEFORE_MS,
+    C2B_RECEIPT_MATCH_AFTER_MS,
+    MANUAL_STATUS_QUERY_MIN_INTERVAL_MS,
+    LADDER_OVERDUE_SLACK_MS,
 } from './payment-reconcile.constants';
 import { MpesaTransaction, MpesaTransactionMatchStatus } from './entities/mpesa.entity';
 
@@ -40,6 +44,21 @@ export interface PaymentFailedEvent {
     referenceId: string;
     saccoId: string;
     reason: string;
+}
+
+// Emitted when a paybill (C2B) receipt arrives that no payment row claims —
+// the passenger paid the paybill directly rather than answering an STK
+// prompt. BookingModule listens and tries to settle a pending booking with
+// it; whatever it cannot place stays UNMATCHED for a clerk.
+export const C2B_RECEIPT_UNMATCHED_EVENT = 'mpesa.c2b.unmatched';
+export interface C2BReceiptUnmatchedEvent {
+    transactionId: string;
+    saccoId: string;
+    amount: number;
+    payerPhone: string;
+    billRefNumber: string | null;
+    mpesaReceiptNumber: string;
+    transactionTime: Date;
 }
 
 interface CreatePaymentInput {
@@ -79,6 +98,21 @@ type QueryStkStatusResult = {
 export interface ReconcileOutcome {
     payment: Payment;
     answered: boolean;
+}
+
+/**
+ * Result of a manual "Check M-Pesa" press.
+ *
+ * `checkedWith` says where the answer came from: our own records (always),
+ * or Daraja (only for a payment the ladder gave up on, and rate-limited).
+ * When Daraja was eligible but asked too recently, `mpesaCheckAvailableInSeconds`
+ * says how long until a press would reach it again — the UI can say so
+ * instead of pretending it checked.
+ */
+export interface ManualReconcileResult {
+    payment: Payment;
+    checkedWith: 'records' | 'mpesa';
+    mpesaCheckAvailableInSeconds: number | null;
 }
 
 interface ParsedCallback {
@@ -502,11 +536,18 @@ export class PaymentService {
         if (!known && !payment.checkoutRequestId) return;
 
         try {
+            // A receipt can be stored by EITHER Safaricom path. When the
+            // paybill confirmation beat the STK callback, the row carries no
+            // checkoutRequestId — but the receipt number is the same on both,
+            // so fall back to that before giving up.
             const transaction =
                 known ??
                 (await this.mpesaService.findTransactionByCheckoutRequestId(
                     payment.checkoutRequestId,
-                ));
+                )) ??
+                (payment.mpesaReceiptNumber
+                    ? await this.mpesaService.findTransactionByReceiptNumber(payment.mpesaReceiptNumber)
+                    : null);
 
             if (!transaction) {
                 this.logger.warn(
@@ -572,7 +613,27 @@ export class PaymentService {
             return { payment, answered: true };
         }
 
+        // Before asking Daraja anything: the money may already be sitting in
+        // mpesa_transactions. An STK payment lands on the paybill like any
+        // other, so its C2B confirmation usually arrives even when the STK
+        // callback is lost — and that is the exact case reconcile exists for.
+        // Settling from the stored receipt costs no Daraja call, carries the
+        // receipt number a status query never would, and cannot be rate-limited.
+        const stored = await this.findStoredReceiptForPayment(payment);
+        if (stored) {
+            const settled = await this.settleWithStoredReceipt(payment, stored, 'reconcile:stored-receipt');
+            if (settled) return { payment: settled, answered: true };
+            // Lost a race with the callback — re-read and report what won.
+            return { payment: await this.findById(paymentId), answered: true };
+        }
+
         const previousStatus = payment.status;
+
+        // Every caller stamps this before asking, so the manual path can see
+        // that the ladder (or another press) asked moments ago.
+        const queriedAt = new Date();
+        await this.paymentRepository.update({ id: payment.id }, { lastStatusQueryAt: queriedAt });
+        payment.lastStatusQueryAt = queriedAt;
 
         let result: QueryStkStatusResult;
         try {
@@ -644,17 +705,290 @@ export class PaymentService {
         return { payment: saved, answered: true };
     }
 
-    async reconcileByBookingId(bookingId: string): Promise<Payment> {
-        const payment = await this.paymentRepository.findOne({
+    /**
+     * The stored receipt for a payment whose callback never came: by checkout
+     * id when the STK callback did store it, otherwise by sacco + phone +
+     * amount inside the C2B match window around the push.
+     */
+    private async findStoredReceiptForPayment(payment: Payment): Promise<MpesaTransaction | null> {
+        // Already knows its receipt (a callback that got as far as recording
+        // it but not settling): that number is the whole search key.
+        if (payment.mpesaReceiptNumber) {
+            const byReceipt = await this.mpesaService.findTransactionByReceiptNumber(payment.mpesaReceiptNumber);
+            return byReceipt?.matchStatus === MpesaTransactionMatchStatus.UNMATCHED ? byReceipt : null;
+        }
+
+        if (payment.checkoutRequestId) {
+            const byCheckout = await this.mpesaService.findTransactionByCheckoutRequestId(
+                payment.checkoutRequestId,
+            );
+            if (byCheckout && byCheckout.matchStatus === MpesaTransactionMatchStatus.UNMATCHED) {
+                return byCheckout;
+            }
+        }
+
+        if (!payment.payerPhone) return null;
+        const startedAt = new Date(payment.initiatedAt ?? payment.createdAt).getTime();
+
+        return this.mpesaService.findUnmatchedReceiptForPayment({
+            saccoId: payment.saccoId,
+            payerPhone: payment.payerPhone,
+            amount: Number(payment.amount),
+            notBefore: new Date(startedAt - C2B_RECEIPT_MATCH_BEFORE_MS),
+            notAfter: new Date(startedAt + C2B_RECEIPT_MATCH_AFTER_MS),
+        });
+    }
+
+    /**
+     * Mark a payment SUCCESS on the strength of a stored M-Pesa receipt.
+     *
+     * Atomic against the callback: only PROCESSING/EXPIRED rows transition,
+     * so whichever of callback / reconcile / paybill-confirmation gets here
+     * first wins and the others become no-ops. Returns null when this call
+     * was not the winner.
+     */
+    private async settleWithStoredReceipt(
+        payment: Payment,
+        transaction: MpesaTransaction,
+        via: string,
+    ): Promise<Payment | null> {
+        const patch = {
+            status: PaymentStatus.SUCCESS,
+            mpesaReceiptNumber: transaction.mpesaReceiptNumber,
+            resultCode: '0',
+            resultDesc: `Confirmed by M-Pesa receipt ${transaction.mpesaReceiptNumber} (${via})`,
+            completedAt: new Date(),
+        };
+
+        const result = await this.paymentRepository.update(
+            { id: payment.id, status: In([PaymentStatus.PROCESSING, PaymentStatus.EXPIRED]) },
+            patch,
+        );
+
+        if (!result.affected) {
+            this.logger.log(
+                `Payment ${payment.id} was settled by another path before receipt ` +
+                `${transaction.mpesaReceiptNumber} could be applied (${via})`,
+            );
+            return null;
+        }
+
+        Object.assign(payment, patch);
+
+        this.logger.log(
+            `Payment ${payment.id} SUCCESS via ${via} (receipt=${transaction.mpesaReceiptNumber})`,
+        );
+
+        await this.matchStoredTransaction(payment, via, transaction);
+
+        this.eventEmitter.emit('payment.succeeded', {
+            paymentId: payment.id,
+            referenceType: payment.referenceType,
+            referenceId: payment.referenceId,
+            saccoId: payment.saccoId,
+            amount: payment.amount,
+            mpesaReceiptNumber: payment.mpesaReceiptNumber,
+        } satisfies PaymentSucceededEvent);
+
+        return payment;
+    }
+
+    /**
+     * A paybill (C2B) receipt just landed. Settle what it is for, without a
+     * clerk and without Daraja.
+     *
+     *   1. An STK push from the same phone, for the same amount, in the same
+     *      sacco, still PROCESSING (or force-EXPIRED) — its callback was lost
+     *      and this receipt is that money. Settle it.
+     *   2. Otherwise nobody solicited this payment: the passenger typed the
+     *      paybill in by hand. Hand it to BookingModule to find the pending
+     *      booking it belongs to.
+     *
+     * Returns true when a payment row was settled here. Whatever is not
+     * placed stays UNMATCHED for the clerk queue.
+     */
+    async handleC2BReceipt(transaction: MpesaTransaction): Promise<boolean> {
+        if (transaction.matchStatus !== MpesaTransactionMatchStatus.UNMATCHED) return false;
+
+        if (!transaction.saccoId) {
+            this.logger.warn(
+                `C2B receipt ${transaction.mpesaReceiptNumber} has no sacco (shortcode ` +
+                `${transaction.businessShortCode}) — cannot auto-settle, left for SUPER_ADMIN.`,
+            );
+            return false;
+        }
+
+        const suffix = transaction.payerPhone.replace(/\D/g, '').slice(-9);
+        const receivedAt = new Date(transaction.transactionTime).getTime();
+
+        const payment = suffix.length === 9
+            ? await this.paymentRepository.findOne({
+                where: {
+                    saccoId: transaction.saccoId,
+                    method: PaymentMethod.MPESA,
+                    status: In([PaymentStatus.PROCESSING, PaymentStatus.EXPIRED]),
+                    payerPhone: Like(`%${suffix}`),
+                    amount: Number(transaction.amount),
+                    mpesaReceiptNumber: IsNull(),
+                    // The push must have started within the window BEFORE the
+                    // receipt (or a hair after, for clock skew).
+                    initiatedAt: Between(
+                        new Date(receivedAt - C2B_RECEIPT_MATCH_AFTER_MS),
+                        new Date(receivedAt + C2B_RECEIPT_MATCH_BEFORE_MS),
+                    ),
+                },
+                order: { initiatedAt: 'DESC' },
+            })
+            : null;
+
+        if (payment) {
+            const settled = await this.settleWithStoredReceipt(payment, transaction, 'C2B_CONFIRMATION');
+            return settled !== null;
+        }
+
+        this.logger.log(
+            `C2B receipt ${transaction.mpesaReceiptNumber} (${transaction.amount} from ` +
+            `${transaction.payerPhone}, ref "${transaction.billRefNumber ?? ''}") matches no ` +
+            `in-flight payment — offering it to bookings.`,
+        );
+
+        this.eventEmitter.emit(C2B_RECEIPT_UNMATCHED_EVENT, {
+            transactionId: transaction.id,
+            saccoId: transaction.saccoId,
+            amount: Number(transaction.amount),
+            payerPhone: transaction.payerPhone,
+            billRefNumber: transaction.billRefNumber ?? null,
+            mpesaReceiptNumber: transaction.mpesaReceiptNumber,
+            transactionTime: new Date(transaction.transactionTime),
+        } satisfies C2BReceiptUnmatchedEvent);
+
+        return false;
+    }
+
+    /**
+     * Book a paybill receipt against a booking that never had a payment row
+     * (the passenger paid the paybill by hand). Claims the receipt atomically
+     * — if a clerk or another path matched it first, the payment row is
+     * rolled back and the error propagates, so the caller must not confirm
+     * the booking.
+     */
+    async recordC2BPayment(input: {
+        bookingId: string;
+        saccoId: string;
+        amount: number;
+        payerPhone: string;
+        mpesaReceiptNumber: string;
+        transactionId: string;
+        matchedBy?: string;
+    }): Promise<{ paymentId: string }> {
+        const payment = await this.paymentRepository.save(
+            this.paymentRepository.create({
+                referenceType: PaymentReferenceType.BOOKING,
+                referenceId: input.bookingId,
+                saccoId: input.saccoId,
+                amount: input.amount,
+                method: PaymentMethod.MPESA,
+                status: PaymentStatus.SUCCESS,
+                payerPhone: input.payerPhone,
+                mpesaReceiptNumber: input.mpesaReceiptNumber,
+                resultCode: '0',
+                resultDesc: 'Paid directly to paybill (C2B)',
+                completedAt: new Date(),
+            }),
+        );
+
+        try {
+            await this.mpesaService.matchTransaction(
+                input.transactionId,
+                input.bookingId,
+                payment.id,
+                input.matchedBy ?? 'C2B_AUTO_MATCH',
+            );
+        } catch (err) {
+            await this.paymentRepository.delete({ id: payment.id });
+            throw err;
+        }
+
+        this.logger.log(
+            `Payment ${payment.id} recorded from paybill receipt ${input.mpesaReceiptNumber} ` +
+            `for booking ${input.bookingId}`,
+        );
+
+        return { paymentId: payment.id };
+    }
+
+    /**
+     * Settle from what we already hold — no Daraja. Re-reads the payment and
+     * applies a stored receipt (callback, paybill confirmation, or the
+     * ladder's verdict) if one matches. Cheap enough to call on every press.
+     */
+    async reconcileLocally(paymentId: string): Promise<Payment> {
+        const payment = await this.findById(paymentId);
+        const reconcilable =
+            payment.status === PaymentStatus.PROCESSING || payment.status === PaymentStatus.EXPIRED;
+        if (!reconcilable) return payment;
+
+        const stored = await this.findStoredReceiptForPayment(payment);
+        if (!stored) return payment;
+
+        const settled = await this.settleWithStoredReceipt(payment, stored, 'manual:stored-receipt');
+        return settled ?? this.findById(paymentId);
+    }
+
+    /**
+     * Is this a payment the automatic ladder is done with? Only then may a
+     * manual press reach Daraja: EXPIRED (the ladder force-expired it), or
+     * PROCESSING for longer than the whole ladder could possibly take (the
+     * ladder never ran to completion — Redis down, worker dead).
+     */
+    private ladderHasGivenUp(payment: Payment): boolean {
+        if (payment.status === PaymentStatus.EXPIRED) return true;
+        if (payment.status !== PaymentStatus.PROCESSING) return false;
+
+        const ladderTotalMs = RECONCILE_DELAYS_MS.reduce((sum, d) => sum + d, 0);
+        const startedAt = new Date(payment.initiatedAt ?? payment.createdAt).getTime();
+        return Date.now() - startedAt > ladderTotalMs + LADDER_OVERDUE_SLACK_MS;
+    }
+
+    /**
+     * The public "Check M-Pesa" endpoint. Local first, always. Daraja only
+     * for a payment the ladder has given up on, and only if nobody asked
+     * Daraja about it in the last MANUAL_STATUS_QUERY_MIN_INTERVAL_MS — the
+     * ladder, the sweeper and every other press all stamp lastStatusQueryAt,
+     * so ten presses in a minute are one query.
+     */
+    async reconcileByBookingId(bookingId: string): Promise<ManualReconcileResult> {
+        const found = await this.paymentRepository.findOne({
             where: { referenceType: PaymentReferenceType.BOOKING, referenceId: bookingId },
             order: { createdAt: 'DESC' },
         });
 
-        if (!payment) {
+        if (!found) {
             throw new NotFoundException(`No payment found for booking "${bookingId}".`);
         }
 
-        return this.reconcileStuckPayment(payment.id);
+        const payment = await this.reconcileLocally(found.id);
+
+        if (!payment.checkoutRequestId || !this.ladderHasGivenUp(payment)) {
+            return { payment, checkedWith: 'records', mpesaCheckAvailableInSeconds: null };
+        }
+
+        const lastAsked = payment.lastStatusQueryAt
+            ? new Date(payment.lastStatusQueryAt).getTime()
+            : 0;
+        const sinceLastAsk = Date.now() - lastAsked;
+        if (sinceLastAsk < MANUAL_STATUS_QUERY_MIN_INTERVAL_MS) {
+            return {
+                payment,
+                checkedWith: 'records',
+                mpesaCheckAvailableInSeconds: Math.ceil(
+                    (MANUAL_STATUS_QUERY_MIN_INTERVAL_MS - sinceLastAsk) / 1000,
+                ),
+            };
+        }
+
+        const { payment: queried } = await this.settleFromStatusQuery(payment.id);
+        return { payment: queried, checkedWith: 'mpesa', mpesaCheckAvailableInSeconds: null };
     }
 
     // src/payment/payment.service.ts

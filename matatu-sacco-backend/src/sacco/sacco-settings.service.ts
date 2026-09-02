@@ -1,6 +1,7 @@
 // src/sacco/sacco-settings.service.ts
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { EntityManager, In, Repository } from 'typeorm';
 import { SaccoSettings } from './entities/sacco-settings.entity';
 import { ConfigureMpesaDto } from './dto/configure-mpesa.dto';
@@ -28,6 +29,19 @@ import { UpdateSaccoSettingsDto } from './dto/update-sacco-settings.dto';
 // than silently reporting zero commission.
 export const DEFAULT_COMMISSION_RATE = 10;
 
+// Postgres unique_violation code
+const PG_UNIQUE_VIOLATION = '23505';
+
+// Emitted (and awaited, via emitAsync) right after a sacco's M-Pesa
+// credentials are saved. PaymentModule listens and registers the sacco's
+// C2B callback URLs with Daraja — an event rather than a direct call so
+// SaccoModule never has to import PaymentModule (which imports SaccoModule).
+export const SACCO_MPESA_CONFIGURED_EVENT = 'sacco.mpesa.configured';
+export interface SaccoMpesaConfiguredEvent {
+    saccoId: string;
+    shortcode: string;
+}
+
 export interface PaymentOptions {
     saccoId: string;
     acceptsCash: boolean;
@@ -44,7 +58,7 @@ export class SaccoSettingsService {
     constructor(
         @InjectRepository(SaccoSettings)
         private readonly settingsRepository: Repository<SaccoSettings>,
-
+        private readonly eventEmitter: EventEmitter2,
     ) { }
 
     // ── Create default settings for a brand-new sacco ──────────────────────
@@ -203,12 +217,61 @@ export class SaccoSettingsService {
         settings.mpesaPasskeyEncrypted = encrypt(dto.passkey.trim());
         settings.mpesaConfigured = true;
         settings.acceptsMpesa = true;
+        // New (or changed) credentials: whatever Daraja knew before no longer
+        // applies until the registration below succeeds.
+        settings.mpesaC2bRegisteredAt = null;
+        settings.mpesaC2bRegistrationError = null;
 
-        const saved = await this.settingsRepository.save(settings);
+        try {
+            await this.settingsRepository.save(settings);
+        } catch (err: any) {
+            if (err?.code === PG_UNIQUE_VIOLATION) {
+                throw new ConflictException(
+                    `Shortcode ${settings.mpesaShortcode} is already configured for another sacco. ` +
+                    'A paybill can belong to only one sacco, since incoming payments are attributed by shortcode.',
+                );
+            }
+            throw err;
+        }
         this.logger.log(`M-Pesa configured for sacco ${saccoId} (shortcode ${settings.mpesaShortcode})`);
+
+        // Register the C2B (direct paybill) callback URLs with Daraja so money
+        // paid straight to the paybill reaches us. Awaited so the response
+        // below carries the outcome (mpesaC2bRegisteredAt / ...Error), but the
+        // listener never throws: a Daraja outage must not un-save credentials.
+        const event: SaccoMpesaConfiguredEvent = { saccoId, shortcode: settings.mpesaShortcode };
+        await this.eventEmitter.emitAsync(SACCO_MPESA_CONFIGURED_EVENT, event);
 
         // Return without secrets — caller never needs them back after saving.
         return this.findOne(saccoId);
+    }
+
+    // ── Which sacco owns a paybill/till? ────────────────────────────────────
+    // The only sacco-identifying field on a C2B confirmation is
+    // BusinessShortCode, so this is how paybill money gets attributed. Null
+    // means no configured sacco has this shortcode.
+    async findSaccoIdByShortcode(shortcode: string | undefined | null): Promise<string | null> {
+        const trimmed = (shortcode ?? '').trim();
+        if (!trimmed) return null;
+
+        const settings = await this.settingsRepository.findOne({
+            where: { mpesaShortcode: trimmed, mpesaConfigured: true },
+            select: { saccoId: true },
+        });
+        return settings?.saccoId ?? null;
+    }
+
+    // ── Record the outcome of a C2B URL registration attempt ───────────────
+    // Called by MpesaService.registerC2BUrls() on both success and failure so
+    // the settings row always says whether Daraja currently knows where to
+    // POST this shortcode's confirmations.
+    async recordC2bRegistration(saccoId: string, error: string | null): Promise<void> {
+        await this.settingsRepository.update(
+            { saccoId },
+            error === null
+                ? { mpesaC2bRegisteredAt: new Date(), mpesaC2bRegistrationError: null }
+                : { mpesaC2bRegisteredAt: null, mpesaC2bRegistrationError: error },
+        );
     }
 
     // ── Disable M-Pesa (e.g. sacco wants to pause it, or credentials rotated out) ──
