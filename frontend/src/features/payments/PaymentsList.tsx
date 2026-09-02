@@ -27,21 +27,37 @@ import {
     DialogTitle,
     DialogDescription,
 } from "@/components/ui/dialog";
-import { Smartphone, Banknote, AlertCircle, Building2, ChevronDown, SlidersHorizontal } from "lucide-react";
-import { getBookingRequest, type Booking } from "@/api/bookingApi";
+import { Smartphone, Banknote, AlertCircle, ChevronDown, SlidersHorizontal } from "lucide-react";
+import { getBookingRequest } from "@/api/bookingApi";
 import { MapPin, User, Calendar } from "lucide-react";
 import { PaymentsCharts } from "./PaymentsCharts";
 import { cn } from "@/lib/utils";
 
+// toISOString() is UTC: between midnight and 03:00 in Nairobi (UTC+3) it
+// still reads as yesterday, which would quietly show the wrong day now that
+// the list defaults to "today". Same helpers as BookingsList.
+function toLocalDateString(d: Date): string {
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${month}-${day}`;
+}
+
 function todayString(): string {
-    return new Date().toISOString().slice(0, 10);
+    return toLocalDateString(new Date());
 }
 
 function daysAgoString(days: number): string {
     const d = new Date();
     d.setDate(d.getDate() - days);
-    return d.toISOString().slice(0, 10);
+    return toLocalDateString(d);
 }
+
+// Quick ranges; `days` is how far back from today the range starts.
+const RANGE_PRESETS = [
+    { label: "Today", days: 0 },
+    { label: "7 days", days: 6 },
+    { label: "30 days", days: 29 },
+] as const;
 
 function PaymentDetailDialog({
     payment,
@@ -252,7 +268,9 @@ function PaymentCard({ payment, onSelect }: { payment: Payment; onSelect: (p: Pa
 
 // ─── Main list ───────────────────────────────────────────────────────────
 export default function PaymentsList() {
-    const [from, setFrom] = useState(daysAgoString(7));
+    // Today only by default, matching the bookings list — the payment a clerk
+    // or admin is looking for is nearly always one from this shift.
+    const [from, setFrom] = useState(todayString());
     const [to, setTo] = useState(todayString());
     const [status, setStatus] = useState<PaymentStatus | "ALL">("ALL");
     const [method, setMethod] = useState<PaymentMethod | "ALL">("ALL");
@@ -302,6 +320,32 @@ export default function PaymentsList() {
                         </p>
                     </div>
                 </div>
+            </div>
+
+            {/* Quick ranges — reached for most often, so they stay out of the
+                collapsible filter drawer. */}
+            <div className="flex rounded-lg border border-border p-0.5 w-fit">
+                {RANGE_PRESETS.map((preset) => {
+                    const active = from === daysAgoString(preset.days) && to === todayString();
+                    return (
+                        <button
+                            key={preset.label}
+                            type="button"
+                            onClick={() => {
+                                setFrom(daysAgoString(preset.days));
+                                setTo(todayString());
+                            }}
+                            className={cn(
+                                "px-2.5 py-1 text-xs font-medium rounded-md transition-colors",
+                                active
+                                    ? "bg-primary text-primary-foreground"
+                                    : "text-muted-foreground hover:text-foreground",
+                            )}
+                        >
+                            {preset.label}
+                        </button>
+                    );
+                })}
             </div>
 
             {/* Mobile filter toggle — filters grid is always visible on sm+ */}
@@ -394,7 +438,8 @@ export default function PaymentsList() {
                 </div>
             ) : (
                 <>
-                    <PaymentsCharts payments={payments} />
+                    {/* A one-day range is a single bar — not worth the space. */}
+                    {from !== to && <PaymentsCharts payments={payments} />}
                     <div className="space-y-2">
                         {payments.map((payment) => (
                             <PaymentCard key={payment.id} payment={payment} onSelect={setSelectedPayment} />
