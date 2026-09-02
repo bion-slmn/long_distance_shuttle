@@ -4,11 +4,9 @@ import {
     Building2,
     Route as RouteIcon,
     Car,
-    Users,
     LogOut,
     ListOrdered,
     Road,
-    Book,
     LayoutDashboard,
     Gauge,
     Settings,
@@ -196,7 +194,7 @@ function ProfileLink({ user }: { user: NonNullable<ReturnType<typeof useAuth>["u
 export function DashboardLayout() {
     const location = useLocation()
     const { user, logout } = useAuth()
-    const saccoName = useSaccoName(user?.saccoId!) // adjust field name if it differs on your user object
+    const saccoName = useSaccoName(user?.saccoId ?? undefined)
     const brandLabel = saccoName ?? "Fleet Admin"
 
     const visibleItems = NAV_ITEMS
@@ -256,17 +254,32 @@ export function DashboardLayout() {
                     <SidebarTrigger />
                     <Separator orientation="vertical" className="h-4" />
 
-                    <Link to="/dashboard" className="flex items-center gap-1.5 shrink-0">
+                    {/*
+                        The product name must be visible at every width: on a phone
+                        the sidebar is a closed drawer, so this bar is the only place
+                        a user can read what site they are on. Below sm the name and
+                        the sacco stack into two lines; from sm up they sit inline.
+                    */}
+                    <Link to="/dashboard" className="flex items-center gap-1.5 min-w-0 sm:shrink-0">
                         <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary">
                             <Bus className="size-3.5 text-primary-foreground" />
+                        </div>
+                        <div className="min-w-0 sm:hidden leading-tight">
+                            <span className="font-bold text-sm block truncate">
+                                Shuttle<span className="text-primary">Hub</span>
+                            </span>
+                            <span className="text-[10px] text-muted-foreground block truncate">
+                                {brandLabel}
+                                {user?.role && ` · ${user.role}`}
+                            </span>
                         </div>
                         <span className="font-bold text-sm hidden sm:inline">
                             Shuttle<span className="text-primary">Hub</span>
                         </span>
                     </Link>
-                    <Separator orientation="vertical" className="h-4" />
+                    <Separator orientation="vertical" className="h-4 hidden sm:block" />
 
-                    <div className="flex items-baseline gap-2 min-w-0">
+                    <div className="hidden sm:flex items-baseline gap-2 min-w-0">
                         <span className="font-medium text-sm truncate">{brandLabel}</span>
                         {user?.role && (
                             <span className="text-xs text-muted-foreground shrink-0">

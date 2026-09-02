@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { ONLINE_BOOKING_ENABLED } from "@/config/features"
 import {
     Bus,
     Route,
@@ -13,6 +14,7 @@ import {
     Bell,
     Search,
     Smartphone,
+    LogIn,
 } from "lucide-react"
 
 // ---- Signature element: a split-flap "departure board" ----
@@ -45,17 +47,16 @@ function cn(...args: Array<string | false | null | undefined>) {
 
 function FlapCell({ value }: { value: string }) {
     const [display, setDisplay] = useState(value)
-    const [flipping, setFlipping] = useState(false)
+    // Mid-flip whenever the shown value lags the real one; the timeout below
+    // catches display up, which ends the flip. Derived rather than stored so
+    // nothing has to setState synchronously inside the effect.
+    const flipping = value !== display
 
     useEffect(() => {
         if (value === display) return
-        setFlipping(true)
-        const t = setTimeout(() => {
-            setDisplay(value)
-            setFlipping(false)
-        }, 220)
+        const t = setTimeout(() => setDisplay(value), 220)
         return () => clearTimeout(t)
-    }, [value])
+    }, [value, display])
 
     return (
         <span
@@ -173,13 +174,16 @@ const STATS = [
 type Audience = "passenger" | "sacco"
 
 export default function Homepage() {
-    const [mounted, setMounted] = useState(false)
-    const [audience, setAudience] = useState<Audience>("passenger")
-    useEffect(() => setMounted(true), [])
+    // Passenger self-service is stage 2: until it ships the page is the SACCO
+    // pitch only, with no tab to switch away from it.
+    const [audience, setAudience] = useState<Audience>(
+        ONLINE_BOOKING_ENABLED ? "passenger" : "sacco",
+    )
 
     return (
         <div className="min-h-screen bg-background text-foreground font-sans antialiased">
-            {/* Audience tabs */}
+            {/* Audience tabs — only once there is a passenger side to switch to */}
+            {ONLINE_BOOKING_ENABLED && (
             <div className="sticky top-0 z-10 border-b border-border bg-background/80 backdrop-blur">
                 <div className="mx-auto flex max-w-6xl justify-center gap-1 px-6 py-3">
                     <button
@@ -208,6 +212,7 @@ export default function Homepage() {
                     </button>
                 </div>
             </div>
+            )}
 
             {audience === "passenger" ? (
                 <>
@@ -216,8 +221,7 @@ export default function Homepage() {
                         <div className="grid items-center gap-14 lg:grid-cols-[1.1fr_1fr]">
                             <div
                                 className={cn(
-                                    "space-y-7 transition-all duration-700",
-                                    mounted ? "translate-y-0 opacity-100" : "translate-y-6 opacity-0"
+                                    "space-y-7 animate-in fade-in slide-in-from-bottom-4 duration-700"
                                 )}
                             >
                                 <div className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs font-semibold tracking-wide text-muted-foreground">
@@ -259,8 +263,7 @@ export default function Homepage() {
 
                             <div
                                 className={cn(
-                                    "transition-all delay-150 duration-700",
-                                    mounted ? "translate-y-0 opacity-100" : "translate-y-6 opacity-0"
+                                    "animate-in fade-in slide-in-from-bottom-4 delay-150 duration-700"
                                 )}
                             >
                                 <DepartureBoard />
@@ -355,6 +358,13 @@ export default function Homepage() {
                                         <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" />
                                     </a>
                                     <a
+                                        href="/login"
+                                        className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-5 py-3 text-sm font-semibold text-foreground transition-colors hover:bg-muted"
+                                    >
+                                        <LogIn className="size-4" />
+                                        Sign in
+                                    </a>
+                                    <a
                                         href="#features"
                                         className="inline-flex items-center gap-2 rounded-md px-5 py-3 text-sm font-semibold text-foreground underline decoration-foreground/20 underline-offset-4 hover:decoration-foreground"
                                     >
@@ -446,6 +456,15 @@ export default function Homepage() {
                                     Get started free
                                     <ArrowRight className="size-4" />
                                 </a>
+                                <p className="text-sm text-primary-foreground/70">
+                                    Already registered?{" "}
+                                    <a
+                                        href="/login"
+                                        className="font-semibold text-primary-foreground underline underline-offset-4 hover:no-underline"
+                                    >
+                                        Sign in
+                                    </a>
+                                </p>
                             </div>
                         </div>
                     </section>

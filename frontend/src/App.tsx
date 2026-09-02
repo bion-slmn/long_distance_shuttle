@@ -2,7 +2,8 @@
 import './App.css'
 
 import { lazy, Suspense } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
+import { ONLINE_BOOKING_ENABLED } from './config/features'
 import { Toaster } from 'sonner'
 import ProtectedRoute from './features/auth/ProtectedRoute'
 import { DashboardLayout } from './layouts/DashboardLayout'
@@ -58,13 +59,16 @@ function App() {
           {/* Public routes with navbar + footer */}
           <Route element={<PublicLayout />}>
             <Route path="/" element={<HomePage />} />
-            <Route path="/book" element={<BookTicket />} />
+            {/* Stage 2 — see config/features.ts. Sent home rather than 404 so an
+                old link degrades gracefully. /verify stays: clerk-sold receipts
+                are stage 1. */}
+            <Route path="/book" element={ONLINE_BOOKING_ENABLED ? <BookTicket /> : <Navigate to="/" replace />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
             {/* Target of the emailed invite / reset link — see PUBLIC_APP_URL on the backend */}
             <Route path="/set-password" element={<SetPasswordPage />} />
-            <Route path='/ticket' element={<MyTickets />} />
+            <Route path='/ticket' element={ONLINE_BOOKING_ENABLED ? <MyTickets /> : <Navigate to="/" replace />} />
             <Route path="/verify/:bookingId" element={<VerifyReceipt />} />
           </Route>
 

@@ -3,15 +3,21 @@ import { Button } from '@/components/ui/button';
 import { Bus, Menu, X, Phone, Mail, MapPin, Home, Ticket } from 'lucide-react';
 import { FaFacebook, FaTwitter, FaInstagram, FaYoutube } from 'react-icons/fa';
 import { useState } from 'react';
+import { ONLINE_BOOKING_ENABLED } from '@/config/features';
 
 export function PublicLayout() {
     const location = useLocation();
     const [isMenuOpen, setIsMenuOpen] = useState(false);
 
+    // Passenger self-service links appear only once online booking ships.
     const navLinks = [
         { path: '/', label: 'Home' },
-        { path: '/book', label: 'Book Ticket' },
-        { path: '/ticket', label: 'My Tickets' },
+        ...(ONLINE_BOOKING_ENABLED
+            ? [
+                { path: '/book', label: 'Book Ticket' },
+                { path: '/ticket', label: 'My Tickets' },
+            ]
+            : []),
     ];
 
     const isActive = (path: string) => location.pathname === path;
@@ -60,7 +66,12 @@ export function PublicLayout() {
                             </div>
                         </div>
 
-                        {/* Mobile Menu Button */}
+                        {/* Mobile: Sign In stays visible beside the menu button so a
+                            clerk or admin never has to open the drawer to log in. */}
+                        <div className="flex items-center gap-1 md:hidden">
+                            <Button variant="outline" size="sm">
+                                <Link to="/login">Sign In</Link>
+                            </Button>
                         <button
                             onClick={() => setIsMenuOpen(!isMenuOpen)}
                             className="md:hidden p-2 rounded-lg hover:bg-gray-100 transition-colors"
@@ -72,6 +83,7 @@ export function PublicLayout() {
                                 <Menu className="h-6 w-6 text-gray-600" />
                             )}
                         </button>
+                        </div>
                     </div>
                 </div>
 
@@ -136,7 +148,9 @@ export function PublicLayout() {
                                 </span>
                             </div>
                             <p className="text-sm leading-relaxed">
-                                Book your shuttle tickets instantly. No account needed — just your name and phone.
+                                {ONLINE_BOOKING_ENABLED
+                                    ? 'Book your shuttle tickets instantly. No account needed — just your name and phone.'
+                                    : 'Queue, booking and M-Pesa operations for shuttle SACCOs.'}
                             </p>
                             <div className="flex gap-3 mt-4">
                                 <a href="#" className="text-gray-400 hover:text-white transition-colors">
@@ -163,11 +177,13 @@ export function PublicLayout() {
                                         Home
                                     </Link>
                                 </li>
-                                <li>
-                                    <Link to="/book" className="text-sm hover:text-white transition-colors">
-                                        Book Ticket
-                                    </Link>
-                                </li>
+                                {ONLINE_BOOKING_ENABLED && (
+                                    <li>
+                                        <Link to="/book" className="text-sm hover:text-white transition-colors">
+                                            Book Ticket
+                                        </Link>
+                                    </li>
+                                )}
                                 <li>
                                     <Link to="/login" className="text-sm hover:text-white transition-colors">
                                         Sign In

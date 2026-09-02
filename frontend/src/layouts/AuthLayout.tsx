@@ -1,5 +1,5 @@
 // src/components/layouts/AuthLayout.tsx
-import { type ReactNode, useEffect, useState } from "react"
+import { type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import {
     Bus,
@@ -8,8 +8,6 @@ import {
     CalendarCheck,
     ChartBar,
     Shield,
-    ArrowRight,
-    Sparkles
 } from "lucide-react"
 
 interface AuthLayoutProps {
@@ -23,12 +21,6 @@ export default function AuthLayout({
     title = "Welcome back",
     subtitle = "Sign in to your account to continue"
 }: AuthLayoutProps) {
-    const [mounted, setMounted] = useState(false)
-
-    useEffect(() => {
-        setMounted(true)
-    }, [])
-
     const features = [
         { icon: Bus, label: "Fleet Management" },
         { icon: Route, label: "Route Optimization" },
@@ -39,7 +31,10 @@ export default function AuthLayout({
     ]
 
     return (
-        <div className="min-h-screen grid lg:grid-cols-2 bg-background">
+        // Fills the viewport minus PublicLayout's 4rem navbar, so the page does
+        // not scroll past the form just to show empty space. dvh rather than
+        // vh: on phones 100vh includes the space under the browser chrome.
+        <div className="min-h-[calc(100vh-4rem)] min-h-[calc(100dvh-4rem)] grid lg:grid-cols-2 bg-background">
             {/* Left Panel - Branding & Features */}
             <div className="hidden lg:flex relative flex-col justify-center bg-gradient-to-br from-primary via-primary/90 to-primary/80 text-primary-foreground p-12 xl:p-16 overflow-hidden">
                 {/* Background Pattern */}
@@ -48,8 +43,7 @@ export default function AuthLayout({
                 <div className="absolute -bottom-40 -left-40 size-80 rounded-full bg-primary-foreground/5 blur-3xl" />
 
                 <div className={cn(
-                    "relative z-10 max-w-md space-y-8 transition-all duration-700",
-                    mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"
+                    "relative z-10 max-w-md space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700"
                 )}>
                     {/* Logo/Brand */}
                     <div className="space-y-4">
@@ -103,13 +97,15 @@ export default function AuthLayout({
                 </div>
             </div>
 
-            {/* Right Panel - Auth Form */}
-            <div className="flex items-center justify-center p-6 sm:p-8 lg:p-12">
+            {/* Right Panel - Auth Form.
+                Below lg the branded panel is hidden and the form is the whole
+                page, so it starts near the top: a tall form centred in a phone
+                viewport begins below the fold. The product name is already in
+                PublicLayout's navbar above, so none is repeated here. */}
+            <div className="flex items-start lg:items-center justify-center px-6 pt-8 pb-10 sm:px-8 sm:pt-12 lg:p-12">
                 <div className={cn(
-                    "w-full max-w-md space-y-6 transition-all duration-700 delay-100",
-                    mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"
+                    "w-full max-w-md space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-100"
                 )}>
-
 
                     {/* Form Header */}
                     <div className="space-y-1.5">
