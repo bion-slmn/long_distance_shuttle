@@ -45,7 +45,6 @@ const registerSchema = z
         role: z.enum(["SACCO_ADMIN", "DRIVER", "CLERK"], {
             error: "Select a role",
         }),
-        saccoId: z.string().optional(),
     })
     .refine((d) => d.password === d.confirmPassword, {
         message: "Passwords do not match",
@@ -71,7 +70,6 @@ export default function RegisterForm() {
             phoneNumber: "",
             password: "",
             confirmPassword: "",
-            saccoId: "",
         },
     })
 
@@ -190,26 +188,6 @@ export default function RegisterForm() {
 
 
 
-                        <Controller
-                            name="saccoId"
-                            control={form.control}
-                            render={({ field, fieldState }) => (
-                                <Field data-invalid={fieldState.invalid}>
-                                    <FieldLabel htmlFor="reg-saccoId">
-                                        SACCO ID <span className="text-muted-foreground">(optional)</span>
-                                    </FieldLabel>
-                                    <Input
-                                        {...field}
-                                        id="reg-saccoId"
-                                        placeholder="SACCO-001"
-                                        aria-invalid={fieldState.invalid}
-                                    />
-                                    {fieldState.invalid && (
-                                        <FieldError errors={[fieldState.error]} className="text-left text-xs" />
-                                    )}
-                                </Field>
-                            )}
-                        />
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <Controller
                                 name="password"

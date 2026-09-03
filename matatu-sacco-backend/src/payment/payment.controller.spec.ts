@@ -71,9 +71,9 @@ describe('PaymentController', () => {
       mpesaService.handleC2BConfirmation.mockResolvedValue(stored);
       paymentService.handleC2BReceipt.mockResolvedValue(true);
 
-      const result = await controller.handleC2BConfirmation(body);
+      const result = await controller.handleC2BConfirmation(body, 'sacco-1');
 
-      expect(mpesaService.handleC2BConfirmation).toHaveBeenCalledWith(body);
+      expect(mpesaService.handleC2BConfirmation).toHaveBeenCalledWith(body, 'sacco-1');
       expect(paymentService.handleC2BReceipt).toHaveBeenCalledWith(stored);
       expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
     });
@@ -81,7 +81,7 @@ describe('PaymentController', () => {
     it('does not re-settle a resent receipt we already hold', async () => {
       mpesaService.handleC2BConfirmation.mockResolvedValue(null);
 
-      const result = await controller.handleC2BConfirmation(body);
+      const result = await controller.handleC2BConfirmation(body, 'sacco-1');
 
       expect(paymentService.handleC2BReceipt).not.toHaveBeenCalled();
       expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
@@ -91,7 +91,7 @@ describe('PaymentController', () => {
       mpesaService.handleC2BConfirmation.mockResolvedValue({ id: 'tx-1' } as any);
       paymentService.handleC2BReceipt.mockRejectedValue(new Error('db down'));
 
-      const result = await controller.handleC2BConfirmation(body);
+      const result = await controller.handleC2BConfirmation(body, 'sacco-1');
 
       expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
       expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining('db down'), expect.anything());
@@ -100,7 +100,7 @@ describe('PaymentController', () => {
     it('still acknowledges receipt when persistence throws', async () => {
       mpesaService.handleC2BConfirmation.mockRejectedValue(new Error('duplicate key'));
 
-      const result = await controller.handleC2BConfirmation(body);
+      const result = await controller.handleC2BConfirmation(body, 'sacco-1');
 
       expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
       expect(loggerErrorSpy).toHaveBeenCalledWith(
@@ -212,20 +212,6 @@ describe('PaymentController', () => {
 
       expect(paymentService.getStatusByBookingId).toHaveBeenCalledWith('booking-1');
       expect(result).toBe(status);
-    });
-  });
-
-  // ── recordCash ───────────────────────────────────────────────────────
-  describe('recordCash', () => {
-    it('delegates the dto to the service', async () => {
-      const dto = { bookingId: 'booking-1', amount: 500 } as any;
-      const payment = { id: 'pay-1' };
-      paymentService.recordCashPayment.mockResolvedValue(payment as any);
-
-      const result = await controller.recordCash(dto);
-
-      expect(paymentService.recordCashPayment).toHaveBeenCalledWith(dto);
-      expect(result).toBe(payment);
     });
   });
 

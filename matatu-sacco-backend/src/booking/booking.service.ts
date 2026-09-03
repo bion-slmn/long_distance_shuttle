@@ -174,14 +174,21 @@ export class BookingService {
   // (update the one call site: `this.initialPaymentStatus(dto.paymentMethod)` → `this.initialPaymentStatus(dto)`)
 
   // ── create(): skip triggerMpesaPayment (STK) when a C2B match was supplied
+  // `saccoId` is the caller's tenant (undefined for SUPER_ADMIN and the
+  // public portal). When set, the route — or the booking being retried —
+  // must belong to it, so a clerk cannot sell seats on another sacco's trips.
   async create(
     dto: CreateBookingDto,
     source: BookingSource = BookingSource.CLERK,
+    saccoId?: string,
   ): Promise<Booking> {
-    if (dto.bookingId) {
-      return this.retryPayment(dto.bookingId, dto);
+    if (source === BookingSource.PUBLIC_PORTAL) {
+      this.assertPublicPaymentIsStk(dto);
     }
-    const route = await this.getRouteOrThrow(dto.routeId);
+    if (dto.bookingId) {
+      return this.retryPayment(dto.bookingId, dto, saccoId);
+    }
+    const route = await this.getRouteOrThrow(dto.routeId, saccoId);
     const travelDate = dto.travelDate ?? this.toDateString(new Date());
     this.validatePreferredWindow(travelDate, dto.preferredBoardingFrom, dto.preferredBoardingTo);
 
@@ -214,8 +221,16 @@ export class BookingService {
   // ── Retry: reuse the existing failed/pending booking rather than
   // creating a new row and a new seat claim. Only valid while the booking
   // hasn't already succeeded, boarded, or been cancelled outright.
-  private async retryPayment(bookingId: string, dto: CreateBookingDto): Promise<Booking> {
+  private async retryPayment(
+    bookingId: string,
+    dto: CreateBookingDto,
+    saccoId?: string,
+  ): Promise<Booking> {
     const booking = await this.findOne(bookingId); // includes route relation
+
+    if (saccoId && booking.saccoId !== saccoId) {
+      throw new ForbiddenException('This booking belongs to another sacco.');
+    }
 
     if (booking.paymentStatus === PaymentStatus.PAID) {
       return booking; // already succeeded — never re-charge on a stale retry click
@@ -338,6 +353,21 @@ export class BookingService {
     this.logger.log(`Booking ${booking.id} matched to M-Pesa transaction ${transaction.mpesaReceiptNumber}`);
   }
 
+  // The public portal can do exactly one thing with money: ask for an STK
+  // push and wait for Safaricom to say it landed. CASH resolves to PAID on
+  // the clerk's word, and a pre-matched paybill receipt resolves to PAID on
+  // the clerk's match — neither can be taken from an anonymous request, or
+  // anyone could mark their own booking paid for free. Retries (bookingId)
+  // stay allowed because they can only re-trigger an STK push here.
+  private assertPublicPaymentIsStk(dto: CreateBookingDto): void {
+    if (dto.paymentMethod !== PaymentMethod.MPESA) {
+      throw new BadRequestException('Online bookings are paid via M-Pesa. Pay cash at the stage instead.');
+    }
+    if (dto.mpesaTransactionId) {
+      throw new BadRequestException('A paybill receipt can only be attached to a booking by sacco staff.');
+    }
+  }
+
   // ─── Public-portal pre-booking constraints ───────────────────────────────
   private async validatePublicPreBooking(
     routeId: string,
@@ -407,9 +437,12 @@ export class BookingService {
     }
   }
 
-  private async getRouteOrThrow(routeId: string): Promise<Route> {
+  private async getRouteOrThrow(routeId: string, saccoId?: string): Promise<Route> {
     const route = await this.routeRepository.findOne({ where: { id: routeId } });
     if (!route) throw new NotFoundException(`Route "${routeId}" not found.`);
+    if (saccoId && route.saccoId !== saccoId) {
+      throw new ForbiddenException('This route belongs to another sacco.');
+    }
     return route;
   }
 
@@ -585,7 +618,7 @@ export class BookingService {
       saccoId: route.saccoId,
       passengerName: dto.passengerName,
       passengerPhone: dto.passengerPhone,
-      passengerEmail: dto.passengerEmail,
+      passengerEmail: dto.passengerEmail?.trim().toLowerCase() ?? null,
       fare: route.fare,
       status: BookingStatus.CONFIRMED,
       source,
@@ -622,7 +655,7 @@ export class BookingService {
       saccoId: route.saccoId,
       passengerName: dto.passengerName,
       passengerPhone: dto.passengerPhone,
-      passengerEmail: dto.passengerEmail,
+      passengerEmail: dto.passengerEmail?.trim().toLowerCase() ?? null,
       fare: route.fare,
       status: BookingStatus.AWAITING_TRIP,
       source,

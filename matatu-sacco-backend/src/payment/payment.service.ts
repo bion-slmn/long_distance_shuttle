@@ -10,6 +10,7 @@ import {
     PaymentReferenceType,
 } from './entities/payment.entity';
 import { MpesaService } from './mpesa/mpesa.service';
+import { safeEqual } from './mpesa/callback-token';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import {
@@ -165,6 +166,7 @@ export class PaymentService {
             saved.status = PaymentStatus.PROCESSING;
             saved.checkoutRequestId = result.checkoutRequestId;
             saved.merchantRequestId = result.merchantRequestId;
+            saved.callbackNonce = result.callbackNonce;
             saved.initiatedAt = new Date();
             await this.paymentRepository.save(saved);
 
@@ -222,7 +224,10 @@ export class PaymentService {
     }
 
     // ── Handle Safaricom's async callback ────────────────────────────────
-    async handleMpesaCallback(parsed: ParsedCallback, rawBody: unknown): Promise<void> {
+    // `nonce` is the per-payment token from the callback URL. It must match
+    // the one stored when the push was made; without it a callback proves
+    // nothing, since the platform secret alone is shared with Daraja.
+    async handleMpesaCallback(parsed: ParsedCallback, rawBody: unknown, nonce: string): Promise<void> {
         const payment = await this.paymentRepository.findOne({
             where: { checkoutRequestId: parsed.checkoutRequestId },
         });
@@ -234,10 +239,28 @@ export class PaymentService {
             return;
         }
 
+        if (!payment.callbackNonce || !safeEqual(nonce, payment.callbackNonce)) {
+            this.logger.error(
+                `Callback for payment ${payment.id} rejected — callback nonce does not match the push.`,
+            );
+            return;
+        }
+
         // Idempotency guard — Safaricom can retry callbacks.
         if (payment.status === PaymentStatus.SUCCESS || payment.status === PaymentStatus.FAILED) {
             this.logger.log(
                 `Callback for payment ${payment.id} ignored — already ${payment.status}.`,
+            );
+            return;
+        }
+
+        // We told Daraja the exact amount when we started the push, so a real
+        // success callback always carries at least that much. Anything less
+        // is not Safaricom talking — leave the payment untouched for the
+        // status query / reconcile sweeper to settle from Daraja's own record.
+        if (parsed.success && Number(parsed.amount) < Number(payment.amount)) {
+            this.logger.error(
+                `Callback for payment ${payment.id} rejected — amount ${parsed.amount} is below the expected ${payment.amount}.`,
             );
             return;
         }

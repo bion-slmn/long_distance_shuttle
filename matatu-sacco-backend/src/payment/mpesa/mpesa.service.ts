@@ -9,6 +9,7 @@ import { SaccoSettingsService } from '../../sacco/sacco-settings.service';
 import { InitiateStkPushDto } from '../dto/initiate-stk-push.dto';
 import { MpesaCallbackDto } from '../dto/mpesa-callback.dto';
 import { SimulateC2BPaymentDto } from '../dto/simulate-c2b-payment.dto';
+import { c2bTokenFor, callbackSecret, newCallbackNonce, redactCallbackUrl } from './callback-token';
 import { MpesaTransaction, MpesaTransactionMatchStatus, MpesaTransactionSource } from '../entities/mpesa.entity';
 
 
@@ -16,6 +17,7 @@ interface StkPushResult {
     merchantRequestId: string;
     checkoutRequestId: string;
     responseDescription: string;
+    callbackNonce: string; // store on the payment; the callback must carry it
 }
 
 interface ParsedCallback {
@@ -208,6 +210,17 @@ export class MpesaService {
         return new Date(`${year}-${month}-${day}T${hour}:${min}:${sec}+03:00`);
     }
 
+    // Every URL we hand Daraja carries the platform secret plus a second,
+    // narrower token (see callback-token.ts). Throws if the secret is unset
+    // rather than registering a URL that would 404 forever.
+    private stkCallbackUrl(nonce: string): string {
+        return `${process.env.MPESA_CALLBACK_BASE_URL}/payment/mpesa/callback/${callbackSecret()}/${nonce}`;
+    }
+
+    private c2bUrl(kind: 'confirmation' | 'validation', saccoId: string): string {
+        return `${process.env.MPESA_CALLBACK_BASE_URL}/payment/c2b/${kind}/${saccoId}/${c2bTokenFor(saccoId)}`;
+    }
+
     // ── Initiate STK push for a given sacco + amount + payer ──────────────
     async initiateStkPush(saccoId: string, dto: InitiateStkPushDto): Promise<StkPushResult> {
         const creds = await this.saccoSettingsService.getDecryptedMpesaCredentials(saccoId);
@@ -216,6 +229,7 @@ export class MpesaService {
         const timestamp = this.timestamp();
         const password = this.buildStkPassword(creds.shortcode, creds.passkey, timestamp);
         const phone = this.normalizePhone(dto.payerPhone);
+        const callbackNonce = newCallbackNonce();
 
         const payload = {
             BusinessShortCode: creds.shortcode,
@@ -226,7 +240,7 @@ export class MpesaService {
             PartyA: phone,
             PartyB: creds.shortcode,
             PhoneNumber: phone,
-            CallBackURL: `${process.env.MPESA_CALLBACK_BASE_URL}/payment/mpesa/callback`,
+            CallBackURL: this.stkCallbackUrl(callbackNonce),
             AccountReference: dto.accountReference, // e.g. booking short ref, shown on prompt
             TransactionDesc: dto.description ?? 'Shuttle seat booking',
         };
@@ -249,6 +263,7 @@ export class MpesaService {
                 merchantRequestId: data.MerchantRequestID,
                 checkoutRequestId: data.CheckoutRequestID,
                 responseDescription: data.ResponseDescription,
+                callbackNonce,
             };
         } catch (err: any) {
             this.invalidateToken(saccoId);
@@ -404,8 +419,23 @@ export class MpesaService {
     //
     // Returns the stored row so the caller can try to settle whatever this
     // money is for; null when Safaricom resent a receipt we already hold.
-    async handleC2BConfirmation(body: MpesaC2BConfirmationDto): Promise<MpesaTransaction | null> {
-        const saccoId = await this.saccoSettingsService.findSaccoIdByShortcode(body.BusinessShortCode);
+    //
+    // `expectedSaccoId` is the sacco whose registered (HMAC-tokened) URL the
+    // POST arrived on. That token is the proof of origin, so it wins over the
+    // body's shortcode for attribution: a forged or misrouted receipt can only
+    // ever land in the sacco whose URL was used, never in another's.
+    async handleC2BConfirmation(
+        body: MpesaC2BConfirmationDto,
+        expectedSaccoId?: string,
+    ): Promise<MpesaTransaction | null> {
+        const byShortcode = await this.saccoSettingsService.findSaccoIdByShortcode(body.BusinessShortCode);
+        if (expectedSaccoId && byShortcode && byShortcode !== expectedSaccoId) {
+            this.logger.error(
+                `C2B receipt ${body.TransID} arrived on sacco ${expectedSaccoId}'s URL but carries ` +
+                `shortcode ${body.BusinessShortCode} (sacco ${byShortcode}). Attributing to the URL's sacco.`,
+            );
+        }
+        const saccoId = expectedSaccoId ?? byShortcode;
         if (!saccoId) {
             this.logger.warn(
                 `C2B receipt ${body.TransID} (${body.TransAmount}) hit shortcode ${body.BusinessShortCode}, ` +
@@ -648,8 +678,8 @@ export class MpesaService {
             // "mpesa" or "safaricom", so these routes live on PaymentController
             // (@Controller 'payment'), NOT on MpesaController. A wrong path here
             // fails silently: Safaricom POSTs to a 404 and the money never lands.
-            ConfirmationURL: `${process.env.MPESA_CALLBACK_BASE_URL}/payment/c2b/confirmation`,
-            ValidationURL: `${process.env.MPESA_CALLBACK_BASE_URL}/payment/c2b/validation`,
+            ConfirmationURL: this.c2bUrl('confirmation', saccoId),
+            ValidationURL: this.c2bUrl('validation', saccoId),
         };
 
         try {
@@ -675,7 +705,7 @@ export class MpesaService {
             this.logger.error(
                 `C2B URL registration failed for sacco ${saccoId}: ${reason}` +
                 (daraja?.errorCode ? ` (code ${daraja.errorCode})` : '') +
-                ` [ConfirmationURL=${payload.ConfirmationURL}]`,
+                ` [ConfirmationURL=${redactCallbackUrl(payload.ConfirmationURL)}]`,
             );
             // Surface Daraja's own reason: this is an admin setup action, and
             // "Invalid ShortCode" vs "Invalid URL" send the admin to very

@@ -23,6 +23,7 @@ import { UserRole } from 'src/auth/entities/user.entity';
 import { JwtAuthGuard } from 'src/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/guards/roles.guard';
 import { Roles } from 'src/decorators/roles.decorator';
+import { ForbiddenException } from '@nestjs/common';
 
 @Controller('trips')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -31,7 +32,15 @@ export class TripController {
 
   @Post()
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
-  create(@Body() createTripDto: CreateTripDto) {
+  create(@Body() createTripDto: CreateTripDto, @CurrentUser() user: any) {
+    // The sacco comes from the caller's token, never the body — a clerk
+    // cannot create trips (or revenue records) under another sacco.
+    if (user.role !== UserRole.SUPER_ADMIN) {
+      if (!user.saccoId) {
+        throw new ForbiddenException('You are not assigned to a sacco.');
+      }
+      createTripDto.saccoId = user.saccoId;
+    }
     return this.tripService.create(createTripDto);
   }
 

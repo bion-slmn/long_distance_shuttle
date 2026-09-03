@@ -15,10 +15,14 @@ import { Fleet as Vehicle } from '../../fleet/entities/fleet.entity';
 import { QueueEntry } from '../../route/entities/queue-entry.entity';
 import { User } from 'src/auth/entities/user.entity';
 
+// A trip only ever has three honest states from the sacco's point of view.
+// The sacco can see a vehicle loading and can see it leave; it cannot see it
+// arrive, and the vehicle may never return to this stage. So DEPARTED is
+// terminal — fare is collected at boarding, so the money story is closed the
+// moment the vehicle leaves. There is deliberately no COMPLETED/ARRIVED.
 export enum TripStatus {
   BOARDING = 'BOARDING',   // Shuttle is actively in the bay filling up with passengers
-  EN_ROUTE = 'EN_ROUTE',   // Full and gone! Left the terminal
-  COMPLETED = 'COMPLETED', // Arrived at destination stage
+  DEPARTED = 'DEPARTED',   // Left the stage. Terminal.
   CANCELLED = 'CANCELLED'
 }
 
@@ -31,10 +35,10 @@ export class Trip {
   @Column({ type: 'timestamptz', nullable: true })
   declare departureTime: Date | null;
 
-  // Nullable — filled when the trip is closed (auto via next clock-in, or
-  // manually/by a cleanup job). Deliberately separate from `updatedAt`,
-  // which changes on any edit and can't be trusted as "this is when it
-  // actually completed."
+  // Nullable — only stamped when a trip is cancelled (the one transition
+  // that "closes" a trip by hand). A DEPARTED trip needs no closing stamp;
+  // `departureTime` is its terminal timestamp. Deliberately separate from
+  // `updatedAt`, which changes on any edit and can't be trusted.
   @Column({ type: 'timestamptz', nullable: true })
   declare completedAt: Date | null;
 

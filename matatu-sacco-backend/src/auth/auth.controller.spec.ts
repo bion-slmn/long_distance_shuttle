@@ -246,6 +246,17 @@ describe('AuthController', () => {
       await expect(controller.refresh(req, res)).rejects.toThrow(UnauthorizedException);
     });
 
+    it('SECURITY: never echoes the refresh token in the JSON body', async () => {
+      const req: any = { cookies: { [REFRESH_COOKIE_NAME]: 'valid-refresh-token' } };
+      const res = mockResponse();
+      authService.refresh.mockResolvedValue(mockTokenPair);
+
+      const result = await controller.refresh(req, res);
+
+      expect(result).toHaveProperty('access_token', mockTokenPair.access_token);
+      expect(result).not.toHaveProperty('refresh_token');
+    });
+
     it('re-sets the refresh_token cookie with the rotated value', async () => {
       const req: any = { cookies: { [REFRESH_COOKIE_NAME]: 'valid-refresh-token' } };
       const res = mockResponse();
@@ -261,16 +272,6 @@ describe('AuthController', () => {
         'same-or-new-refresh',
         expectedCookieOptions,
       );
-    });
-
-    it('returns the full result from authService.refresh', async () => {
-      const req: any = { cookies: { [REFRESH_COOKIE_NAME]: 'valid-refresh-token' } };
-      const res = mockResponse();
-      authService.refresh.mockResolvedValue(mockTokenPair);
-
-      const result = await controller.refresh(req, res);
-
-      expect(result).toEqual(mockTokenPair);
     });
 
     it('propagates errors from authService.refresh (e.g. expired/stale token)', async () => {

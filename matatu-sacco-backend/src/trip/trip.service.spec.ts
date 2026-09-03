@@ -59,6 +59,16 @@ describe('TripService', () => {
       createQueryBuilder: jest.fn(),
       manager: {
         createQueryBuilder: jest.fn(),
+        // create() checks route + vehicle ownership through the manager.
+        getRepository: jest.fn(() => ({
+          findOne: jest.fn(async ({ where }: any) =>
+            where.id === 'route-1' ? { id: 'route-1', saccoId: SACCO_A }
+            : where.id === 'v1' ? { id: 'v1', saccoId: SACCO_A, seatingCapacity: 14 }
+            : where.id === 'route-b' ? { id: 'route-b', saccoId: SACCO_B }
+            : where.id === 'v-b' ? { id: 'v-b', saccoId: SACCO_B, seatingCapacity: 14 }
+            : null,
+          ),
+        })),
       },
     };
 
@@ -124,6 +134,26 @@ describe('TripService', () => {
       );
       expect(result.status).toBe(TripStatus.BOARDING);
     });
+
+    it("SECURITY: rejects a route that belongs to another sacco", async () => {
+      await expect(
+        service.create({ routeId: 'route-b', vehicleId: 'v1', saccoId: SACCO_A, fare: 500 } as any),
+      ).rejects.toThrow(ForbiddenException);
+      expect(tripRepository.save).not.toHaveBeenCalled();
+    });
+
+    it("SECURITY: rejects a vehicle that belongs to another sacco", async () => {
+      await expect(
+        service.create({ routeId: 'route-1', vehicleId: 'v-b', saccoId: SACCO_A, fare: 500 } as any),
+      ).rejects.toThrow(ForbiddenException);
+      expect(tripRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unknown route or vehicle', async () => {
+      await expect(
+        service.create({ routeId: 'nope', vehicleId: 'v1', saccoId: SACCO_A, fare: 500 } as any),
+      ).rejects.toThrow(NotFoundException);
+    });
   });
 
   // ── createFromQueueEntry — manager threading ─────────────────────────────
@@ -167,22 +197,22 @@ describe('TripService', () => {
 
   // ── markDeparted ──────────────────────────────────────────────────────────
   describe('markDeparted', () => {
-    it('transitions a BOARDING trip to EN_ROUTE and stamps departureTime', async () => {
+    it('transitions a BOARDING trip to DEPARTED and stamps departureTime', async () => {
       tripRepository.findOne.mockResolvedValue(makeTrip({ status: TripStatus.BOARDING }));
 
       const result = await service.markDeparted('trip-1');
 
-      expect(result.status).toBe(TripStatus.EN_ROUTE);
+      expect(result.status).toBe(TripStatus.DEPARTED);
       expect(tripRepository.save).toHaveBeenCalledWith(
-        expect.objectContaining({ status: TripStatus.EN_ROUTE, departureTime: expect.any(Date) }),
+        expect.objectContaining({ status: TripStatus.DEPARTED, departureTime: expect.any(Date) }),
       );
     });
 
     it('rejects marking departure on a trip that is not BOARDING', async () => {
-      tripRepository.findOne.mockResolvedValue(makeTrip({ status: TripStatus.EN_ROUTE }));
+      tripRepository.findOne.mockResolvedValue(makeTrip({ status: TripStatus.DEPARTED }));
 
       await expect(service.markDeparted('trip-1')).rejects.toThrow(
-        'Trip is "EN_ROUTE", not BOARDING — cannot mark departed.',
+        'Trip is "DEPARTED", not BOARDING — cannot mark departed.',
       );
     });
 
@@ -208,42 +238,6 @@ describe('TripService', () => {
       expect(managerScopedRepo.save).toHaveBeenCalled();
       expect(tripRepository.findOne).not.toHaveBeenCalled();
       expect(tripRepository.save).not.toHaveBeenCalled();
-    });
-  });
-
-  // ── closeActiveTripForVehicle ─────────────────────────────────────────────
-  describe('closeActiveTripForVehicle', () => {
-    it('returns null when the vehicle has no BOARDING or EN_ROUTE trip', async () => {
-      tripRepository.findOne.mockResolvedValue(null);
-
-      const result = await service.closeActiveTripForVehicle('vehicle-1');
-
-      expect(result).toBeNull();
-      expect(tripRepository.save).not.toHaveBeenCalled();
-    });
-
-    it('completes an active BOARDING/EN_ROUTE trip and stamps completedAt', async () => {
-      tripRepository.findOne.mockResolvedValue(makeTrip({ status: TripStatus.EN_ROUTE }));
-
-      const result = await service.closeActiveTripForVehicle('vehicle-1');
-
-      expect(result?.status).toBe(TripStatus.COMPLETED);
-      expect(tripRepository.save).toHaveBeenCalledWith(
-        expect.objectContaining({ status: TripStatus.COMPLETED, completedAt: expect.any(Date) }),
-      );
-    });
-
-    it('searches both BOARDING and EN_ROUTE statuses for the vehicle', async () => {
-      tripRepository.findOne.mockResolvedValue(null);
-
-      await service.closeActiveTripForVehicle('vehicle-1');
-
-      expect(tripRepository.findOne).toHaveBeenCalledWith({
-        where: [
-          { vehicleId: 'vehicle-1', status: TripStatus.BOARDING },
-          { vehicleId: 'vehicle-1', status: TripStatus.EN_ROUTE },
-        ],
-      });
     });
   });
 
@@ -316,11 +310,11 @@ describe('TripService', () => {
       );
     });
 
-    it('rejects cancelling an already-COMPLETED trip', async () => {
-      tripRepository.findOne.mockResolvedValue(makeTrip({ status: TripStatus.COMPLETED }));
+    it('rejects cancelling a DEPARTED trip', async () => {
+      tripRepository.findOne.mockResolvedValue(makeTrip({ status: TripStatus.DEPARTED }));
 
       await expect(service.cancel('trip-1')).rejects.toThrow(
-        'A completed trip cannot be cancelled.',
+        'A departed trip cannot be cancelled.',
       );
     });
 
@@ -501,7 +495,7 @@ describe('TripService', () => {
         saccoId: SACCO_A,
         routeId: 'route-1',
         vehicleId: 'vehicle-1',
-        status: TripStatus.EN_ROUTE,
+        status: TripStatus.DEPARTED,
       });
 
       expect(qb.andWhere).toHaveBeenCalledWith('trip.routeId = :routeId', { routeId: 'route-1' });
@@ -509,7 +503,7 @@ describe('TripService', () => {
         vehicleId: 'vehicle-1',
       });
       expect(qb.andWhere).toHaveBeenCalledWith('trip.status = :status', {
-        status: TripStatus.EN_ROUTE,
+        status: TripStatus.DEPARTED,
       });
     });
 
@@ -645,12 +639,12 @@ describe('TripService', () => {
       const result = await service.update('trip-1', {
         passengerCount: 6,
         driverId: 'driver-1',
-        status: TripStatus.EN_ROUTE,
+        status: TripStatus.DEPARTED,
       } as any);
 
       expect(result.passengerCount).toBe(6);
       expect(result.driverId).toBe('driver-1');
-      expect(result.status).toBe(TripStatus.EN_ROUTE);
+      expect(result.status).toBe(TripStatus.DEPARTED);
     });
 
     it('rejects a negative passengerCount', async () => {
@@ -685,7 +679,7 @@ describe('TripService', () => {
       tripRepository.findOne.mockResolvedValue(makeTrip({ saccoId: SACCO_A }));
 
       await expect(
-        service.update('trip-1', { status: TripStatus.EN_ROUTE } as any, SACCO_B),
+        service.update('trip-1', { status: TripStatus.DEPARTED } as any, SACCO_B),
       ).rejects.toThrow(ForbiddenException);
     });
   });
@@ -797,11 +791,11 @@ describe('TripService', () => {
       expect(tripRepository.remove).toHaveBeenCalled();
     });
 
-    it('rejects deleting a COMPLETED trip, suggesting cancel instead', async () => {
-      tripRepository.findOne.mockResolvedValue(makeTrip({ status: TripStatus.COMPLETED }));
+    it('rejects deleting a DEPARTED trip', async () => {
+      tripRepository.findOne.mockResolvedValue(makeTrip({ status: TripStatus.DEPARTED }));
 
       await expect(service.remove('trip-1')).rejects.toThrow(
-        'Completed trips cannot be deleted — cancel instead.',
+        'Departed trips cannot be deleted.',
       );
       expect(tripRepository.remove).not.toHaveBeenCalled();
     });

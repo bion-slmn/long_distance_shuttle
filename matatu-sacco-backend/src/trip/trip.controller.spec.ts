@@ -1,3 +1,4 @@
+import { ForbiddenException } from '@nestjs/common';
 // trip.controller.spec.ts
 import { Test, TestingModule } from '@nestjs/testing';
 import { TripController } from './trip.controller';
@@ -53,10 +54,27 @@ describe('TripController', () => {
       const dto = { fare: 100 } as any;
       tripService.create.mockResolvedValue({ id: 'trip-1' } as any);
 
-      const result = await controller.create(dto);
+      const result = await controller.create(dto, superAdminUser);
 
       expect(tripService.create).toHaveBeenCalledWith(dto);
       expect(result).toEqual({ id: 'trip-1' });
+    });
+
+    it('SECURITY: pins saccoId to the caller\'s own sacco for non-super-admins', async () => {
+      const dto = { fare: 100, saccoId: 'someone-elses-sacco' } as any;
+      tripService.create.mockResolvedValue({ id: 'trip-1' } as any);
+
+      await controller.create(dto, saccoAdminUser);
+
+      expect(tripService.create).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: saccoAdminUser.saccoId }),
+      );
+    });
+
+    it('SECURITY: refuses a non-super-admin with no sacco', async () => {
+      expect(() =>
+        controller.create({ fare: 100 } as any, { role: UserRole.CLERK, saccoId: null }),
+      ).toThrow(ForbiddenException);
     });
   });
 

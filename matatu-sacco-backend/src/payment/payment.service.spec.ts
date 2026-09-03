@@ -46,6 +46,7 @@ describe('PaymentService', () => {
       payerPhone: '0712345678',
       checkoutRequestId: null,
       merchantRequestId: null,
+      callbackNonce: 'nonce-1',
       mpesaReceiptNumber: null,
       resultCode: null,
       resultDesc: null,
@@ -203,12 +204,61 @@ describe('PaymentService', () => {
   describe('handleMpesaCallback', () => {
     const rawBody = { some: 'raw payload' };
 
+    it('SECURITY: ignores a callback whose nonce does not match the push', async () => {
+      const payment = basePayment({ status: PaymentStatus.PROCESSING, callbackNonce: 'nonce-1' });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+
+      await service.handleMpesaCallback(
+        { checkoutRequestId: 'ws_CO_123', resultCode: 0, resultDesc: 'ok', success: true, amount: 500, mpesaReceiptNumber: 'R1' },
+        rawBody,
+        'wrong-nonce',
+      );
+
+      expect(paymentRepository.save).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(payment.status).toBe(PaymentStatus.PROCESSING);
+    });
+
+    it('SECURITY: ignores a callback for a payment that never received a nonce', async () => {
+      const payment = basePayment({ status: PaymentStatus.PROCESSING, callbackNonce: null });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+
+      await service.handleMpesaCallback(
+        { checkoutRequestId: 'ws_CO_123', resultCode: 0, resultDesc: 'ok', success: true, amount: 500 },
+        rawBody,
+        'nonce-1',
+      );
+
+      expect(paymentRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('SECURITY: ignores a "successful" callback whose amount is below what was requested', async () => {
+      const payment = basePayment({ status: PaymentStatus.PROCESSING, amount: 500 });
+      paymentRepository.findOne!.mockResolvedValue(payment);
+
+      await service.handleMpesaCallback(
+        {
+          checkoutRequestId: 'ws_CO_123',
+          resultCode: 0,
+          resultDesc: 'ok',
+          success: true,
+          amount: 1,
+          mpesaReceiptNumber: 'FAKE1',
+        },
+        rawBody, 'nonce-1',
+      );
+
+      expect(paymentRepository.save).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(payment.status).toBe(PaymentStatus.PROCESSING);
+    });
+
     it('logs and returns early if no payment matches the checkoutRequestId', async () => {
       paymentRepository.findOne!.mockResolvedValue(null);
 
       await service.handleMpesaCallback(
         { checkoutRequestId: 'unknown', resultCode: 0, resultDesc: 'ok', success: true },
-        rawBody,
+        rawBody, 'nonce-1',
       );
 
       expect(paymentRepository.save).not.toHaveBeenCalled();
@@ -221,7 +271,7 @@ describe('PaymentService', () => {
 
       await service.handleMpesaCallback(
         { checkoutRequestId: 'ws_CO_123', resultCode: 0, resultDesc: 'ok', success: true },
-        rawBody,
+        rawBody, 'nonce-1',
       );
 
       expect(paymentRepository.save).not.toHaveBeenCalled();
@@ -234,7 +284,7 @@ describe('PaymentService', () => {
 
       await service.handleMpesaCallback(
         { checkoutRequestId: 'ws_CO_123', resultCode: 1, resultDesc: 'cancelled', success: false },
-        rawBody,
+        rawBody, 'nonce-1',
       );
 
       expect(paymentRepository.save).not.toHaveBeenCalled();
@@ -254,7 +304,7 @@ describe('PaymentService', () => {
           success: true,
           mpesaReceiptNumber: 'NLJ7RT61SV',
         },
-        rawBody,
+        rawBody, 'nonce-1',
       );
 
       expect(paymentRepository.save).toHaveBeenCalledWith(
@@ -295,7 +345,7 @@ describe('PaymentService', () => {
           success: true,
           mpesaReceiptNumber: 'NLJ7RT61SV',
         },
-        rawBody,
+        rawBody, 'nonce-1',
       );
 
       expect(mpesaService.findTransactionByCheckoutRequestId).toHaveBeenCalledWith('ws_CO_123');
@@ -328,7 +378,7 @@ describe('PaymentService', () => {
           success: true,
           mpesaReceiptNumber: 'NLJ7RT61SV',
         },
-        rawBody,
+        rawBody, 'nonce-1',
       );
 
       expect(mpesaService.matchTransaction).not.toHaveBeenCalled();
@@ -357,7 +407,7 @@ describe('PaymentService', () => {
           success: true,
           mpesaReceiptNumber: 'NLJ7RT61SV',
         },
-        rawBody,
+        rawBody, 'nonce-1',
       );
 
       expect(eventEmitter.emit).toHaveBeenCalledWith(
@@ -381,7 +431,7 @@ describe('PaymentService', () => {
           resultDesc: 'Request cancelled by user.',
           success: false,
         },
-        rawBody,
+        rawBody, 'nonce-1',
       );
 
       expect(paymentRepository.save).toHaveBeenCalledWith(
@@ -1363,6 +1413,7 @@ describe('PaymentService', () => {
           payerPhone: '254712345678',
         },
         {},
+        'nonce-1',
       );
 
       expect(mpesaService.findTransactionByReceiptNumber).toHaveBeenCalledWith('RKT1TEST001');

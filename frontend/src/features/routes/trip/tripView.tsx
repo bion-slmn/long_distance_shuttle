@@ -15,7 +15,6 @@ import {
     Clock,
     DollarSign,
     Users,
-    CheckCircle,
     XCircle,
     AlertCircle,
     MapPin,
@@ -72,23 +71,34 @@ interface TripListViewProps {
 
 const STATUS_COLORS: Record<TripStatus, string> = {
     [TripStatus.BOARDING]: "bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400 border-amber-500/20",
-    [TripStatus.EN_ROUTE]: "bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400 border-blue-500/20",
-    [TripStatus.COMPLETED]: "bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border-emerald-500/20",
+    [TripStatus.DEPARTED]: "bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border-emerald-500/20",
     [TripStatus.CANCELLED]: "bg-red-500/10 text-red-600 dark:bg-red-500/20 dark:text-red-400 border-red-500/20",
 }
 
 const STATUS_ICONS: Record<TripStatus, any> = {
     [TripStatus.BOARDING]: Clock,
-    [TripStatus.EN_ROUTE]: Truck,
-    [TripStatus.COMPLETED]: CheckCircle,
+    [TripStatus.DEPARTED]: Truck,
     [TripStatus.CANCELLED]: XCircle,
 }
 
 const STATUS_LABELS: Record<TripStatus, string> = {
     [TripStatus.BOARDING]: "Boarding",
-    [TripStatus.EN_ROUTE]: "En Route",
-    [TripStatus.COMPLETED]: "Completed",
+    [TripStatus.DEPARTED]: "Departed",
     [TripStatus.CANCELLED]: "Cancelled",
+}
+
+// The API may still hand back a status this build doesn't know (a row the
+// migration hasn't touched yet, or a value added server-side first). Render
+// it as a neutral badge instead of letting an undefined icon crash the list.
+const FALLBACK_COLOR = "bg-muted text-muted-foreground border-border"
+function statusIcon(status: string) {
+    return STATUS_ICONS[status as TripStatus] ?? Clock
+}
+function statusColor(status: string) {
+    return STATUS_COLORS[status as TripStatus] ?? FALLBACK_COLOR
+}
+function statusLabel(status: string) {
+    return STATUS_LABELS[status as TripStatus] ?? status
 }
 
 function todayIso() {
@@ -169,8 +179,8 @@ export function TripListView({ saccoId, className }: TripListViewProps) {
     })
 
     const handleCancelTrip = (trip: Trip) => {
-        if (trip.status === TripStatus.COMPLETED) {
-            toast.error("Cannot cancel a completed trip")
+        if (trip.status === TripStatus.DEPARTED) {
+            toast.error("Cannot cancel a trip that has already departed")
             return
         }
         cancelMutation.mutate(trip.id)
@@ -433,7 +443,7 @@ function DesktopTripRow({
     const { numberPlate } = useVehicleNumberPlate(trip.vehicleId)
     const routeName = useRouteName(trip.routeId)
     const saccoName = useSaccoName(trip.saccoId)
-    const StatusIcon = STATUS_ICONS[trip.status]
+    const StatusIcon = statusIcon(trip.status)
 
     return (
         <TableRow className="group cursor-pointer hover:bg-muted/50 transition-colors" onClick={onSelect}>
@@ -457,11 +467,11 @@ function DesktopTripRow({
                     variant="outline"
                     className={cn(
                         "text-[10px] h-5 px-1.5 font-medium border",
-                        STATUS_COLORS[trip.status]
+                        statusColor(trip.status)
                     )}
                 >
                     <StatusIcon className="size-2.5 mr-1" />
-                    {STATUS_LABELS[trip.status]}
+                    {statusLabel(trip.status)}
                 </Badge>
             </TableCell>
             <TableCell>
@@ -489,7 +499,7 @@ function DesktopTripRow({
                                 <Eye className="size-3.5 mr-2" />
                                 View details
                             </DropdownMenuItem>
-                            {trip.status !== TripStatus.COMPLETED && trip.status !== TripStatus.CANCELLED && (
+                            {trip.status === TripStatus.BOARDING && (
                                 <>
                                     <DropdownMenuSeparator />
                                     <DropdownMenuItem
@@ -531,7 +541,7 @@ function MobileTripCard({
 }: MobileTripCardProps) {
     const { numberPlate } = useVehicleNumberPlate(trip.vehicleId)
     const routeName = useRouteName(trip.routeId)
-    const StatusIcon = STATUS_ICONS[trip.status]
+    const StatusIcon = statusIcon(trip.status)
 
     return (
         <div
@@ -554,11 +564,11 @@ function MobileTripCard({
                             variant="outline"
                             className={cn(
                                 "text-[10px] h-5 px-1.5 font-medium border shrink-0",
-                                STATUS_COLORS[trip.status]
+                                statusColor(trip.status)
                             )}
                         >
                             <StatusIcon className="size-2.5 mr-1" />
-                            {STATUS_LABELS[trip.status]}
+                            {statusLabel(trip.status)}
                         </Badge>
                     </div>
                     <p className="text-xs text-muted-foreground truncate mt-0.5">{routeName || "—"}</p>
@@ -583,7 +593,7 @@ function MobileTripCard({
                             <Eye className="size-3.5 mr-2" />
                             View details
                         </DropdownMenuItem>
-                        {trip.status !== TripStatus.COMPLETED && trip.status !== TripStatus.CANCELLED && (
+                        {trip.status === TripStatus.BOARDING && (
                             <>
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem
@@ -665,7 +675,7 @@ function TripDetailsDialog({
     const { numberPlate } = useVehicleNumberPlate(trip.vehicleId)
     const routeName = useRouteName(trip.routeId)
     const saccoName = useSaccoName(trip.saccoId)
-    const StatusIcon = STATUS_ICONS[trip.status]
+    const StatusIcon = statusIcon(trip.status)
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -680,11 +690,11 @@ function TripDetailsDialog({
                             variant="outline"
                             className={cn(
                                 "text-[10px] h-5 px-1.5 font-medium border",
-                                STATUS_COLORS[trip.status]
+                                statusColor(trip.status)
                             )}
                         >
                             <StatusIcon className="size-2.5 mr-1" />
-                            {STATUS_LABELS[trip.status]}
+                            {statusLabel(trip.status)}
                         </Badge>
                         <span className="text-xs text-muted-foreground">
                             {formatDate(trip.createdAt)}
@@ -752,14 +762,14 @@ function TripDetailsDialog({
                             <p className="text-foreground">{formatDate(trip.departureTime)}</p>
                         </div>
                         <div>
-                            <p className="font-medium text-muted-foreground">Completed</p>
+                            <p className="font-medium text-muted-foreground">Closed</p>
                             <p className="text-foreground">{formatDate(trip.completedAt) || "—"}</p>
                         </div>
                     </div>
                 </div>
 
                 <div className="flex gap-2 pt-2">
-                    {trip.status !== TripStatus.COMPLETED && trip.status !== TripStatus.CANCELLED && (
+                    {trip.status === TripStatus.BOARDING && (
                         <Button
                             variant="destructive"
                             size="sm"

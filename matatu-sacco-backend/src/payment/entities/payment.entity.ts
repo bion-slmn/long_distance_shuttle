@@ -70,6 +70,10 @@ export class Payment {
     @Column({ nullable: true })
     declare merchantRequestId: string;
 
+    // Random token in this push's CallBackURL; a callback must carry it.
+    @Column({ type: 'varchar', nullable: true })
+    declare callbackNonce: string | null;
+
     @Column({ nullable: true })
     declare mpesaReceiptNumber: string; // from successful callback, for reconciliation
 

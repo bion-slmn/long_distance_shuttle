@@ -1,3 +1,4 @@
+import { c2bTokenFor } from './callback-token';
 // src/payment/mpesa/mpesa.service.spec.ts
 import { BadRequestException } from '@nestjs/common';
 import { of, throwError } from 'rxjs';
@@ -245,6 +246,7 @@ describe('MpesaService', () => {
             } as any);
 
             expect(result).toEqual({
+                callbackNonce: expect.any(String),
                 merchantRequestId: 'merchant-9',
                 checkoutRequestId: 'checkout-9',
                 responseDescription: 'Success. Request accepted for processing',
@@ -719,9 +721,11 @@ describe('MpesaService', () => {
     // ── registerC2BUrls ──────────────────────────────────────────────────────
     describe('registerC2BUrls', () => {
         const ORIGINAL_BASE = process.env.MPESA_CALLBACK_BASE_URL;
+        const ORIGINAL_SECRET = process.env.MPESA_CALLBACK_SECRET;
 
         beforeEach(() => {
             process.env.MPESA_CALLBACK_BASE_URL = 'https://example.ngrok.app';
+            process.env.MPESA_CALLBACK_SECRET = 'testcallbacksecret0123';
             httpService.get.mockReturnValue(
                 of({ data: { access_token: 'tok', expires_in: 3600 } }),
             );
@@ -729,6 +733,7 @@ describe('MpesaService', () => {
 
         afterEach(() => {
             process.env.MPESA_CALLBACK_BASE_URL = ORIGINAL_BASE;
+            process.env.MPESA_CALLBACK_SECRET = ORIGINAL_SECRET;
         });
 
         it('registers /payment/c2b/* URLs (Daraja rejects paths containing "mpesa")', async () => {
@@ -743,13 +748,20 @@ describe('MpesaService', () => {
             expect(payload).toEqual({
                 ShortCode: CREDS.shortcode,
                 ResponseType: 'Completed',
-                ConfirmationURL: 'https://example.ngrok.app/payment/c2b/confirmation',
-                ValidationURL: 'https://example.ngrok.app/payment/c2b/validation',
+                ConfirmationURL: `https://example.ngrok.app/payment/c2b/confirmation/${SACCO_ID}/${c2bTokenFor(SACCO_ID)}`,
+                ValidationURL: `https://example.ngrok.app/payment/c2b/validation/${SACCO_ID}/${c2bTokenFor(SACCO_ID)}`,
             });
             expect(payload.ConfirmationURL).not.toMatch(/mpesa/);
             expect(payload.ValidationURL).not.toMatch(/mpesa/);
             expect(result).toEqual({ responseDescription: 'Success' });
             expect(saccoSettingsService.recordC2bRegistration).toHaveBeenCalledWith(SACCO_ID, null);
+        });
+
+        it('SECURITY: refuses to register callback URLs when MPESA_CALLBACK_SECRET is unset', async () => {
+            delete process.env.MPESA_CALLBACK_SECRET;
+
+            await expect(service.registerC2BUrls(SACCO_ID)).rejects.toThrow(/MPESA_CALLBACK_SECRET/);
+            expect(httpService.post).not.toHaveBeenCalled();
         });
 
         it('records Daraja\'s reason on the settings row and surfaces it when registration fails', async () => {

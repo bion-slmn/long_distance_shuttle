@@ -62,11 +62,17 @@ const mockPasswordResetService = () => ({
   buildLink: jest.fn((token: string) => `http://localhost:5173/set-password?token=${token}`),
 });
 
+const configValue = (key: string) => {
+  if (key === 'JWT_ACCESS_SECRET') return 'test-access-secret';
+  if (key === 'JWT_REFRESH_SECRET') return 'test-refresh-secret';
+  return null;
+};
 const mockConfigService = () => ({
-  get: jest.fn((key: string) => {
-    if (key === 'JWT_ACCESS_SECRET') return 'test-access-secret';
-    if (key === 'JWT_REFRESH_SECRET') return 'test-refresh-secret';
-    return null;
+  get: jest.fn(configValue),
+  getOrThrow: jest.fn((key: string) => {
+    const v = configValue(key);
+    if (v == null) throw new Error(`Configuration key "${key}" does not exist`);
+    return v;
   }),
 });
 
@@ -211,16 +217,16 @@ describe('AuthService', () => {
       expect(result).toBeDefined();
     });
 
-    it('stores saccoId when provided', async () => {
+    it('SECURITY: ignores a saccoId supplied by the caller — self-registered users never join a sacco', async () => {
       userRepo.findOne.mockResolvedValue(null);
-      const saved = makeUser({ saccoId: 'sacco-123' });
+      const saved = makeUser({ saccoId: null });
       userRepo.create.mockReturnValue(saved);
       userRepo.save.mockResolvedValue(saved);
 
-      await service.register({ ...dto, role: UserRole.PASSENGER, saccoId: 'sacco-123' });
+      await service.register({ ...dto, role: UserRole.PASSENGER, saccoId: 'sacco-123' } as any);
 
       expect(userRepo.create).toHaveBeenCalledWith(
-        expect.objectContaining({ saccoId: 'sacco-123' })
+        expect.objectContaining({ saccoId: null })
       );
     });
   });
@@ -307,6 +313,7 @@ describe('AuthService', () => {
       jwtService.verifyAsync.mockResolvedValue({
         sub: user.id,
         tokenVersion: 2,
+        typ: 'refresh',
       });
       userRepo.findOne.mockResolvedValue(user);
       jwtService.signAsync.mockResolvedValueOnce('new-access');
@@ -316,6 +323,34 @@ describe('AuthService', () => {
       expect(result.access_token).toBe('new-access');
       // refresh token is NOT rotated — the same raw token is echoed back
       expect(result.refresh_token).toBe('valid-refresh-token');
+      // and it is verified against the refresh secret, never the access one
+      expect(jwtService.verifyAsync).toHaveBeenCalledWith(
+        'valid-refresh-token',
+        { secret: 'test-refresh-secret' },
+      );
+    });
+
+    it('SECURITY: rejects an access token presented as a refresh token (no typ claim)', async () => {
+      const user = makeUser({ tokenVersion: 2 });
+      jwtService.verifyAsync.mockResolvedValue({ sub: user.id, tokenVersion: 2 });
+      userRepo.findOne.mockResolvedValue(user);
+
+      await expect(service.refresh('an-access-token')).rejects.toThrow(UnauthorizedException);
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+    });
+
+    it('SECURITY: fails closed when JWT_REFRESH_SECRET is not configured', async () => {
+      (service as any).configService.getOrThrow.mockImplementation((key: string) => {
+        throw new Error(`Configuration key "${key}" does not exist`);
+      });
+
+      await expect(service.refresh('any')).rejects.toThrow(/JWT_REFRESH_SECRET/);
+    });
+
+    it('SECURITY: refuses to run when the refresh secret equals the access secret', async () => {
+      (service as any).configService.getOrThrow.mockReturnValue('test-access-secret');
+
+      await expect(service.refresh('any')).rejects.toThrow(/must differ/);
     });
 
     it('throws UnauthorizedException for an invalid/expired token', async () => {
@@ -325,7 +360,7 @@ describe('AuthService', () => {
     });
 
     it('throws UnauthorizedException when user is not found', async () => {
-      jwtService.verifyAsync.mockResolvedValue({ sub: 'ghost-id', tokenVersion: 0 });
+      jwtService.verifyAsync.mockResolvedValue({ sub: 'ghost-id', tokenVersion: 0, typ: 'refresh' });
       userRepo.findOne.mockResolvedValue(null);
 
       await expect(service.refresh('some-token')).rejects.toThrow(UnauthorizedException);
@@ -336,6 +371,7 @@ describe('AuthService', () => {
       jwtService.verifyAsync.mockResolvedValue({
         sub: user.id,
         tokenVersion: 3,          // old version — session was revoked
+        typ: 'refresh',
       });
       userRepo.findOne.mockResolvedValue(user);
 

@@ -24,6 +24,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { EmailModule } from './email/email.module';
 import { ReceiptModule } from './receipt/receipt.module';
 import { BullmqModule } from './redis/bullmq.module';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 
 @Module({
   imports: [
@@ -64,6 +65,14 @@ import { BullmqModule } from './redis/bullmq.module';
       },
     }),
 
+    // Baseline rate limit for every route, keyed by client IP. Hot public
+    // endpoints (login, OTP, public booking) carry tighter @Throttle() limits;
+    // Safaricom's webhooks opt out with @SkipThrottle() because Daraja retries
+    // on failure and a throttled callback is lost money.
+    ThrottlerModule.forRoot({
+      throttlers: [{ name: 'default', ttl: 60_000, limit: 120 }],
+    }),
+
     PassportModule.register({ defaultStrategy: 'jwt' }),  // ← add
     EventEmitterModule.forRoot(),
     // Drives PaymentReconcileSweeper's periodic tick.
@@ -85,7 +94,11 @@ import { BullmqModule } from './redis/bullmq.module';
     JwtStrategy,          // ← register globally
     {
       provide: APP_GUARD,
-      useClass: JwtAuthGuard,  // ← runs first on every route
+      useClass: ThrottlerGuard, // ← runs first: floods are cut before JWT work
+    },
+    {
+      provide: APP_GUARD,
+      useClass: JwtAuthGuard,  // ← runs on every route
     },
     {
       provide: APP_GUARD,

@@ -153,25 +153,42 @@ export class RouteController {
     @Query('status') status?: QueueEntryStatus,
     @Query('date') dateString?: string,
     @Query('routeIds') routeIdsCsv?: string,
+    @CurrentUser() user?: any,
   ) {
     const routeIds = routeIdsCsv
       ?.split(',')
       .map((id) => id.trim())
       .filter(Boolean);
 
+    // Live queues (vehicle plates, positions, routes) are tenant data: staff
+    // only see their own sacco's, clerks only their own stage's.
+    const saccoId = this.tenantScope(user);
+    const assignedStage = user?.role === UserRole.CLERK ? user.assignedStage : undefined;
+
     return this.routeQueueService.findAllQueueEntries({
       routeId,
       routeIds: routeIds?.length ? routeIds : undefined,
       status,
       date: dateString ? new Date(dateString) : undefined,
+      saccoId,
+      assignedStage,
     });
   }
 
   // ── GET /routes/queue/:id ────────────────────────────────────────────────
   @Get('queue/:id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
-  findOneQueueEntry(@Param('id', ParseUUIDPipe) id: string) {
-    return this.routeQueueService.findOneQueueEntry(id);
+  findOneQueueEntry(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user?: any) {
+    return this.routeQueueService.findOneQueueEntry(id, this.tenantScope(user));
+  }
+
+  // SUPER_ADMIN is unscoped; everyone else must carry a sacco or gets nothing.
+  private tenantScope(user: any): string | undefined {
+    if (user?.role === UserRole.SUPER_ADMIN) return undefined;
+    if (!user?.saccoId) {
+      throw new ForbiddenException('You are not assigned to a sacco.');
+    }
+    return user.saccoId;
   }
 
   // ── PATCH /routes/queue/:id ──────────────────────────────────────────────

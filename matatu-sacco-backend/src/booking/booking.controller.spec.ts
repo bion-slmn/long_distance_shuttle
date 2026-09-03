@@ -16,11 +16,11 @@ describe('BookingController', () => {
   const SACCO_A = 'sacco-a';
   const SACCO_B = 'sacco-b';
 
-  const superAdmin = { id: 'user-1', role: UserRole.SUPER_ADMIN, saccoId: null };
-  const saccoAdmin = { id: 'user-2', role: UserRole.SACCO_ADMIN, saccoId: SACCO_A };
+  const superAdmin = { id: 'user-1', sub: 'user-1', role: UserRole.SUPER_ADMIN, saccoId: null };
+  const saccoAdmin = { id: 'user-2', sub: 'user-2', role: UserRole.SACCO_ADMIN, saccoId: SACCO_A };
   // Clerks are pinned to one stage — a stage is a route's origin.
   const CLERK_STAGE = 'Kencom';
-  const clerk = { id: 'user-3', role: UserRole.CLERK, saccoId: SACCO_A, assignedStage: CLERK_STAGE };
+  const clerk = { id: 'user-3', sub: 'user-3', role: UserRole.CLERK, saccoId: SACCO_A, assignedStage: CLERK_STAGE };
 
   beforeEach(async () => {
     bookingService = {
@@ -93,14 +93,31 @@ describe('BookingController', () => {
 
   // ── POST /bookings/clerk — staff booking creation ────────────────────────
   describe('createByClerk', () => {
+    it('SECURITY: a super admin books unscoped', () => {
+      controller.createByClerk({ routeId: 'route-1' } as any, superAdmin);
+
+      expect(bookingService.create).toHaveBeenCalledWith(
+        expect.objectContaining({ createdByUserId: 'user-1' }),
+        BookingSource.CLERK,
+        undefined,
+      );
+    });
+
+    it('SECURITY: refuses staff with no sacco', () => {
+      expect(() =>
+        controller.createByClerk({ routeId: 'route-1' } as any, { sub: 'x', role: UserRole.CLERK, saccoId: null }),
+      ).toThrow(ForbiddenException);
+    });
+
     it('tags the booking CLERK and stamps createdByUserId from the authenticated user', () => {
       const dto = { routeId: 'route-1', passengerName: 'Jane' };
 
       controller.createByClerk(dto as any, clerk);
 
       expect(bookingService.create).toHaveBeenCalledWith(
-        { ...dto, createdByUserId: clerk.id },
+        { ...dto, createdByUserId: clerk.sub },
         BookingSource.CLERK,
+        SACCO_A,
       );
     });
 
@@ -110,8 +127,9 @@ describe('BookingController', () => {
       controller.createByClerk(dto as any, clerk);
 
       expect(bookingService.create).toHaveBeenCalledWith(
-        expect.objectContaining({ createdByUserId: clerk.id }),
+        expect.objectContaining({ createdByUserId: clerk.sub }),
         BookingSource.CLERK,
+        SACCO_A,
       );
     });
   });

@@ -142,12 +142,13 @@ describe('MpesaController', () => {
             };
             mpesaService.handleStkCallback.mockResolvedValue(parsed);
 
-            const result = await controller.handleCallback(body);
+            const result = await controller.handleCallback(body, 'nonce-1');
 
             expect(mpesaService.handleStkCallback).toHaveBeenCalledWith(body);
             expect(paymentService.handleMpesaCallback).toHaveBeenCalledWith(
                 parsed,
                 body,
+                'nonce-1',
             );
             expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
         });
@@ -157,7 +158,7 @@ describe('MpesaController', () => {
                 new Error('db unavailable'),
             );
 
-            const result = await controller.handleCallback(body);
+            const result = await controller.handleCallback(body, 'nonce-1');
 
             expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
             expect(paymentService.handleMpesaCallback).not.toHaveBeenCalled();
@@ -178,7 +179,7 @@ describe('MpesaController', () => {
                 new Error('booking not found'),
             );
 
-            const result = await controller.handleCallback(body);
+            const result = await controller.handleCallback(body, 'nonce-1');
 
             expect(result).toEqual({ ResultCode: 0, ResultDesc: 'Accepted' });
             expect(loggerErrorSpy).toHaveBeenCalledWith(
@@ -190,7 +191,7 @@ describe('MpesaController', () => {
         it('never throws, regardless of downstream failures', async () => {
             mpesaService.handleStkCallback.mockRejectedValue(new Error('boom'));
 
-            await expect(controller.handleCallback(body)).resolves.toBeDefined();
+            await expect(controller.handleCallback(body, 'nonce-1')).resolves.toBeDefined();
         });
     });
 

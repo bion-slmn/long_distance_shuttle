@@ -1,3 +1,4 @@
+import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
 // fleet.service.ts
 import {
   Injectable,
@@ -43,17 +44,33 @@ export interface PaginatedFleet {
   totalPages: number;
 }
 
+// Decorated because the global ValidationPipe strips undeclared fields.
 export class CreateFleetDto {
+  @IsString() @IsNotEmpty() @MaxLength(20)
   declare numberPlate: string;
+
+  @IsInt() @Min(1) @Max(100)
   declare seatingCapacity: number;
+
+  // Overwritten from the caller's token for SACCO_ADMIN.
+  @IsOptional() @IsUUID()
   declare saccoId: string;
+
+  @IsOptional() @IsString() @MaxLength(500)
   declare notes?: string;
 }
 
 export class UpdateFleetDto {
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(20)
   declare numberPlate?: string;
+
+  @IsOptional() @IsInt() @Min(1) @Max(100)
   declare seatingCapacity?: number;
+
+  @IsOptional() @IsEnum(VehicleStatus)
   declare status?: VehicleStatus;
+
+  @IsOptional() @IsString() @MaxLength(500)
   declare notes?: string;
 }
 

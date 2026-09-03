@@ -17,6 +17,7 @@ import { BookingService } from 'src/booking/booking.service';
 import { BookingStatus, PaymentStatus } from 'src/booking/entities/booking.entity';
 import { RouteService } from './route.service';
 import { TripService } from 'src/trip/trip.service';
+import { Fleet } from 'src/fleet/entities/fleet.entity';
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 // Live queue orchestration: clocking vehicles in, promoting the next
@@ -92,6 +93,19 @@ export class RouteQueueService {
     ): Promise<QueueEntry> {
         const route = await this.routeService.findOneScoped(dto.routeId, saccoId);
         this.assertStageAccess(route, assignedStage);
+
+        // The vehicle must be the route's sacco's own. Comparing against the
+        // route (already scoped to the caller) also covers SUPER_ADMIN, who
+        // has no saccoId of their own to compare with.
+        const vehicle = await this.queueEntryRepository.manager
+            .getRepository(Fleet)
+            .findOne({ where: { id: dto.vehicleId } });
+        if (!vehicle) {
+            throw new NotFoundException(`Vehicle "${dto.vehicleId}" not found.`);
+        }
+        if (vehicle.saccoId !== route.saccoId) {
+            throw new ForbiddenException('This vehicle belongs to another sacco.');
+        }
 
         const clockedInAt = dto.clockedInAt ?? new Date();
 
@@ -227,13 +241,16 @@ export class RouteQueueService {
         return saved;
     }
 
-    async findOneQueueEntry(id: string): Promise<QueueEntry> {
+    async findOneQueueEntry(id: string, saccoId?: string): Promise<QueueEntry> {
         const entry = await this.queueEntryRepository.findOne({
             where: { id },
             relations: { vehicle: true, routeQueue: { route: true } },
         });
         if (!entry) {
             throw new NotFoundException(`Queue record with ID "${id}" not found.`);
+        }
+        if (saccoId && entry.routeQueue.route.saccoId !== saccoId) {
+            throw new ForbiddenException('Access denied to this route queue data.');
         }
         return entry;
     }
@@ -430,6 +447,7 @@ export class RouteQueueService {
         status?: QueueEntryStatus;
         date?: Date;
         assignedStage?: string; // ← new
+        saccoId?: string;       // tenant scope — undefined only for SUPER_ADMIN
     }): Promise<(QueueEntry & { seatedCount?: number; heldCount?: number })[]> {
         const queueDate = this.toDateString(filters?.date ?? new Date());
 
@@ -451,6 +469,9 @@ export class RouteQueueService {
         }
         if (filters?.assignedStage) {
             qb.andWhere('route.origin = :assignedStage', { assignedStage: filters.assignedStage });
+        }
+        if (filters?.saccoId) {
+            qb.andWhere('route.saccoId = :saccoId', { saccoId: filters.saccoId });
         }
 
         const entries = await qb.orderBy('qe.position', 'ASC').getMany();

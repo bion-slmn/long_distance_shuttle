@@ -14,6 +14,12 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     }
 
     async validate(payload: any) {
+        // A valid signature is not enough. Reject anything that isn't a
+        // staff/passenger access token: refresh tokens (typ), ticket-session
+        // tokens (scope), and anything with no subject at all.
+        if (!payload?.sub || payload.typ === 'refresh' || payload.scope) {
+            throw new UnauthorizedException('Access token required.');
+        }
 
         return {
             sub: payload.sub,

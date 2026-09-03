@@ -39,6 +39,7 @@ describe('RouteQueueService', () => {
     let service: RouteQueueService;
     let routeQueueRepository: MockRepo<RouteQueue>;
     let queueEntryRepository: MockRepo<QueueEntry>;
+    let fleetFindOne: jest.Mock;
     let routeService: Partial<Record<keyof RouteService, jest.Mock>>;
     let tripService: Partial<Record<keyof TripService, jest.Mock>>;
     let bookingService: Partial<Record<keyof BookingService, jest.Mock>>;
@@ -71,6 +72,8 @@ describe('RouteQueueService', () => {
             } as any,
         };
 
+        // clockInVehicle checks the vehicle's sacco through the manager.
+        fleetFindOne = jest.fn().mockResolvedValue({ id: 'vehicle-1', saccoId: 'sacco-1' });
         queueEntryRepository = {
             findOne: jest.fn(),
             remove: jest.fn(),
@@ -78,6 +81,7 @@ describe('RouteQueueService', () => {
             manager: {
                 transaction: jest.fn(async (cb: (m: EntityManager) => Promise<any>) => cb(mockManager)),
                 createQueryBuilder: jest.fn(() => mockQueryBuilder()),
+                getRepository: jest.fn(() => ({ findOne: fleetFindOne })),
             } as any,
         };
 
@@ -129,6 +133,19 @@ describe('RouteQueueService', () => {
                 'SELECT pg_advisory_xact_lock(hashtext($1))',
                 ['vehicle-1'],
             );
+        });
+
+        it("SECURITY: refuses to clock in a vehicle that belongs to another sacco", async () => {
+            fleetFindOne.mockResolvedValue({ id: 'vehicle-1', saccoId: 'sacco-OTHER' });
+
+            await expect(service.clockInVehicle(dto, 'sacco-1')).rejects.toThrow(ForbiddenException);
+            expect(mockManager.query).not.toHaveBeenCalled();
+        });
+
+        it('throws NotFoundException when the vehicle does not exist', async () => {
+            fleetFindOne.mockResolvedValue(null);
+
+            await expect(service.clockInVehicle(dto, 'sacco-1')).rejects.toThrow(NotFoundException);
         });
 
         it('throws ForbiddenException via assertStageAccess when route does not match assignedStage', async () => {

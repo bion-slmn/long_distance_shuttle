@@ -10,7 +10,6 @@ export interface RegisterPayload {
     phoneNumber?: string;
     password: string;
     role: UserRole;
-    saccoId?: string;
 }
 
 export interface LoginPayload {

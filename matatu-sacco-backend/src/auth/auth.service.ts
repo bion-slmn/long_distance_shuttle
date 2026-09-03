@@ -106,7 +106,11 @@ export class AuthService {
 
     // ── Register ──────────────────────────────────────────────────────────────
     async register(dto: RegisterDto) {
-        const { fullName, email, phoneNumber, password, role, saccoId } = dto;
+        // saccoId is deliberately NOT read from the body. A sacco membership
+        // is what every tenant-scoped read keys on, so letting a stranger pick
+        // one at signup would let them read that sacco's data. Staff get their
+        // sacco from an admin via createStaff; passengers have none.
+        const { fullName, email, phoneNumber, password, role } = dto;
 
         // Public self-registration is only allowed for passengers
         // (and optionally sacco admins, if you want self-onboarding for that role).
@@ -135,7 +139,7 @@ export class AuthService {
             phoneNumber: phoneNumber?.trim() ?? null,
             passwordHash,
             role,
-            saccoId: saccoId ?? null,
+            saccoId: null,
             tokenVersion: 0,
             passwordSetAt: new Date(),
         });
@@ -172,11 +176,19 @@ export class AuthService {
     async refresh(rawRefreshToken: string): Promise<AuthResponse> {
         let payload: any;
 
+        // Resolved outside the try: a misconfigured secret is a server error
+        // that must surface, not be disguised as "invalid token".
+        const secret = this.refreshSecret();
+
         try {
-            payload = await this.jwtService.verifyAsync(rawRefreshToken, {
-                secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-            });
+            payload = await this.jwtService.verifyAsync(rawRefreshToken, { secret });
         } catch {
+            throw new UnauthorizedException('Invalid or expired refresh token.');
+        }
+
+        // Belt and braces: the secrets already differ, but an access token
+        // must never be accepted here even if someone misconfigures them.
+        if (payload?.typ !== 'refresh') {
             throw new UnauthorizedException('Invalid or expired refresh token.');
         }
 
@@ -353,6 +365,17 @@ export class AuthService {
 
 
 
+    // Fail loudly rather than let @nestjs/jwt fall back to the module default
+    // (the access secret) when JWT_REFRESH_SECRET is unset — that fallback is
+    // exactly how refresh tokens end up valid as bearer access tokens.
+    private refreshSecret(): string {
+        const secret = this.configService.getOrThrow<string>('JWT_REFRESH_SECRET');
+        if (secret === this.configService.get<string>('JWT_ACCESS_SECRET')) {
+            throw new Error('JWT_REFRESH_SECRET must differ from JWT_ACCESS_SECRET.');
+        }
+        return secret;
+    }
+
     private async generateTokenPair(user: User): Promise<TokenPair> {
         const payload = {
             sub: user.id,
@@ -364,13 +387,18 @@ export class AuthService {
             tokenVersion: user.tokenVersion,
         };
 
+        // The refresh token carries `typ: 'refresh'` and is signed with its
+        // own secret. Both matter: the secret means JwtStrategy (access
+        // secret) can never verify it, and the claim means refresh() can
+        // never be fed an access token. Without these a 7-day refresh token
+        // doubles as a 7-day access token.
         const [access_token, refresh_token] = await Promise.all([
             this.jwtService.signAsync(payload, {
                 secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
                 expiresIn: '15m',
             }),
-            this.jwtService.signAsync(payload, {
-                secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+            this.jwtService.signAsync({ ...payload, typ: 'refresh' }, {
+                secret: this.refreshSecret(),
                 expiresIn: '7d',
             }),
         ]);

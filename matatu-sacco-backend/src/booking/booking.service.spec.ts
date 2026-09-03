@@ -99,7 +99,9 @@ describe('BookingService — pre-booking (public portal)', () => {
     passengerName: 'Jane Doe',
     passengerPhone: '254700000000',
     passengerEmail: 'jane@example.com',
-    paymentMethod: PaymentMethod.CASH,
+    // The public portal only accepts M-Pesa (STK). Tests about cash use
+    // BookingSource.CLERK explicitly.
+    paymentMethod: PaymentMethod.MPESA,
     preferredBoardingFrom: '06:00',
     preferredBoardingTo: '07:00',
   };
@@ -189,6 +191,62 @@ describe('BookingService — pre-booking (public portal)', () => {
 
       expect(saccoSettingsService.findOne).not.toHaveBeenCalled();
       expect(bookingRepository.manager.transaction).toHaveBeenCalled();
+    });
+  });
+
+  // ── 1b. Public portal can only pay by STK push ─────────────────────────
+  describe('public-portal payment method', () => {
+    it('SECURITY: rejects CASH from the public portal — nobody marks their own booking paid', async () => {
+      await expect(
+        service.create(
+          { ...baseDto, paymentMethod: PaymentMethod.CASH, travelDate: todayStr() } as any,
+          BookingSource.PUBLIC_PORTAL,
+        ),
+      ).rejects.toThrow(/paid via M-Pesa/);
+      expect(bookingRepository.manager.transaction).not.toHaveBeenCalled();
+    });
+
+    it('SECURITY: rejects a pre-matched paybill receipt from the public portal', async () => {
+      await expect(
+        service.create(
+          { ...baseDto, paymentMethod: PaymentMethod.MPESA, mpesaTransactionId: 'tx-1', travelDate: todayStr() } as any,
+          BookingSource.PUBLIC_PORTAL,
+        ),
+      ).rejects.toThrow(/sacco staff/);
+      expect(bookingRepository.manager.transaction).not.toHaveBeenCalled();
+    });
+
+    it('SECURITY: a public retry cannot flip a pending booking to PAID via CASH', async () => {
+      await expect(
+        service.create(
+          { bookingId: 'booking-1', paymentMethod: PaymentMethod.CASH } as any,
+          BookingSource.PUBLIC_PORTAL,
+        ),
+      ).rejects.toThrow(/paid via M-Pesa/);
+      expect(bookingRepository.findOne).not.toHaveBeenCalled();
+    });
+
+    it("SECURITY: a clerk cannot book on another sacco's route", async () => {
+      await expect(
+        service.create(
+          { ...baseDto, paymentMethod: PaymentMethod.CASH, travelDate: todayStr() } as any,
+          BookingSource.CLERK,
+          'some-other-sacco',
+        ),
+      ).rejects.toThrow(ForbiddenException);
+      expect(bookingRepository.manager.transaction).not.toHaveBeenCalled();
+    });
+
+    it('still lets a clerk record a CASH sale', async () => {
+      mockCapCount(0);
+      mockNoOpenTrip();
+
+      const result = await service.create(
+        { ...baseDto, paymentMethod: PaymentMethod.CASH, travelDate: todayStr() } as any,
+        BookingSource.CLERK,
+      );
+
+      expect(result.paymentStatus).toBe(PaymentStatus.PAID);
     });
   });
 
@@ -620,7 +678,7 @@ describe('BookingService — pre-booking (public portal)', () => {
 
   // ── 7. Payment method interplay with pre-bookings ────────────────────────
   describe('payment handling for pre-bookings', () => {
-    it('CASH pre-bookings are stored PAID immediately and a Payment row is recorded in-transaction', async () => {
+    it('CASH bookings taken by a clerk are stored PAID immediately and a Payment row is recorded in-transaction', async () => {
       mockCapCount(0);
       mockNoOpenTrip();
 
@@ -629,7 +687,7 @@ describe('BookingService — pre-booking (public portal)', () => {
 
       const result = await service.create(
         { ...baseDto, travelDate: todayStr(), paymentMethod: PaymentMethod.CASH } as any,
-        BookingSource.PUBLIC_PORTAL,
+        BookingSource.CLERK,
       );
 
       expect(result.paymentStatus).toBe(PaymentStatus.PAID);
@@ -809,7 +867,7 @@ describe('BookingService — pre-booking (public portal)', () => {
     it('requeues when the trip has already departed', async () => {
       const booking = cancelledBooking();
       bookingRepository.findOne.mockResolvedValue(booking);
-      mockSeatState({ trip: { id: 'trip-1', status: 'EN_ROUTE' } as any, takenSeats: [] });
+      mockSeatState({ trip: { id: 'trip-1', status: 'DEPARTED' } as any, takenSeats: [] });
 
       const result = await service.confirmPayment('booking-1', {});
 

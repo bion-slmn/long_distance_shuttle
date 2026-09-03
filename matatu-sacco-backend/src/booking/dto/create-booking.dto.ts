@@ -11,6 +11,7 @@ import {
     Min,
     Matches,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { BookingSource, BookingStatus, PaymentMethod } from '../entities/booking.entity';
 
 export class CreateBookingDto {
@@ -42,10 +43,14 @@ export class CreateBookingDto {
     })
     declare passengerPhone: string;
 
-    // Used for OTP-based "My Tickets" lookup — required so guests can retrieve
-    // their bookings later without an account.
+    // Optional. Walk-in passengers booked by a clerk usually have only a
+    // phone; email is what lets a passenger use the OTP "My Tickets" lookup
+    // later, so the public form asks for it but nothing requires it. An
+    // empty string (a blank form field) is treated as absent.
+    @IsOptional()
+    @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
     @IsEmail({}, { message: 'passengerEmail must be a valid email address.' })
-    declare passengerEmail: string;
+    passengerEmail?: string;
 
     @IsEnum(PaymentMethod)
     declare paymentMethod: PaymentMethod;

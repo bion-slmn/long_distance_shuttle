@@ -15,7 +15,6 @@ import {
 import { PaymentService } from './payment.service';
 import { Payment, PaymentReferenceType, PaymentStatus } from './entities/payment.entity';
 import { PaymentQueryDto } from './dto/payment-query.dto';
-import { RecordCashPaymentDto } from './dto/record-cash-payment.dto';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { RolesGuard } from '../guards/roles.guard';
 import { Roles } from '../decorators/roles.decorator';
@@ -24,6 +23,8 @@ import { UserRole } from '../auth/entities/user.entity';
 import { Public } from 'src/decorators/public.decorator';
 import { MpesaService } from './mpesa/mpesa.service';
 import { clerkStage } from '../common/utils/clerk-stage.util';
+import { MpesaC2bCallbackGuard } from './mpesa/callback-token.guard';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 
 @Controller('payment')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -77,8 +78,12 @@ export class PaymentController {
     // confirmation. Must return Safaricom's exact ack/reject shape quickly
     // and never throw. Keep it side-effect-free: persistence happens in the
     // confirmation step once the payment is final.
+    // Gated by the sacco's own HMAC token in the path (see callback-token.ts);
+    // the URL registered with Daraja for that sacco carries it.
     @Public()
-    @Post('c2b/validation')
+    @SkipThrottle()
+    @UseGuards(MpesaC2bCallbackGuard)
+    @Post('c2b/validation/:saccoId/:token')
     @HttpCode(200)
     async handleC2BValidation(@Body() body: any) {
         try {
@@ -99,16 +104,21 @@ export class PaymentController {
     // the one that persists the transaction (as UNMATCHED, for a clerk to
     // attach to a booking). Must always return 200 quickly or Daraja retries
     // the same payload — so never throw here, log and swallow instead.
+    // Gated by the sacco's own HMAC token in the path — without it anyone
+    // could POST a made-up receipt and settle a booking for free. The path's
+    // saccoId is proven by that token and wins over the body for attribution.
     @Public()
-    @Post('c2b/confirmation')
+    @SkipThrottle()
+    @UseGuards(MpesaC2bCallbackGuard)
+    @Post('c2b/confirmation/:saccoId/:token')
     @HttpCode(200)
-    async handleC2BConfirmation(@Body() body: any) {
+    async handleC2BConfirmation(@Body() body: any, @Param('saccoId') saccoId: string) {
         try {
             this.logger.log(
                 `C2B confirmation received: TransID=${body?.TransID} BillRefNumber=${body?.BillRefNumber} MSISDN=${body?.MSISDN} Amount=${body?.TransAmount}`,
             );
 
-            const stored = await this.mpesaService.handleC2BConfirmation(body);
+            const stored = await this.mpesaService.handleC2BConfirmation(body, saccoId);
 
             // Try to settle what this money is for right now — the STK push
             // whose callback was lost, or the pending booking the passenger
@@ -125,12 +135,10 @@ export class PaymentController {
 
     // ── STAFF ONLY below this line ────────────────────────────────────────
 
-    // ── Record a cash payment (conductor confirms cash received) ────────
-    @Post('cash')
-    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
-    async recordCash(@Body() dto: RecordCashPaymentDto) {
-        return this.paymentService.recordCashPayment(dto);
-    }
+    // NOTE: there is deliberately no standalone "record cash" endpoint. Cash
+    // is recorded inside BookingService's booking transaction, where the
+    // booking, its sacco and its fare are all known. A free-standing ledger
+    // write let any clerk post SUCCESS rows against any sacco.
 
     // ── All payments for a sacco, optionally filtered by date/status/method ──
     // e.g. GET /payment/sacco?saccoId=...&from=2026-08-01&to=2026-08-14&status=SUCCESS

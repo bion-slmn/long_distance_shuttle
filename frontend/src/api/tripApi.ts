@@ -6,8 +6,7 @@ import type { Vehicle } from "./fleetApi";
 
 export const TripStatus = {
     BOARDING: "BOARDING",
-    EN_ROUTE: "EN_ROUTE",
-    COMPLETED: "COMPLETED",
+    DEPARTED: "DEPARTED", // Left the stage — terminal; the sacco never sees arrival
     CANCELLED: "CANCELLED",
 } as const;
 

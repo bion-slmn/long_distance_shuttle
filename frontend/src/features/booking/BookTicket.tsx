@@ -30,7 +30,6 @@ import {
     Check,
     CheckCircle2,
     Smartphone,
-    Banknote,
     Bus,
     Clock,
     Users,
@@ -1091,7 +1090,9 @@ export default function BookTicket() {
                             name="paymentMethod"
                             control={control}
                             render={({ field }) => (
-                                <div className="grid grid-cols-2 gap-3">
+                                <div className="grid grid-cols-1 gap-3">
+                                    {/* M-Pesa is the only public option: cash is a clerk-side
+                                        sale at the stage, and the backend rejects it here. */}
                                     <button
                                         type="button"
                                         onClick={() => field.onChange(PaymentMethod.MPESA)}
@@ -1114,35 +1115,11 @@ export default function BookTicket() {
                                         <Smartphone className="h-5 w-5" />
                                         M-Pesa
                                     </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => field.onChange(PaymentMethod.CASH)}
-                                        className={`
-                                        relative flex flex-col items-center justify-center gap-2 py-4 rounded-xl border-2
-                                        transition-all text-sm font-medium
-                                        ${field.value === PaymentMethod.CASH
-                                                ? "border-primary bg-primary/5 text-primary"
-                                                : "border-border bg-background text-foreground hover:bg-accent"}
-                                    `}
-                                    >
-                                        <span
-                                            className={`
-                                            absolute top-2 right-2 h-3.5 w-3.5 rounded-full border-2
-                                            ${field.value === PaymentMethod.CASH
-                                                    ? "border-primary bg-primary"
-                                                    : "border-muted-foreground/40"}
-                                        `}
-                                        />
-                                        <Banknote className="h-5 w-5" />
-                                        Cash
-                                    </button>
                                 </div>
                             )}
                         />
                         <p className="text-xs text-muted-foreground mt-3">
-                            {paymentMethod === PaymentMethod.MPESA
-                                ? "Pay instantly via M-Pesa"
-                                : "Pay the conductor when you board"}
+                            Pay instantly via M-Pesa. Prefer cash? Book at the stage with the clerk.
                         </p>
                     </div>
 

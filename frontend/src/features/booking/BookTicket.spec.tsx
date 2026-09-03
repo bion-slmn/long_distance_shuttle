@@ -327,17 +327,14 @@ describe("Details step form fields", () => {
         await waitFor(() => expect(submit).toBeEnabled());
     });
 
-    it("toggles payment method and updates the submit label/helper copy", async () => {
+    it("offers M-Pesa only — cash is a clerk-side sale the public portal cannot select", async () => {
         const user = userEvent.setup();
         await getToDetailsStep(user);
 
         expect(screen.getByText(/pay instantly via m-pesa/i)).toBeInTheDocument();
-
-        await user.click(screen.getByRole("button", { name: /^cash$/i }));
-
-        expect(screen.getByText(/pay the conductor when you board/i)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: /^cash$/i })).not.toBeInTheDocument();
         expect(
-            screen.getByRole("button", { name: /^book seat$/i }),
+            screen.getByRole("button", { name: /^book seat & pay$/i }),
         ).toBeInTheDocument();
     });
 });

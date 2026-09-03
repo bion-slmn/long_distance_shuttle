@@ -25,6 +25,8 @@ import { RolesGuard } from 'src/guards/roles.guard';
 import { CurrentUser } from 'src/decorators/current-user.decorator';
 import { UserRole } from 'src/auth/entities/user.entity';
 import { Roles } from 'src/decorators/roles.decorator';
+import { Throttle } from '@nestjs/throttler';
+import { VerifyCodeDto } from './dto/verify-code.dto';
 import { Public } from 'src/decorators/public.decorator';
 import { JwtService } from '@nestjs/jwt';
 import { TicketsAuthGuard } from 'src/guards/tickets-auth.guard';
@@ -41,7 +43,10 @@ export class BookingController {
 
   // ── PUBLIC: booking creation ──────────────────────────────────────────
   // ── PUBLIC: booking creation ──────────────────────────────────────────
+  // Every public booking can fire a real STK push at the given phone, so it
+  // gets a tight per-IP budget on top of the global one.
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post()
   create(@Body() dto: CreateBookingDto) {
     return this.bookingService.create(dto, BookingSource.PUBLIC_PORTAL);
@@ -52,9 +57,16 @@ export class BookingController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
   createByClerk(@Body() dto: CreateBookingDto, @CurrentUser() user: any) {
+    // Staff only ever book on their own sacco's routes. SUPER_ADMIN is
+    // unscoped. `sub` is the user id — JwtStrategy exposes no `id`.
+    const saccoId = user.role === UserRole.SUPER_ADMIN ? undefined : user.saccoId;
+    if (user.role !== UserRole.SUPER_ADMIN && !saccoId) {
+      throw new ForbiddenException('You are not assigned to a sacco.');
+    }
     return this.bookingService.create(
-      { ...dto, createdByUserId: user.id },
+      { ...dto, createdByUserId: user.sub },
       BookingSource.CLERK,
+      saccoId,
     );
   }
 
@@ -140,11 +152,11 @@ export class BookingController {
 
   @Post('tickets/request-code')
   @Public()
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
   async requestCode(@Body('email') email: string) {
     if (!email) throw new BadRequestException('Email is required');
 
     const exists = await this.bookingService.hasBookingForEmail(email);
-    console.log({ exists })
     if (exists) {
       await this.otpService.requestCode(email);
     }
@@ -155,7 +167,8 @@ export class BookingController {
 
   @Post('tickets/verify-code')
   @Public()
-  async verifyCode(@Body() body: { email: string; code: string }) {
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async verifyCode(@Body() body: VerifyCodeDto) {
     const valid = await this.otpService.verifyCode(body.email, body.code);
     if (!valid) {
       throw new UnauthorizedException('Invalid or expired code');

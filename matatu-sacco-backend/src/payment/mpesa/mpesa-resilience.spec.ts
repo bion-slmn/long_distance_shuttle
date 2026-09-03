@@ -303,8 +303,9 @@ describe('MpesaService — resilience', () => {
 
             const payload = httpService.post.mock.calls[0][1];
             expect(payload.ShortCode).toBe(CREDS.shortcode);
-            expect(payload.ConfirmationURL).toMatch(/c2b\/confirmation$/);
-            expect(payload.ValidationURL).toMatch(/c2b\/validation$/);
+            // <base>/payment/c2b/<kind>/<saccoId>/<64-hex HMAC for that sacco>
+            expect(payload.ConfirmationURL).toMatch(/c2b\/confirmation\/[^/]+\/[0-9a-f]{64}$/);
+            expect(payload.ValidationURL).toMatch(/c2b\/validation\/[^/]+\/[0-9a-f]{64}$/);
         });
 
         it('discards the cached token and throws a clean error on failure', async () => {

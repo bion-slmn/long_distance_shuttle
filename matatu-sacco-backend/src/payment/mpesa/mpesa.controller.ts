@@ -9,6 +9,7 @@ import {
     Param,
     Post,
     Query,
+    UseGuards,
 } from '@nestjs/common';
 import { MpesaService } from './mpesa.service';
 import { InitiateStkPushDto } from '../dto/initiate-stk-push.dto';
@@ -20,6 +21,8 @@ import { SimulateC2BPaymentDto } from '../dto/simulate-c2b-payment.dto';
 import { Roles } from 'src/decorators/roles.decorator';
 import { UserRole } from 'src/auth/entities/user.entity';
 import { CurrentUser } from 'src/decorators/current-user.decorator';
+import { MpesaCallbackTokenGuard } from './callback-token.guard';
+import { SkipThrottle } from '@nestjs/throttler';
 
 // ─── Controller ─────────────────────────────────────────────────────────
 // Endpoints living here:
@@ -54,6 +57,7 @@ export class MpesaController {
     // Scoped: a SACCO_ADMIN or CLERK only ever sees money attributed to
     // their own sacco. SUPER_ADMIN sees everything, or one sacco via ?saccoId=.
     @Get('transactions')
+    @Roles(UserRole.SUPER_ADMIN, UserRole.SACCO_ADMIN, UserRole.CLERK)
     async getTransactionsByPhone(
         @Query() query: GetTransactionsByPhoneDto,
         @CurrentUser() user: any,
@@ -93,13 +97,20 @@ export class MpesaController {
     }
 
     // ── Safaricom's async STK callback ──────────────────────────────────
-    // Public, unauthenticated (Safaricom doesn't sign these). Must always
-    // return 200 with ResultCode 0 quickly, or Daraja will retry the callback.
-    // Never throw here — log and swallow instead.
+    // Public in the JWT sense (Safaricom has no bearer token), but gated by
+    // the shared callback secret in the path — the CallBackURL we send with
+    // every STK push carries it. Must always return 200 with ResultCode 0
+    // quickly, or Daraja will retry the callback. Never throw here — log and
+    // swallow instead.
     @Public()
-    @Post('callback')
+    @SkipThrottle()
+    @UseGuards(MpesaCallbackTokenGuard)
+    @Post('callback/:token/:nonce')
     @HttpCode(200)
-    async handleCallback(@Body() body: MpesaCallbackDto) {
+    // `any`, not the DTO: the global ValidationPipe whitelists DTO classes
+    // and would strip Safaricom's undecorated payload down to nothing.
+    async handleCallback(@Body() rawBody: any, @Param('nonce') nonce: string) {
+        const body = rawBody as MpesaCallbackDto;
         try {
             // handleStkCallback parses AND persists the transaction (when
             // successful) before we hand it off to matching logic below.
@@ -109,7 +120,7 @@ export class MpesaController {
                 `Callback received: checkoutRequestId=${parsed.checkoutRequestId} success=${parsed.success} resultCode=${parsed.resultCode}`,
             );
 
-            await this.paymentService.handleMpesaCallback(parsed, body);
+            await this.paymentService.handleMpesaCallback(parsed, body, nonce);
         } catch (err: any) {
             // Never let this bubble into a non-200 response — Safaricom will just
             // retry the same callback repeatedly if we do. Log loudly instead.

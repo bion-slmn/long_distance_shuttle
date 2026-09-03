@@ -3,6 +3,8 @@ import { Injectable, NotFoundException, ForbiddenException, BadRequestException 
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { Trip, TripStatus } from './entities/trip.entity';
+import { Route } from '../route/entities/route.entity';
+import { Fleet as Vehicle } from '../fleet/entities/fleet.entity';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { UpdateTripDto } from './dto/update-trip.dto';
 
@@ -68,6 +70,21 @@ export class TripService {
       throw new BadRequestException('Fare must be greater than 0.');
     }
 
+    // Both the route and the vehicle must belong to the trip's sacco. The
+    // controller has already pinned saccoId to the caller's own sacco, so
+    // this is what stops a clerk pointing a trip at another sacco's assets.
+    const manager = this.tripRepository.manager;
+    const route = await manager.getRepository(Route).findOne({ where: { id: dto.routeId } });
+    if (!route) throw new NotFoundException(`Route "${dto.routeId}" not found.`);
+    if (route.saccoId !== dto.saccoId) {
+      throw new ForbiddenException('This route belongs to another sacco.');
+    }
+    const vehicle = await manager.getRepository(Vehicle).findOne({ where: { id: dto.vehicleId } });
+    if (!vehicle) throw new NotFoundException(`Vehicle "${dto.vehicleId}" not found.`);
+    if (vehicle.saccoId !== dto.saccoId) {
+      throw new ForbiddenException('This vehicle belongs to another sacco.');
+    }
+
     const trip = this.tripRepository.create({
       routeId: dto.routeId,
       vehicleId: dto.vehicleId,
@@ -119,26 +136,9 @@ export class TripService {
       );
     }
 
-    trip.status = TripStatus.EN_ROUTE;
+    trip.status = TripStatus.DEPARTED;
     trip.departureTime = new Date();
     return await this.repo(manager).save(trip);
-  }
-
-  // ── Domain trigger: vehicle gets clocked into any queue again ───────────
-  async closeActiveTripForVehicle(vehicleId: string, manager?: EntityManager): Promise<Trip | null> {
-    const repo = this.repo(manager);
-    const activeTrip = await repo.findOne({
-      where: [
-        { vehicleId, status: TripStatus.BOARDING },
-        { vehicleId, status: TripStatus.EN_ROUTE },
-      ],
-    });
-
-    if (!activeTrip) return null;
-
-    activeTrip.status = TripStatus.COMPLETED;
-    activeTrip.completedAt = new Date();
-    return await repo.save(activeTrip);
   }
 
   // ── Passenger count — filled in as boarding progresses ──────────────────
@@ -158,8 +158,8 @@ export class TripService {
   // ── Manual force-close/cancel ────────────────────────────────────────────
   async cancel(id: string, saccoId?: string, manager?: EntityManager): Promise<Trip> {
     const trip = await this.findOneScoped(id, saccoId, manager);
-    if (trip.status === TripStatus.COMPLETED) {
-      throw new BadRequestException('A completed trip cannot be cancelled.');
+    if (trip.status === TripStatus.DEPARTED) {
+      throw new BadRequestException('A departed trip cannot be cancelled.');
     }
     trip.status = TripStatus.CANCELLED;
     trip.completedAt = new Date();
@@ -395,8 +395,10 @@ export class TripService {
   // ── Remove ────────────────────────────────────────────────────────────────
   async remove(id: string, saccoId?: string): Promise<{ deleted: boolean }> {
     const trip = await this.findOneScoped(id, saccoId);
-    if (trip.status === TripStatus.COMPLETED) {
-      throw new BadRequestException('Completed trips cannot be deleted — cancel instead.');
+    // A departed trip is financial history — the fare was collected and the
+    // vehicle is gone. Nothing about it may be undone.
+    if (trip.status === TripStatus.DEPARTED) {
+      throw new BadRequestException('Departed trips cannot be deleted.');
     }
     await this.tripRepository.remove(trip);
     return { deleted: true };

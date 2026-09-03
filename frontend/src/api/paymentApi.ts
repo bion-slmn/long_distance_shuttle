@@ -65,13 +65,6 @@ export interface InitiateMpesaPaymentResponse {
     checkoutRequestId: string;
 }
 
-export interface RecordCashPaymentPayload {
-    referenceType: PaymentReferenceType;
-    referenceId: string;
-    saccoId: string;
-    amount: number;
-}
-
 // src/api/paymentApi.ts — add/confirm these exist
 
 export interface GetSaccoPaymentsOptions {
@@ -105,13 +98,6 @@ export async function initiateMpesaPaymentRequest(
     const res = await api.post("/payment/mpesa/initiate", payload, {
         skipAuthRefresh: true,
     });
-    return res.data;
-}
-
-export async function recordCashPaymentRequest(
-    payload: RecordCashPaymentPayload,
-): Promise<Payment> {
-    const res = await api.post("/payment/cash", payload);
     return res.data;
 }
 

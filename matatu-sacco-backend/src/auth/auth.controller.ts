@@ -1,4 +1,15 @@
 import {
+    IsEmail,
+    IsEnum,
+    IsNotEmpty,
+    IsOptional,
+    IsString,
+    Length,
+    MaxLength,
+    MinLength,
+} from 'class-validator';
+import { Throttle } from '@nestjs/throttler';
+import {
     Controller,
     Post,
     Body,
@@ -29,33 +40,57 @@ import type { CookieOptions, Request, Response } from 'express';
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
+// Decorated because the global ValidationPipe runs with `whitelist: true`:
+// an undecorated field would be silently stripped from the body.
 class RegisterDto {
+    @IsString() @IsNotEmpty() @MaxLength(120)
     declare fullName: string;
+
+    @IsOptional() @IsEmail()
     declare email?: string;
+
+    @IsOptional() @IsString() @Length(9, 16)
     declare phoneNumber?: string;
+
+    @IsString() @MinLength(8) @MaxLength(128)
     declare password: string;
+
+    @IsEnum(UserRole)
     declare role: UserRole;
-    declare saccoId?: string;
 }
 
 class LoginDto {
+    @IsString() @IsNotEmpty() @MaxLength(254)
     declare identifier: string;
+
+    @IsString() @IsNotEmpty() @MaxLength(128)
     declare password: string;
 }
 
 class ForgotPasswordDto {
+    @IsEmail()
     declare email: string;
 }
 
 class ResetPasswordDto {
+    @IsString() @IsNotEmpty()
     declare token: string;
+
+    @IsString() @MinLength(8) @MaxLength(128)
     declare password: string;
 }
 
 class ChangePasswordDto {
+    @IsString() @IsNotEmpty()
     declare currentPassword: string;
+
+    @IsString() @MinLength(8) @MaxLength(128)
     declare newPassword: string;
 }
+
+// Credential endpoints get a much tighter budget than the global default:
+// enough for a fumbled password or two, not for stuffing a list.
+const CREDENTIAL_THROTTLE = { default: { limit: 10, ttl: 60_000 } };
 
 const REFRESH_COOKIE_NAME = 'refresh_token';
 const REFRESH_COOKIE_PATH = '/auth/refresh';
@@ -86,6 +121,7 @@ export class AuthController {
     // ── Register ──────────────────────────────────────────────────────────────
     // POST /auth/register — public self-registration (passengers only, per service rules)
     @Post('register')
+    @Throttle(CREDENTIAL_THROTTLE)
     @Public()
     @HttpCode(HttpStatus.CREATED)
     register(@Body() body: RegisterDto) {
@@ -95,6 +131,7 @@ export class AuthController {
     // ── Login ─────────────────────────────────────────────────────────────────
     // POST /auth/login — sets refresh_token as an httpOnly cookie, returns access_token + user in body
     @Post('login')
+    @Throttle(CREDENTIAL_THROTTLE)
     @Public()
     @HttpCode(HttpStatus.OK)
     async login(
@@ -128,11 +165,13 @@ export class AuthController {
             throw new UnauthorizedException('No refresh token provided.');
         }
 
-        const results = await this.authService.refresh(rawRefreshToken);
+        const { refresh_token, ...body } = await this.authService.refresh(rawRefreshToken);
 
-        res.cookie(REFRESH_COOKIE_NAME, results.refresh_token, refreshCookieOptions);
+        // The refresh token only ever travels in the httpOnly cookie — never
+        // in a JSON body where any script on the page could read it.
+        res.cookie(REFRESH_COOKIE_NAME, refresh_token, refreshCookieOptions);
 
-        return results;
+        return body;
     }
 
     // ── Logout ────────────────────────────────────────────────────────────────
@@ -155,6 +194,7 @@ export class AuthController {
     // POST /auth/forgot-password — always 200, even for unknown addresses, so the
     // endpoint can't be used to probe which emails have accounts.
     @Post('forgot-password')
+    @Throttle(CREDENTIAL_THROTTLE)
     @Public()
     @HttpCode(HttpStatus.OK)
     forgotPassword(@Body() body: ForgotPasswordDto) {
@@ -174,6 +214,7 @@ export class AuthController {
     // ── Set / reset password via emailed link ────────────────────────────────
     // POST /auth/reset-password — spends the token and invalidates all sessions.
     @Post('reset-password')
+    @Throttle(CREDENTIAL_THROTTLE)
     @Public()
     @HttpCode(HttpStatus.OK)
     resetPassword(@Body() body: ResetPasswordDto) {

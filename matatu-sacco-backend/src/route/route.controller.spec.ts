@@ -253,24 +253,28 @@ describe('RouteController', () => {
   });
   describe('findAllQueueEntries', () => {
     it('passes routeId, status, and parsed date through', () => {
-      controller.findAllQueueEntries('route-1', QueueEntryStatus.WAITING, '2026-08-03');
+      controller.findAllQueueEntries('route-1', QueueEntryStatus.WAITING, '2026-08-03', undefined, superAdmin);
 
       expect(routeQueueService.findAllQueueEntries).toHaveBeenCalledWith({
         routeId: 'route-1',
         routeIds: undefined,
         status: QueueEntryStatus.WAITING,
         date: expect.any(Date),
+        saccoId: undefined,
+        assignedStage: undefined,
       });
     });
 
     it('leaves date undefined when dateString is omitted', () => {
-      controller.findAllQueueEntries();
+      controller.findAllQueueEntries(undefined, undefined, undefined, undefined, superAdmin);
 
       expect(routeQueueService.findAllQueueEntries).toHaveBeenCalledWith({
         routeId: undefined,
         routeIds: undefined,
         status: undefined,
         date: undefined,
+        saccoId: undefined,
+        assignedStage: undefined,
       });
     });
 
@@ -280,6 +284,7 @@ describe('RouteController', () => {
         undefined,
         undefined,
         'route-1, route-2 ,route-3',
+        superAdmin,
       );
 
       expect(routeQueueService.findAllQueueEntries).toHaveBeenCalledWith({
@@ -287,26 +292,64 @@ describe('RouteController', () => {
         routeIds: ['route-1', 'route-2', 'route-3'],
         status: undefined,
         date: undefined,
+        saccoId: undefined,
+        assignedStage: undefined,
       });
     });
 
     it('treats an empty routeIds csv as absent rather than as an empty filter', () => {
-      controller.findAllQueueEntries(undefined, undefined, undefined, ' , ');
+      controller.findAllQueueEntries(undefined, undefined, undefined, ' , ', superAdmin);
 
       expect(routeQueueService.findAllQueueEntries).toHaveBeenCalledWith({
         routeId: undefined,
         routeIds: undefined,
         status: undefined,
         date: undefined,
+        saccoId: undefined,
+        assignedStage: undefined,
       });
     });
   });
 
   describe('findOneQueueEntry', () => {
-    it('delegates to routeQueueService with the id', () => {
-      controller.findOneQueueEntry('qe1');
+    it('delegates to routeQueueService with the id, unscoped for a super admin', () => {
+      controller.findOneQueueEntry('qe1', superAdmin);
 
-      expect(routeQueueService.findOneQueueEntry).toHaveBeenCalledWith('qe1');
+      expect(routeQueueService.findOneQueueEntry).toHaveBeenCalledWith('qe1', undefined);
+    });
+
+    it("SECURITY: scopes the lookup to the caller's sacco for staff", () => {
+      controller.findOneQueueEntry('qe1', clerk);
+
+      expect(routeQueueService.findOneQueueEntry).toHaveBeenCalledWith('qe1', 'sacco-1');
+    });
+
+    it('SECURITY: refuses staff with no sacco', () => {
+      expect(() => controller.findOneQueueEntry('qe1', saccoAdminNoSacco)).toThrow(ForbiddenException);
+    });
+  });
+
+  describe('findAllQueueEntries — tenant scope', () => {
+    it("SECURITY: a clerk only sees their own sacco and stage", () => {
+      controller.findAllQueueEntries(undefined, undefined, undefined, undefined, clerk);
+
+      expect(routeQueueService.findAllQueueEntries).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: 'sacco-1', assignedStage: 'NAIROBI' }),
+      );
+    });
+
+    it("SECURITY: a sacco admin sees their whole sacco, every stage", () => {
+      controller.findAllQueueEntries(undefined, undefined, undefined, undefined, saccoAdmin);
+
+      expect(routeQueueService.findAllQueueEntries).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: 'sacco-1', assignedStage: undefined }),
+      );
+    });
+
+    it('SECURITY: refuses staff with no sacco', () => {
+      expect(() =>
+        controller.findAllQueueEntries(undefined, undefined, undefined, undefined, saccoAdminNoSacco),
+      ).toThrow(ForbiddenException);
     });
   });
 
