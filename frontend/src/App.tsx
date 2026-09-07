@@ -11,6 +11,8 @@ import { PublicLayout } from './layouts/PublicLayout'
 import MyTickets from './components/MyTickets'
 import VerifyReceipt from './features/booking/VerifyReceipt'
 import NotFound from './components/NotFound'
+import { PwaUpdatePrompt } from './components/PwaUpdatePrompt'
+import { ShuttleSpinner } from './components/ShuttleSpinner'
 
 // Public pages
 const HomePage = lazy(() => import('./components/page'))
@@ -46,7 +48,7 @@ const BookingsList = lazy(() => import('./features/booking/BookingsList'))
 function PageFallback() {
   return (
     <div className="flex items-center justify-center min-h-[50vh]">
-      <div className="animate-pulse text-sm text-muted-foreground">Loading…</div>
+      <ShuttleSpinner />
     </div>
   )
 }
@@ -95,7 +97,8 @@ function App() {
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
-      <Toaster />
+      <Toaster richColors />
+      <PwaUpdatePrompt />
     </div>
   );
 }

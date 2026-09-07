@@ -26,6 +26,7 @@ import {
     DialogFooter,
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
+import { ShuttleSpinner } from "@/components/ShuttleSpinner"
 
 import { getBookingStatusRequest, type Booking } from "@/api/bookingApi"
 import {
@@ -300,7 +301,7 @@ export function MpesaPaymentDialog({
                         ) : (
                             <>
                                 {/* Ticket-shaped status card: countdown above the
-                                    perforation, "still working" dots below it. */}
+                                    perforation, the shuttle "still on its way" below it. */}
                                 <div className="overflow-hidden rounded-xl border bg-muted/40">
                                     <div className="flex flex-col items-center gap-3 px-4 py-6">
                                         <p
@@ -332,10 +333,8 @@ export function MpesaPaymentDialog({
                                         <div className="-mr-2 size-4 rounded-full border bg-popover" />
                                     </div>
 
-                                    <div className="flex justify-center gap-1.5 py-4">
-                                        <span className="size-1.5 animate-bounce rounded-full bg-primary/70 [animation-delay:-0.3s]" />
-                                        <span className="size-1.5 animate-bounce rounded-full bg-primary/70 [animation-delay:-0.15s]" />
-                                        <span className="size-1.5 animate-bounce rounded-full bg-primary/70" />
+                                    <div className="flex justify-center py-3">
+                                        <ShuttleSpinner size={88} label="" />
                                     </div>
                                 </div>
 

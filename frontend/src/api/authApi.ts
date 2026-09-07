@@ -122,10 +122,22 @@ export const registerRequest = async (payload: RegisterPayload): Promise<AuthRes
     return data;
 };
 
-export const loginRequest = async (payload: LoginPayload): Promise<AuthResponse> => {
-    const { data } = await api.post<AuthResponse>('/auth/login', payload);
+
+export const loginRequest = async (
+    payload: LoginPayload
+): Promise<AuthResponse> => {
+    const { data } = await api.post<AuthResponse>(
+        "/auth/login",
+        payload,
+        {
+            skipAuthRefresh: true,
+        }
+    );
+
     return data;
 };
+
+
 
 export const refreshRequest = async (): Promise<AuthResponse> => {
     const { data } = await refreshApi.post<AuthResponse>("/auth/refresh");
