@@ -40,6 +40,7 @@ async function bootstrap() {
       'https://long-distance-shuttle-eek9.vercel.app',
       'http://localhost:3000', // your local frontend dev
       'http://localhost:5173'
+      'https://shuttlehub.co.ke'
     ],
     credentials: true,
   });
