@@ -7,21 +7,26 @@ const PRIMARY = '#15803D';
 const GOLD = '#EAB308';
 const TEXT_MUTED = '#6b6375';
 
-const FROM_ADDRESS = 'ShuttleHub <onboarding@resend.dev>'; // swap once you verify your own domain
+// info.shuttlehub.co.ke is the domain verified in Resend. The sandbox address
+// Resend hands out (onboarding@resend.dev) only delivers to the account
+// owner's own inbox, so a real domain is what lets invites reach clerks.
+const DEFAULT_FROM_ADDRESS = 'ShuttleHub <no-reply@info.shuttlehub.co.ke>';
 
 @Injectable()
 export class EmailService {
     private resend: Resend;
+    private readonly fromAddress: string;
     private readonly logger = new Logger(EmailService.name);
 
     constructor(private config: ConfigService) {
         this.resend = new Resend(this.config.get<string>('RESEND_API_KEY'));
+        this.fromAddress = this.config.get<string>('EMAIL_FROM') || DEFAULT_FROM_ADDRESS;
     }
 
     async sendOtp(email: string, code: string) {
         try {
             const resp = await this.resend.emails.send({
-                from: FROM_ADDRESS,
+                from: this.fromAddress,
                 to: email,
                 subject: `Your ShuttleHub verification code: ${code}`,
                 html: this.otpTemplate(code),
@@ -62,7 +67,7 @@ export class EmailService {
 
         try {
             const resp = await this.resend.emails.send({
-                from: FROM_ADDRESS,
+                from: this.fromAddress,
                 to: email,
                 subject,
                 html: this.passwordLinkTemplate(fullName, link, purpose, expiresIn),

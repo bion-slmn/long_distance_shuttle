@@ -1,10 +1,11 @@
 // src/features/admin/AdminCreateUser.tsx
+import { useState } from "react"
 import { Controller, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { useMutation } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Mail } from "lucide-react"
+import { Link2, UserPlus } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -16,9 +17,11 @@ import {
     createManagerRequest,
     type CreateStaffPayload,
     type CreateManagerPayload,
+    type CreatedUserResponse,
 } from "@/api/authApi"
 import { SaccoCombobox } from "../sacco/SaccoCombobox"
 import { StageCombobox } from "../routes/StageCombobox"
+import { InviteLinkPanel } from "./InviteLinkPanel"
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -31,15 +34,27 @@ const ROLE_OPTIONS = [
 const createUserSchema = z
     .object({
         fullName: z.string().min(2, "Full name is required"),
-        // Required, not optional: the invite link is the only way this account
-        // ever gets a password.
-        email: z.string().min(1, "Email is required").email("Invalid email"),
-        phoneNumber: z.string().min(10, "Enter a valid phone number").optional().or(z.literal("")),
+        // One of the two is required: the invite link is the only way this
+        // account ever gets a password, and it has to reach them somehow —
+        // by email, or by the admin sending it to their phone.
+        email: z.string().email("Invalid email").optional().or(z.literal("")),
+        phoneNumber: z
+            .string()
+            .regex(/^(?:\+254|254|0)?[17]\d{8}$/, "Enter a valid Kenyan phone number (e.g. 0712345678)")
+            .optional()
+            .or(z.literal("")),
         role: z.enum(["SACCO_ADMIN", "CLERK", "DRIVER"]),
         saccoId: z.string().min(1, "Sacco is required"),
         assignedStage: z.string().optional(),
     })
     .superRefine((data, ctx) => {
+        if (!data.email && !data.phoneNumber) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ["phoneNumber"],
+                message: "Enter an email or a phone number so they can receive their sign-in link.",
+            })
+        }
         if (data.role === "CLERK" && !data.assignedStage) {
             ctx.addIssue({
                 code: z.ZodIssueCode.custom,
@@ -57,6 +72,10 @@ interface AdminCreateUserProps {
 }
 
 export default function AdminCreateUser({ onCreated }: AdminCreateUserProps) {
+    // The account just created, held so the admin can copy or WhatsApp the
+    // invite link before the form clears for the next one.
+    const [created, setCreated] = useState<CreatedUserResponse | null>(null)
+
     const form = useForm<CreateUserFormValues>({
         resolver: zodResolver(createUserSchema),
         defaultValues: {
@@ -69,42 +88,76 @@ export default function AdminCreateUser({ onCreated }: AdminCreateUserProps) {
         },
     })
 
-    // The account is created either way — `inviteSent: false` only means the
-    // email didn't go out, which the admin fixes with "Resend invite" on the
-    // users table rather than by creating the user again.
-    function reportCreated(label: string, inviteSent: boolean, email: string) {
-        if (inviteSent) {
-            toast.success(`${label} — invite sent to ${email}`)
+    // The account is created either way. `inviteSent` only says whether the
+    // email went out; the link itself is always handed back so the admin can
+    // pass it on — which is the only route for a phone-only account.
+    function reportCreated(label: string, user: CreatedUserResponse) {
+        if (user.inviteSent) {
+            toast.success(`${label} — invite emailed to ${user.email}`)
         } else {
-            toast.warning(`${label}, but the invite email didn't send. Resend it from the users list.`)
+            toast.info(`${label}. Share the sign-in link with them below.`)
         }
+        setCreated(user)
         form.reset()
         onCreated?.()
     }
 
     const staffMutation = useMutation({
         mutationFn: (payload: CreateStaffPayload) => createStaffRequest(payload),
-        onSuccess: (user) => reportCreated("Account created", user.inviteSent, user.email ?? ""),
+        onSuccess: (user) => reportCreated("Account created", user),
         onError: (error: any) => toast.error(error?.response?.data?.message ?? "Failed to create account."),
     })
 
     const managerMutation = useMutation({
         mutationFn: (payload: CreateManagerPayload) => createManagerRequest(payload),
-        onSuccess: (user) => reportCreated("Sacco manager created", user.inviteSent, user.email ?? ""),
+        onSuccess: (user) => reportCreated("Sacco manager created", user),
         onError: (error: any) => toast.error(error?.response?.data?.message ?? "Failed to create manager account."),
     })
 
     const isPending = staffMutation.isPending || managerMutation.isPending
 
     function onSubmit(values: CreateUserFormValues) {
-        if (values.role === "SACCO_ADMIN") {
-            const { role, ...rest } = values
-            managerMutation.mutate(rest as CreateManagerPayload)
+        // Blank optional fields go up as absent, not as "", so the backend's
+        // "email or phone" rule sees what the admin actually filled in.
+        const cleaned = {
+            ...values,
+            email: values.email || undefined,
+            phoneNumber: values.phoneNumber || undefined,
+        }
+        if (cleaned.role === "SACCO_ADMIN") {
+            const { fullName, email, phoneNumber, saccoId } = cleaned
+            managerMutation.mutate({ fullName, email, phoneNumber, saccoId } satisfies CreateManagerPayload)
         } else {
-            staffMutation.mutate(values as CreateStaffPayload)
+            staffMutation.mutate(cleaned as CreateStaffPayload)
         }
     }
     const role = form.watch("role")
+
+    if (created) {
+        return (
+            <Card className="w-full max-w-md mx-auto">
+                <CardHeader>
+                    <CardTitle>{created.fullName} added</CardTitle>
+                    <CardDescription>
+                        Give them their sign-in link. They'll choose their own password when they open it.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <InviteLinkPanel
+                        link={created.inviteLink}
+                        fullName={created.fullName}
+                        phoneNumber={created.phoneNumber}
+                        email={created.email}
+                        sent={created.inviteSent}
+                    />
+                    <Button type="button" variant="outline" className="w-full" onClick={() => setCreated(null)}>
+                        <UserPlus className="mr-1.5 size-4" />
+                        Add another user
+                    </Button>
+                </CardContent>
+            </Card>
+        )
+    }
 
     return (
         <Card className="w-full max-w-md mx-auto">
@@ -210,16 +263,16 @@ export default function AdminCreateUser({ onCreated }: AdminCreateUserProps) {
                         </div>
 
                         <div className="flex items-start gap-2.5 rounded-lg bg-muted/50 p-3">
-                            <Mail className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                            <Link2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                             <p className="text-xs text-muted-foreground leading-relaxed">
-                                No password needed. We'll email them a link to set their own —
-                                it's valid for 3 days, and you can resend it any time from the
-                                users list.
+                                No password needed. You'll get a sign-in link to copy or send on
+                                WhatsApp, and it's emailed too if they have an address. The link
+                                works once, lasts 3 days, and can be re-issued from the users list.
                             </p>
                         </div>
 
                         <Button type="submit" className="w-full" disabled={isPending}>
-                            {isPending ? "Creating..." : "Create user & send invite"}
+                            {isPending ? "Creating..." : "Create user & get invite link"}
                         </Button>
                     </FieldGroup>
                 </form>

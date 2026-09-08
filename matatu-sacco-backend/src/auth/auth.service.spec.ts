@@ -267,6 +267,12 @@ describe('AuthService', () => {
       const result = await service.login('0712345678', password);
 
       expect(result.access_token).toBeDefined();
+      // Rows created before phone normalisation hold the number as typed, so
+      // the lookup matches the local, canonical and typed spellings at once.
+      const where = userRepo.findOne.mock.calls[0][0].where;
+      expect(where.phoneNumber._value).toEqual(
+        expect.arrayContaining(['0712345678', '254712345678']),
+      );
     });
 
     it('throws UnauthorizedException for unknown identifier', async () => {
@@ -442,10 +448,25 @@ describe('AuthService', () => {
       expect(result).not.toHaveProperty('passwordHash');
     });
 
-    it('throws BadRequestException when no email is provided', async () => {
+    it('throws BadRequestException when neither email nor phone is provided', async () => {
       await expect(
-        service.createManager({ ...dto, email: '' })
+        service.createManager({ ...dto, email: '', phoneNumber: '' })
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('creates a phone-only manager and hands back the invite link instead of emailing', async () => {
+      userRepo.findOne.mockResolvedValue(null);
+      const saved = makeUser({ role: UserRole.SACCO_ADMIN, email: null, passwordSetAt: null });
+      userRepo.create.mockReturnValue(saved);
+      userRepo.save.mockResolvedValue(saved);
+
+      const result = await service.createManager({ ...dto, email: undefined, phoneNumber: '0712345678' });
+
+      expect(userRepo.create.mock.calls[0][0]).toMatchObject({ email: null, phoneNumber: '254712345678' });
+      expect(passwordResetService.issueToken).toHaveBeenCalledWith(saved.id, 'invite');
+      expect(emailService.sendPasswordLink).not.toHaveBeenCalled();
+      expect(result.inviteSent).toBe(false);
+      expect(result.inviteLink).toContain('raw-token');
     });
 
     it('throws ConflictException on duplicate email', async () => {
@@ -489,9 +510,10 @@ describe('AuthService', () => {
         '3 days',
       );
       expect(result.inviteSent).toBe(true);
+      expect(result.inviteLink).toContain('raw-token');
     });
 
-    it('still returns the created account when the invite email fails to send', async () => {
+    it('still returns the created account and the link when the invite email fails to send', async () => {
       userRepo.findOne.mockResolvedValue(null);
       const saved = makeUser({ role: UserRole.SACCO_ADMIN, passwordSetAt: null });
       userRepo.create.mockReturnValue(saved);
@@ -502,6 +524,7 @@ describe('AuthService', () => {
 
       expect(result).toMatchObject({ role: UserRole.SACCO_ADMIN });
       expect(result.inviteSent).toBe(false);
+      expect(result.inviteLink).toContain('raw-token');
     });
   });
 
@@ -589,10 +612,37 @@ describe('AuthService', () => {
       expect(result.assignedStage).toBeNull();
     });
 
-    it('throws BadRequestException when no email is provided', async () => {
+    it('throws BadRequestException when neither email nor phone is provided', async () => {
       await expect(
-        service.createStaffUser({ ...clerkDto, email: '' }, saccoAdminCreator)
+        service.createStaffUser({ ...clerkDto, email: '', phoneNumber: '' }, saccoAdminCreator)
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('creates a phone-only clerk with a normalised number and returns the invite link', async () => {
+      userRepo.findOne.mockResolvedValue(null);
+      const saved = makeUser({ role: UserRole.CLERK, saccoId: 'sacco-123', email: null, passwordSetAt: null });
+      userRepo.create.mockReturnValue(saved);
+      userRepo.save.mockResolvedValue(saved);
+
+      const result = await service.createStaffUser(
+        { ...clerkDto, email: undefined, phoneNumber: '+254 711 111 111' },
+        saccoAdminCreator,
+      );
+
+      expect(userRepo.create.mock.calls[0][0]).toMatchObject({ email: null, phoneNumber: '254711111111' });
+      expect(emailService.sendPasswordLink).not.toHaveBeenCalled();
+      expect(result.inviteSent).toBe(false);
+      expect(result.inviteLink).toContain('raw-token');
+    });
+
+    it('rejects a phone number already held under a different spelling', async () => {
+      userRepo.findOne
+        .mockResolvedValueOnce(null) // email check
+        .mockResolvedValueOnce(makeUser({ phoneNumber: '0711111111' }));
+
+      await expect(
+        service.createStaffUser({ ...clerkDto, phoneNumber: '254711111111' }, saccoAdminCreator),
+      ).rejects.toThrow(ConflictException);
     });
 
     it('emails the new staff member an invite link rather than a password', async () => {
@@ -1129,13 +1179,37 @@ describe('AuthService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('surfaces a send failure to the admin instead of reporting success', async () => {
+    it('still hands the admin the link when the email fails to send', async () => {
       userRepo.findOne.mockResolvedValue(makeUser({ saccoId: 'sacco-123' }));
       emailService.sendPasswordLink.mockRejectedValueOnce(new Error('Resend down'));
 
-      await expect(
-        service.sendPasswordLinkForUser('user-uuid-1', saccoAdminRequester),
-      ).rejects.toThrow(BadRequestException);
+      const result = await service.sendPasswordLinkForUser('user-uuid-1', saccoAdminRequester);
+
+      expect(result.sent).toBe(false);
+      expect(result.link).toContain('raw-token');
+      expect(result.message).toMatch(/didn't send/);
+    });
+
+    it('returns the link for a phone-only user without trying to email', async () => {
+      userRepo.findOne.mockResolvedValue(
+        makeUser({ saccoId: 'sacco-123', email: null, passwordSetAt: null }),
+      );
+
+      const result = await service.sendPasswordLinkForUser('user-uuid-1', saccoAdminRequester);
+
+      expect(emailService.sendPasswordLink).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ success: true, purpose: 'invite', sent: false });
+      expect(result.link).toContain('raw-token');
+      expect(result.message).toMatch(/no email on file/);
+    });
+
+    it('reports the email as sent when it goes out', async () => {
+      userRepo.findOne.mockResolvedValue(makeUser({ saccoId: 'sacco-123' }));
+
+      const result = await service.sendPasswordLinkForUser('user-uuid-1', saccoAdminRequester);
+
+      expect(result.sent).toBe(true);
+      expect(result.link).toContain('raw-token');
     });
   });
 

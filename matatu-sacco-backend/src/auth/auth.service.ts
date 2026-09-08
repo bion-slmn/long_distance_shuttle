@@ -5,7 +5,7 @@ import {
     ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, ILike, Repository } from 'typeorm';
+import { FindOptionsWhere, ILike, In, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
@@ -13,6 +13,7 @@ import * as crypto from 'crypto';
 import { User, UserRole } from './entities/user.entity';
 import { EmailService } from '../email/email.service';
 import { PasswordResetService, type ResetPurpose } from './password-reset.service';
+import { normalizePhone, phoneLookupForms } from '../common/utils/phone.util';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -25,11 +26,13 @@ interface RegisterDto {
     saccoId?: string;
 }
 
-// Admin-created accounts never carry a password: the admin supplies an email,
-// the new user sets their own password from the link we send them.
+// Admin-created accounts never carry a password: the new user sets their own
+// from a single-use link. With an email on file the link is emailed; either
+// way it comes back in the response so the admin can pass it on directly
+// (WhatsApp, in practice) — which is the only route for a phone-only account.
 export interface CreateManagerDto {
     fullName: string;
-    email: string;
+    email?: string;
     phoneNumber?: string;
     saccoId: string;
 }
@@ -37,7 +40,7 @@ export interface CreateManagerDto {
 // ── Private helpers ───────────────────────────────────────────────────────
 export interface CreateStaffDto {
     fullName: string;
-    email: string;
+    email?: string;
     phoneNumber?: string;
     role: UserRole.DRIVER | UserRole.CLERK;
     saccoId: string;
@@ -136,7 +139,7 @@ export class AuthService {
         const user = this.userRepository.create({
             fullName: fullName.trim(),
             email: email?.toLowerCase().trim() ?? null,
-            phoneNumber: phoneNumber?.trim() ?? null,
+            phoneNumber: normalizePhone(phoneNumber),
             passwordHash,
             role,
             saccoId: null,
@@ -232,19 +235,15 @@ export class AuthService {
 
 
     async createManager(dto: CreateManagerDto) {
-        if (!dto.email) {
-            throw new BadRequestException(
-                'An email address is required — the manager sets their own password from a link we send there.',
-            );
-        }
+        this.assertReachable(dto);
 
         await this.assertNoDuplicateEmail(dto.email);
         await this.assertNoDuplicatePhone(dto.phoneNumber);
 
         const user = this.userRepository.create({
             fullName: dto.fullName.trim(),
-            email: dto.email.toLowerCase().trim(),
-            phoneNumber: dto.phoneNumber?.trim() ?? null,
+            email: dto.email?.toLowerCase().trim() ?? null,
+            phoneNumber: normalizePhone(dto.phoneNumber),
             passwordHash: await this.unusablePasswordHash(),
             role: UserRole.SACCO_ADMIN,
             saccoId: dto.saccoId,
@@ -254,7 +253,7 @@ export class AuthService {
         const saved = await this.userRepository.save(user);
         const invite = await this.sendPasswordLink(saved, 'invite');
 
-        return { ...this.sanitizeUser(saved), inviteSent: invite.sent };
+        return { ...this.sanitizeUser(saved), inviteSent: invite.sent, inviteLink: invite.link };
     }
 
 
@@ -282,11 +281,7 @@ export class AuthService {
             );
         }
 
-        if (!dto.email) {
-            throw new BadRequestException(
-                'An email address is required — staff set their own password from a link we send there.',
-            );
-        }
+        this.assertReachable(dto);
         if (dto.role === UserRole.CLERK && !dto.assignedStage) {
             throw new BadRequestException('Assigned stage is required for clerks.');
         }
@@ -296,8 +291,8 @@ export class AuthService {
 
         const user = this.userRepository.create({
             fullName: dto.fullName.trim(),
-            email: dto.email.toLowerCase().trim(),
-            phoneNumber: dto.phoneNumber?.trim() ?? null,
+            email: dto.email?.toLowerCase().trim() ?? null,
+            phoneNumber: normalizePhone(dto.phoneNumber),
             passwordHash: await this.unusablePasswordHash(),
             role: dto.role,
             saccoId: dto.saccoId,
@@ -308,7 +303,7 @@ export class AuthService {
         const saved = await this.userRepository.save(user);
         const invite = await this.sendPasswordLink(saved, 'invite');
 
-        return { ...this.sanitizeUser(saved), inviteSent: invite.sent };
+        return { ...this.sanitizeUser(saved), inviteSent: invite.sent, inviteLink: invite.link };
     }
 
     // ── List users (scoped by Sacco, or all if super admin) ─────────────────
@@ -356,10 +351,12 @@ export class AuthService {
     private async findActiveUserByIdentifier(identifier: string): Promise<User | null> {
         const isEmail = identifier.includes('@');
 
+        // Phone rows written before normalisation hold the number as typed,
+        // so match every spelling rather than only the canonical one.
         return this.userRepository.findOne({
             where: isEmail
                 ? { email: identifier.toLowerCase().trim(), isActive: true }
-                : { phoneNumber: identifier.trim(), isActive: true },
+                : { phoneNumber: In(phoneLookupForms(identifier)), isActive: true },
         });
     }
 
@@ -440,11 +437,21 @@ export class AuthService {
     }
 
     private async assertNoDuplicatePhone(phoneNumber?: string): Promise<void> {
-        if (!phoneNumber) return;
+        if (!phoneNumber?.trim()) return;
         const exists = await this.userRepository.findOne({
-            where: { phoneNumber: phoneNumber.trim() },
+            where: { phoneNumber: In(phoneLookupForms(phoneNumber)) },
         });
         if (exists) throw new ConflictException('A user with this phone number already exists.');
+    }
+
+    // An invited account has to be reachable somehow: by email for the link,
+    // or by phone so the admin has someone to hand the link to.
+    private assertReachable(dto: { email?: string; phoneNumber?: string }): void {
+        if (!dto.email?.trim() && !dto.phoneNumber?.trim()) {
+            throw new BadRequestException(
+                'Provide an email address or a phone number — the new user needs one to receive their sign-in link.',
+            );
+        }
     }
 
     // ── Update user ───────────────────────────────────────────────────────────
@@ -485,13 +492,13 @@ export class AuthService {
         if (dto.email && dto.email.toLowerCase().trim() !== user.email) {
             await this.assertNoDuplicateEmail(dto.email);
         }
-        if (dto.phoneNumber && dto.phoneNumber.trim() !== user.phoneNumber) {
+        if (dto.phoneNumber && normalizePhone(dto.phoneNumber) !== user.phoneNumber) {
             await this.assertNoDuplicatePhone(dto.phoneNumber);
         }
 
         if (dto.fullName !== undefined) user.fullName = dto.fullName.trim();
         if (dto.email !== undefined) user.email = dto.email.toLowerCase().trim();
-        if (dto.phoneNumber !== undefined) user.phoneNumber = dto.phoneNumber.trim();
+        if (dto.phoneNumber !== undefined) user.phoneNumber = normalizePhone(dto.phoneNumber);
         if (dto.role !== undefined) user.role = dto.role;
         if (dto.saccoId !== undefined) user.saccoId = dto.saccoId;
 
@@ -586,15 +593,16 @@ export class AuthService {
         const needsInvite = !user.passwordSetAt;
         const invite = needsInvite
             ? await this.sendPasswordLink(restored, 'invite')
-            : { sent: false };
+            : { sent: false, link: null };
 
         return {
             ...this.sanitizeUser(restored),
             inviteSent: invite.sent,
+            inviteLink: invite.link,
             message: needsInvite
                 ? invite.sent
                     ? `${restored.fullName} restored — a fresh invite is on its way.`
-                    : `${restored.fullName} restored, but the invite email didn't send. Resend it from their profile.`
+                    : `${restored.fullName} restored. Share the sign-in link with them directly.`
                 : `${restored.fullName} restored. Their existing password still works.`,
         };
     }
@@ -630,21 +638,22 @@ export class AuthService {
     }
 
     /**
-     * Mints a token and emails the link. A send failure is swallowed and
-     * reported through the return value: an admin creating a clerk shouldn't
-     * get a 500 (and lose the created account) because Resend hiccuped — they
-     * get the account plus a "couldn't email them, resend it" signal.
+     * Mints a token and returns the link, emailing it too when the user has an
+     * address. The link always comes back: a phone-only clerk has no inbox, and
+     * an admin creating one shouldn't get a 500 (and lose the created account)
+     * because Resend hiccuped — they get the account plus the link to pass on.
      */
     private async sendPasswordLink(
         user: User,
         purpose: ResetPurpose,
-    ): Promise<{ sent: boolean }> {
-        if (!user.email) {
-            return { sent: false };
-        }
-
+    ): Promise<{ sent: boolean; link: string }> {
         const token = await this.passwordResetService.issueToken(user.id, purpose);
         const link = this.passwordResetService.buildLink(token, purpose);
+
+        if (!user.email) {
+            return { sent: false, link };
+        }
+
         const expiresIn = purpose === 'invite' ? '3 days' : '1 hour';
 
         try {
@@ -656,9 +665,9 @@ export class AuthService {
                 expiresIn,
             );
             await this.passwordResetService.startCooldown(user.id);
-            return { sent: true };
+            return { sent: true, link };
         } catch {
-            return { sent: false };
+            return { sent: false, link };
         }
     }
 
@@ -825,28 +834,18 @@ export class AuthService {
             );
         }
 
-        if (!user.email) {
-            throw new BadRequestException(
-                'This user has no email address on file. Add one first.',
-            );
-        }
-
         const purpose: ResetPurpose = user.passwordSetAt ? 'reset' : 'invite';
-        const { sent } = await this.sendPasswordLink(user, purpose);
+        const { sent, link } = await this.sendPasswordLink(user, purpose);
 
-        if (!sent) {
-            throw new BadRequestException(
-                'We could not send the email just now. Please try again.',
-            );
-        }
+        // The link is the deliverable; the email is a courtesy. Whether it went
+        // out only changes what the admin is told to do with the link.
+        const what = purpose === 'invite' ? 'Invite' : 'Password reset link';
+        const message = sent
+            ? `${what} sent to ${user.email}.`
+            : user.email
+                ? `The email didn't send. Share the ${what.toLowerCase()} with ${user.fullName} directly.`
+                : `${user.fullName} has no email on file. Share the ${what.toLowerCase()} with them directly.`;
 
-        return {
-            success: true,
-            purpose,
-            message:
-                purpose === 'invite'
-                    ? `Invite re-sent to ${user.email}.`
-                    : `Password reset link sent to ${user.email}.`,
-        };
+        return { success: true, purpose, sent, link, message };
     }
 }

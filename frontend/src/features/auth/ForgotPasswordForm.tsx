@@ -85,6 +85,14 @@ export default function ForgotPasswordForm() {
                             </p>
                         )}
 
+                        {/* Staff created with only a phone number have no inbox
+                            for a reset link; their admin re-issues one and sends
+                            it on WhatsApp. Say so rather than let them wait. */}
+                        <p className="rounded-lg bg-muted/50 p-3 text-xs leading-relaxed text-muted-foreground">
+                            Signed up with a phone number only? Ask your Sacco admin for a new
+                            sign-in link — they can send it to you on WhatsApp.
+                        </p>
+
                         <Button type="submit" className="w-full" disabled={mutation.isPending}>
                             {mutation.isPending ? "Sending..." : "Send reset link"}
                         </Button>

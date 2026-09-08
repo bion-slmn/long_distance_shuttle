@@ -34,7 +34,7 @@ describe('EmailService', () => {
         {
           provide: ConfigService,
           useValue: {
-            get: jest.fn().mockReturnValue('re_test_api_key'),
+            get: jest.fn((key: string) => (key === 'RESEND_API_KEY' ? 're_test_api_key' : undefined)),
           },
         },
       ],
@@ -63,7 +63,7 @@ describe('EmailService', () => {
 
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(mockSend).toHaveBeenCalledWith({
-        from: 'ShuttleHub <onboarding@resend.dev>',
+        from: 'ShuttleHub <no-reply@info.shuttlehub.co.ke>',
         to: OTP_EMAIL,
         subject: `Your ShuttleHub verification code: ${OTP_CODE}`,
         html: expect.stringContaining(OTP_CODE),

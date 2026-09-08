@@ -50,6 +50,8 @@ import {
     Archive,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { InviteLinkPanel } from "@/features/auth/InviteLinkPanel"
+import { copyToClipboard } from "@/features/auth/inviteShare"
 import { toast } from "sonner"
 import {
     getUsersRequest,
@@ -129,13 +131,29 @@ function PendingInviteBadge() {
 }
 
 // One place for the resend, used by both the row and the details dialog.
+// The link always comes back; when no email went out (phone-only user, or a
+// failed send) the toast carries a copy action so nothing is lost even from
+// the table row, and the details dialog shows the full share panel.
 function useSendPasswordLink() {
     const queryClient = useQueryClient()
 
     return useMutation({
         mutationFn: (id: string) => sendPasswordLinkRequest(id),
         onSuccess: (data) => {
-            toast.success(data.message)
+            if (data.sent) {
+                toast.success(data.message)
+            } else {
+                toast.info(data.message, {
+                    action: {
+                        label: "Copy link",
+                        onClick: () => {
+                            void copyToClipboard(data.link).then((ok) =>
+                                ok ? toast.success("Link copied") : toast.error("Couldn't copy the link"),
+                            )
+                        },
+                    },
+                })
+            }
             queryClient.invalidateQueries({ queryKey: ["users", "table"] })
         },
         onError: (err: any) => {
@@ -731,17 +749,23 @@ function UserDetailsDialog({
                         </div>
                     )}
 
+                    {sendLink.data && (
+                        <InviteLinkPanel
+                            link={sendLink.data.link}
+                            fullName={user.fullName}
+                            phoneNumber={user.phoneNumber}
+                            email={user.email}
+                            sent={sendLink.data.sent}
+                            purpose={sendLink.data.purpose}
+                        />
+                    )}
+
                     <div className="grid grid-cols-2 gap-4 border-t pt-4">
                         <div className="space-y-1">
                             <p className="text-xs text-muted-foreground">Joined</p>
                             <p className="text-xs">{formatDate(user.createdAt!)}</p>
                         </div>
-                        <div className="space-y-1">
-                            <p className="text-xs text-muted-foreground">User ID</p>
-                            <p className="truncate font-mono text-[10px] text-muted-foreground">
-                                {user.id}
-                            </p>
-                        </div>
+
                     </div>
                 </div>
 
@@ -771,38 +795,38 @@ function UserDetailsDialog({
                             </Button>
                         ) : (
                             <>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="flex-1"
-                            disabled={!user.email || sendLink.isPending}
-                            onClick={() => sendLink.mutate(user.id)}
-                            title={
-                                user.email
-                                    ? undefined
-                                    : "This user has no email address on file"
-                            }
-                        >
-                            {sendLink.isPending ? (
-                                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                            ) : (
-                                <Send className="mr-1.5 size-3.5" />
-                            )}
-                            {isPending ? "Resend invite" : "Reset password"}
-                        </Button>
-                        <Button variant="outline" size="sm" className="flex-1" onClick={onEdit}>
-                            <Pencil className="mr-1.5 size-3.5" />
-                            Edit
-                        </Button>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="flex-1 text-destructive hover:text-destructive"
-                            onClick={onDelete}
-                        >
-                            <Trash2 className="mr-1.5 size-3.5" />
-                            Remove
-                        </Button>
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="flex-1"
+                                    disabled={sendLink.isPending}
+                                    onClick={() => sendLink.mutate(user.id)}
+                                    title={
+                                        user.email
+                                            ? "Email a fresh link, and get a copy to share"
+                                            : "No email on file — you'll get a link to send them"
+                                    }
+                                >
+                                    {sendLink.isPending ? (
+                                        <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                                    ) : (
+                                        <Send className="mr-1.5 size-3.5" />
+                                    )}
+                                    {isPending ? "Get invite link" : "Reset password"}
+                                </Button>
+                                <Button variant="outline" size="sm" className="flex-1" onClick={onEdit}>
+                                    <Pencil className="mr-1.5 size-3.5" />
+                                    Edit
+                                </Button>
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="flex-1 text-destructive hover:text-destructive"
+                                    onClick={onDelete}
+                                >
+                                    <Trash2 className="mr-1.5 size-3.5" />
+                                    Remove
+                                </Button>
                             </>
                         )}
                     </RoleGuard>

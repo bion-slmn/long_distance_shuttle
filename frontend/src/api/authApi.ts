@@ -17,11 +17,13 @@ export interface LoginPayload {
     password: string;
 }
 
-// Admin-created accounts carry no password: the backend emails the new user a
-// link and they choose their own.
+// Admin-created accounts carry no password: the new user sets their own from
+// a single-use link. At least one of email or phone is required. With an
+// email the link is also emailed; either way it comes back in the response
+// so the admin can pass it on directly (WhatsApp, in practice).
 export interface CreateStaffPayload {
     fullName: string;
-    email: string;
+    email?: string;
     phoneNumber?: string;
     role: UserRole;
     saccoId?: string;
@@ -30,14 +32,16 @@ export interface CreateStaffPayload {
 
 export interface CreateManagerPayload {
     fullName: string;
-    email: string;
+    email?: string;
     phoneNumber?: string;
     saccoId?: string;
 }
 
 export interface CreatedUserResponse extends User {
-    /** False when the account was created but the invite email failed to go out. */
+    /** False when no email went out: the user has no address, or the send failed. */
     inviteSent: boolean;
+    /** The single-use set-password link. Always present so the admin can share it. */
+    inviteLink: string;
 }
 
 export interface User {
@@ -102,7 +106,7 @@ export const deleteUserRequest = async (id: string): Promise<{ success: boolean;
 // Undoes a soft delete. Accounts that never set a password are erased on
 // delete, so they never reach this — only real users can be restored.
 export const restoreUserRequest = async (id: string) => {
-    const { data } = await api.post<User & { inviteSent: boolean; message: string }>(
+    const { data } = await api.post<User & { inviteSent: boolean; inviteLink: string | null; message: string }>(
         `/auth/users/${id}/restore`,
     );
     return data;
@@ -208,12 +212,19 @@ export const changePasswordRequest = async (
     return data;
 };
 
-// admin-only — re-sends the invite (or a reset link) to a user
+export interface PasswordLinkResult {
+    success: boolean;
+    purpose: 'invite' | 'reset';
+    /** Whether an email went out. False for phone-only users or a failed send. */
+    sent: boolean;
+    /** The link itself, for the admin to share when it wasn't (or couldn't be) emailed. */
+    link: string;
+    message: string;
+}
+
+// admin-only — mints a fresh invite (or reset) link for a user, emailing it
+// when they have an address, and returns it either way
 export const sendPasswordLinkRequest = async (id: string) => {
-    const { data } = await api.post<{
-        success: boolean;
-        purpose: 'invite' | 'reset';
-        message: string;
-    }>(`/auth/users/${id}/password-link`);
+    const { data } = await api.post<PasswordLinkResult>(`/auth/users/${id}/password-link`);
     return data;
 };

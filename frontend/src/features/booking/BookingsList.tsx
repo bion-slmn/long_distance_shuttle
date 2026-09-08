@@ -10,8 +10,6 @@ import { BookingsCharts } from "./BookingsCharts";
 
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
     Select,
     SelectContent,
@@ -33,73 +31,26 @@ import {
     User,
     Phone,
     Clock,
-    AlertCircle,
     Car,
     ClipboardList,
-    SlidersHorizontal,
-    ChevronDown,
     ChevronRight,
-    Search,
     ArrowRight,
 } from "lucide-react";
 import { RouteCombobox } from "../routes/RouteCombobox";
 import { useVehicleNumberPlate } from "@/hooks/useVehicleNumberPlate";
 import { getFleetVehicleRequest } from "@/api/fleetApi";
+import { StatTile } from "@/components/report/StatTile";
+import {
+    DateRangeFields,
+    FilterField,
+    FilterPanel,
+    RangePresets,
+    SearchInput,
+} from "@/components/report/Filters";
+import { ListPlaceholder } from "@/components/report/ListPlaceholder";
+import { Callout, DetailRow, DetailRows, InfoBlock, InfoLine } from "@/components/report/Detail";
+import { formatDateTime, formatDay, formatTime, todayString } from "@/lib/dateRange";
 import { cn } from "@/lib/utils";
-
-// toISOString() is UTC: between midnight and 03:00 in Nairobi (UTC+3) it
-// still reads as yesterday, which would quietly show the wrong day now that
-// the list defaults to "today".
-function toLocalDateString(d: Date): string {
-    const month = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${d.getFullYear()}-${month}-${day}`;
-}
-
-function todayString(): string {
-    return toLocalDateString(new Date());
-}
-
-function daysAgoString(days: number): string {
-    const d = new Date();
-    d.setDate(d.getDate() - days);
-    return toLocalDateString(d);
-}
-
-// Quick ranges; `days` is how far back from today the range starts.
-const RANGE_PRESETS = [
-    { label: "Today", days: 0 },
-    { label: "7 days", days: 6 },
-    { label: "30 days", days: 29 },
-] as const;
-
-function formatTime(iso: string | null): string {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleTimeString("en-KE", {
-        hour: "2-digit",
-        minute: "2-digit",
-    });
-}
-
-function formatDateTime(iso: string | null): string {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleString("en-KE", {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-    });
-}
-
-// travelDate is a bare "YYYY-MM-DD"; parsing it as local midnight keeps the
-// weekday right (a UTC parse shifts it to the previous evening in Nairobi).
-function formatTravelDate(date: string): string {
-    return new Date(`${date}T00:00:00`).toLocaleDateString("en-KE", {
-        weekday: "short",
-        day: "numeric",
-        month: "short",
-    });
-}
 
 // An M-Pesa booking whose hold has lapsed while still PENDING can no longer
 // resolve: the reconcile ladder force-expires a payment three minutes after
@@ -188,29 +139,20 @@ function BookingDetailDialog({
                 </DialogHeader>
 
                 {/* ── Passenger ── */}
-                <div className="bg-muted/30 rounded-lg px-3 py-2.5 space-y-1.5">
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                        <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                        {booking.passengerName}
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Phone className="h-3.5 w-3.5 shrink-0" />
-                        {booking.passengerPhone}
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Calendar className="h-3.5 w-3.5 shrink-0" />
+                <InfoBlock>
+                    <InfoLine icon={User} primary>{booking.passengerName}</InfoLine>
+                    <InfoLine icon={Phone}>{booking.passengerPhone}</InfoLine>
+                    <InfoLine icon={Calendar}>
                         {booking.travelDate}
                         {booking.seatNumber && ` · Seat ${booking.seatNumber}`}
-                    </div>
+                    </InfoLine>
                     {booking.preferredBoardingFrom && (
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                            <Clock className="h-3.5 w-3.5 shrink-0" />
+                        <InfoLine icon={Clock}>
                             Preferred: {booking.preferredBoardingFrom}–{booking.preferredBoardingTo}
-                        </div>
+                        </InfoLine>
                     )}
                     {booking.trip && (
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                            <Car className="h-3.5 w-3.5 shrink-0" />
+                        <InfoLine icon={Car}>
                             {plateLoading ? (
                                 <span className="inline-block h-3 w-16 bg-muted rounded animate-pulse" />
                             ) : (
@@ -218,84 +160,55 @@ function BookingDetailDialog({
                             )}
                             {" · "}
                             {booking.trip.status}
-                        </div>
+                        </InfoLine>
                     )}
-                </div>
+                </InfoBlock>
 
                 {/* ── Payment ── */}
-                <div className="space-y-2 text-sm">
-                    <div className="flex items-center justify-between border-b pb-2">
-                        <span className="text-muted-foreground">Fare</span>
-                        <span className="font-medium">KES {Number(booking.fare).toLocaleString()}</span>
-                    </div>
-                    <div className="flex items-center justify-between border-b pb-2">
-                        <span className="text-muted-foreground">Method</span>
-                        <span className="font-medium flex items-center gap-1.5">
-                            {booking.paymentMethod === "MPESA" ? (
-                                <Smartphone className="h-3.5 w-3.5" />
-                            ) : (
-                                <Banknote className="h-3.5 w-3.5" />
-                            )}
-                            {booking.paymentMethod === "MPESA" ? "M-Pesa" : "Cash"}
-                        </span>
-                    </div>
-                    <div className="flex items-center justify-between border-b pb-2">
-                        <span className="text-muted-foreground">Payment status</span>
-                        {paymentStatusBadge(booking.paymentStatus)}
-                    </div>
+                <DetailRows>
+                    <DetailRow label="Fare">KES {Number(booking.fare).toLocaleString()}</DetailRow>
+                    <DetailRow label="Method">
+                        {booking.paymentMethod === "MPESA" ? (
+                            <Smartphone className="h-3.5 w-3.5" />
+                        ) : (
+                            <Banknote className="h-3.5 w-3.5" />
+                        )}
+                        {booking.paymentMethod === "MPESA" ? "M-Pesa" : "Cash"}
+                    </DetailRow>
+                    <DetailRow label="Payment status">{paymentStatusBadge(booking.paymentStatus)}</DetailRow>
                     {booking.mpesaReceiptNumber && (
-                        <div className="flex items-center justify-between border-b pb-2">
-                            <span className="text-muted-foreground">Receipt no.</span>
-                            <span className="font-medium font-mono">{booking.mpesaReceiptNumber}</span>
-                        </div>
+                        <DetailRow label="Receipt no." mono>{booking.mpesaReceiptNumber}</DetailRow>
                     )}
-                    <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Booked</span>
-                        <span className="font-medium">{formatDateTime(booking.createdAt)}</span>
-                    </div>
-                </div>
+                    <DetailRow label="Booked">{formatDateTime(booking.createdAt)}</DetailRow>
+                </DetailRows>
 
                 {/* ── M-Pesa payment state ── */}
                 {booking.paymentMethod === "MPESA" && (
                     <>
                         {paymentQuery.isLoading && <Skeleton className="h-14 w-full" />}
                         {payment?.status === "FAILED" && payment.errorMessage && (
-                            <div className="bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2.5 flex items-start gap-2">
-                                <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
-                                <div>
-                                    <p className="text-sm font-medium text-destructive">Payment failed</p>
-                                    <p className="text-xs text-destructive/80 mt-0.5">{payment.errorMessage}</p>
-                                </div>
-                            </div>
+                            <Callout tone="destructive" title="Payment failed">
+                                {payment.errorMessage}
+                            </Callout>
                         )}
                         {/* A PROCESSING payment past its hold isn't "in flight" — nothing
                             can resolve it any more, so saying "waiting" sends the clerk
                             off to wait for something that will never arrive. */}
                         {payment?.status === "PROCESSING" && !lapsed && (
-                            <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5">
-                                <p className="text-xs text-blue-700">
-                                    STK push sent — waiting for the passenger to complete it.
-                                </p>
-                            </div>
+                            <Callout tone="blue">
+                                STK push sent — waiting for the passenger to complete it.
+                            </Callout>
                         )}
                         {lapsed && (
-                            <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 flex items-start gap-2">
-                                <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
-                                <div>
-                                    <p className="text-sm font-medium text-amber-800">
-                                        Payment never completed
-                                    </p>
-                                    <p className="text-xs text-amber-700 mt-0.5">
-                                        The hold lapsed{" "}
-                                        {booking.holdExpiresAt
-                                            ? `at ${formatDateTime(booking.holdExpiresAt)}`
-                                            : "some time ago"}
-                                        {" "}and seat {booking.seatNumber ?? "—"} has been released
-                                        for re-sale. Take cash or re-send the STK push before
-                                        letting this passenger board.
-                                    </p>
-                                </div>
-                            </div>
+                            <Callout tone="amber" title="Payment never completed">
+                                The hold lapsed{" "}
+                                {booking.holdExpiresAt
+                                    ? `at ${formatDateTime(booking.holdExpiresAt)}`
+                                    : "some time ago"}
+                                {" "}and seat {booking.seatNumber ?? "—"} has been released
+                                for re-sale. Take cash or re-send the STK push before
+                                letting this passenger board.
+                            </Callout>
                         )}
                     </>
                 )}
@@ -456,7 +369,7 @@ function TripCard({
                 <div className="flex items-center justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
                         <span className="shrink-0 text-sm font-bold text-primary">
-                            {formatTravelDate(group.travelDate)}
+                            {formatDay(group.travelDate)}
                         </span>
                         {group.trip ? (
                             plateLoading ? (
@@ -537,7 +450,6 @@ export default function BookingsList() {
     const [status, setStatus] = useState<BookingStatus | "ALL">("ALL");
     const [search, setSearch] = useState("");
     const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
-    const [showFilters, setShowFilters] = useState(false);
 
     const bookingsQuery = useQuery({
         queryKey: ["bookings-report", saccoId, routeId, vehicleId, from, to, status],
@@ -613,121 +525,43 @@ export default function BookingsList() {
                 <h2 className="text-lg font-semibold">Bookings</h2>
 
                 <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 flex items-center gap-2">
-                        <div className="hidden sm:flex rounded-md bg-primary/10 p-1.5 shrink-0">
-                            <ClipboardList className="size-3.5 text-primary" />
-                        </div>
-                        <div className="min-w-0">
-                            <p className="text-[9px] font-semibold text-primary/70 uppercase tracking-wide truncate">
-                                Bookings
-                            </p>
-                            <p className="text-base font-bold leading-none mt-0.5">
-                                {bookings.length}
-                            </p>
-                        </div>
-                    </div>
-
-                    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 flex items-center gap-2">
-                        <div className="hidden sm:flex rounded-md bg-emerald-500/10 p-1.5 shrink-0">
-                            <Banknote className="size-3.5 text-emerald-500" />
-                        </div>
-                        <div className="min-w-0">
-                            <p className="text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide truncate">
-                                Paid
-                            </p>
-                            <p className="text-base font-bold leading-none mt-0.5">
-                                KES {totalFare.toLocaleString()}
-                            </p>
-                        </div>
-                    </div>
+                    <StatTile icon={ClipboardList} label="Bookings" value={bookings.length} />
+                    <StatTile icon={Banknote} label="Paid" value={`KES ${totalFare.toLocaleString()}`} tone="emerald" />
                 </div>
             </div>
 
             {/* Quick ranges + search — the two things reached for most often, so
                 they stay out of the collapsible filter drawer. */}
             <div className="flex items-center gap-2 flex-wrap">
-                <div className="flex rounded-lg border border-border p-0.5">
-                    {RANGE_PRESETS.map((preset) => {
-                        const active = from === daysAgoString(preset.days) && to === todayString();
-                        return (
-                            <button
-                                key={preset.label}
-                                type="button"
-                                onClick={() => {
-                                    setFrom(daysAgoString(preset.days));
-                                    setTo(todayString());
-                                }}
-                                className={cn(
-                                    "px-2.5 py-1 text-xs font-medium rounded-md transition-colors",
-                                    active
-                                        ? "bg-primary text-primary-foreground"
-                                        : "text-muted-foreground hover:text-foreground",
-                                )}
-                            >
-                                {preset.label}
-                            </button>
-                        );
-                    })}
-                </div>
-
-                <div className="relative flex-1 min-w-[10rem]">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                    <Input
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Name, phone, receipt or #ID"
-                        className="h-9 pl-8"
-                    />
-                </div>
+                <RangePresets
+                    from={from}
+                    to={to}
+                    onChange={(f, t) => {
+                        setFrom(f);
+                        setTo(t);
+                    }}
+                />
+                <SearchInput
+                    value={search}
+                    onChange={setSearch}
+                    placeholder="Name, phone, receipt or #ID"
+                />
             </div>
 
-            {/* Mobile filter toggle — filters grid is always visible on sm+ */}
-            <button
-                type="button"
-                onClick={() => setShowFilters((v) => !v)}
-                className="sm:hidden flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
-            >
-                <SlidersHorizontal className="size-3.5" />
-                Filters
-                {activeFilterCount > 0 && (
-                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
-                        {activeFilterCount}
-                    </Badge>
-                )}
-                <ChevronDown className={cn("size-3.5 transition-transform", showFilters && "rotate-180")} />
-            </button>
-
-            <div
-                className={cn(
-                    "grid grid-cols-2 gap-2 sm:grid",
-                    isSuperAdmin ? "sm:grid-cols-6" : "sm:grid-cols-5",
-                    !showFilters && "hidden sm:grid"
-                )}
-            >
+            <FilterPanel activeCount={activeFilterCount} columns={isSuperAdmin ? 6 : 5}>
                 {isSuperAdmin && (
-                    <div className="space-y-1">
-                        <Label className="text-xs text-muted-foreground">Sacco</Label>
+                    <FilterField label="Sacco">
                         <SaccoCombobox value={saccoId} onChange={setSaccoId} placeholder="All saccos" />
-                    </div>
+                    </FilterField>
                 )}
-                <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Route</Label>
+                <FilterField label="Route">
                     <RouteCombobox value={routeId} onChange={setRouteId} placeholder="All routes" />
-                </div>
-                <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Vehicle</Label>
+                </FilterField>
+                <FilterField label="Vehicle">
                     <VehicleCombobox value={vehicleId} onChange={setVehicleId} saccoId={saccoId} placeholder="All vehicles" />
-                </div>
-                <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">From</Label>
-                    <Input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} className="h-9" />
-                </div>
-                <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">To</Label>
-                    <Input type="date" value={to} min={from} max={todayString()} onChange={(e) => setTo(e.target.value)} className="h-9" />
-                </div>
-                <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Status</Label>
+                </FilterField>
+                <DateRangeFields from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
+                <FilterField label="Status">
                     <Select value={status} onValueChange={(v) => setStatus(v as BookingStatus | "ALL")}>
                         <SelectTrigger className="h-9">
                             <SelectValue />
@@ -741,27 +575,22 @@ export default function BookingsList() {
                             <SelectItem value="NO_SHOW">No-show</SelectItem>
                         </SelectContent>
                     </Select>
-                </div>
-            </div>
+                </FilterField>
+            </FilterPanel>
 
             {bookingsQuery.isLoading ? (
-                <div className="space-y-2">
-                    <Skeleton className="h-16 w-full" />
-                    <Skeleton className="h-16 w-full" />
-                    <Skeleton className="h-16 w-full" />
-                </div>
+                <ListPlaceholder state="loading" />
             ) : bookingsQuery.isError ? (
-                <div className="bg-destructive/10 border border-destructive/20 rounded-lg px-4 py-3">
-                    <p className="text-sm text-destructive">Couldn't load bookings. Please try again.</p>
-                </div>
+                <ListPlaceholder state="error" message="Couldn't load bookings. Please try again." />
             ) : bookings.length === 0 ? (
-                <div className="bg-muted/30 rounded-lg px-4 py-8 text-center">
-                    <p className="text-sm text-muted-foreground">
-                        {search.trim()
+                <ListPlaceholder
+                    state="empty"
+                    message={
+                        search.trim()
                             ? `No booking matches "${search.trim()}" in this range.`
-                            : "No bookings in this range."}
-                    </p>
-                </div>
+                            : "No bookings in this range."
+                    }
+                />
             ) : (
                 <>
                     {/* A one-day range is a single bar — not worth the space. */}
