@@ -10,8 +10,21 @@ describe('HealthController', () => {
   const mockHealthResult = {
     api: { status: 'up' as const },
     database: { status: 'up' as const, responseTime: 12 },
+    redis: {
+      status: 'up' as const,
+      responseTime: 4,
+      connectionState: 'ready',
+      reconnects: 0,
+      lastError: null,
+      lastErrorAt: null,
+    },
+    queue: {
+      status: 'up' as const,
+      responseTime: 6,
+      jobs: { waiting: 0, active: 0, delayed: 0, failed: 0 },
+    },
     failedRequests: 3,
-    queueJobs: null,
+    queueJobs: 0,
     lastBackup: null,
   };
 

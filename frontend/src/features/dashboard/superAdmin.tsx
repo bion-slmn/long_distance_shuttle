@@ -169,6 +169,43 @@ function StatCard({
     );
 }
 
+/** One dependency in the system-health card: icon, name, and a short detail string. */
+function HealthTile({
+    label,
+    status,
+    detail,
+}: {
+    label: string;
+    status: "up" | "down" | undefined;
+    detail: string;
+}) {
+    return (
+        <div className="flex items-center gap-2 min-w-0">
+            {status === "up" ? (
+                <CheckCircle size={14} className="text-emerald-500 shrink-0" />
+            ) : (
+                <AlertCircle size={14} className="text-red-500 shrink-0" />
+            )}
+            <span className="text-xs shrink-0">{label}</span>
+            <span className="text-xs text-muted-foreground truncate" title={detail}>
+                {detail}
+            </span>
+        </div>
+    );
+}
+
+/** "just now", "4 min ago", "2 h ago" — enough precision for a health tile. */
+function formatRelativeTime(iso: string): string {
+    const diffMs = Date.now() - new Date(iso).getTime();
+    if (Number.isNaN(diffMs) || diffMs < 0) return "just now";
+    const minutes = Math.floor(diffMs / 60_000);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} h ago`;
+    return `${Math.floor(hours / 24)} d ago`;
+}
+
 /** One number in the payment-health strip. */
 function PaymentStat({
     label,
@@ -253,6 +290,9 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
     const { data: systemHealth, isLoading: systemHealthLoading } = useQuery({
         queryKey: ["systemHealth"],
         queryFn: () => getSystemHealthRequest(),
+        // Keep the tiles live while the page is open so a flapping Redis
+        // connection shows up here instead of only in the server logs.
+        refetchInterval: 30_000,
         staleTime: 60_000,
     });
 
@@ -540,44 +580,66 @@ export default function SuperAdminDashboard({ onRefresh }: SuperAdminDashboardPr
 
                 {/* ── Section 3: System Health ── */}
                 <div className="bg-card border border-border rounded-xl overflow-hidden">
-                    <CardHeader title="System Health" icon={<Activity size={14} />} />
-                    <div className="p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
+                    <CardHeader
+                        title="System Health"
+                        icon={<Activity size={14} />}
+                        hint="refreshes every 30s"
+                    />
+                    <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3">
                         {systemHealthLoading ? (
                             <div className="col-span-full h-6 bg-muted rounded animate-pulse" />
                         ) : (
                             <>
-                                <div className="flex items-center gap-2">
-                                    {systemHealth?.api.status === 'up' ? (
-                                        <CheckCircle size={14} className="text-emerald-500" />
-                                    ) : (
-                                        <AlertCircle size={14} className="text-red-500" />
-                                    )}
-                                    <span className="text-xs">API</span>
-                                    <span className="text-xs text-muted-foreground">
-                                        {systemHealth?.api.status ?? "unknown"}
-                                    </span>
-                                </div>
+                                <HealthTile
+                                    label="API"
+                                    status={systemHealth?.api.status}
+                                    detail={systemHealth?.api.status ?? "unknown"}
+                                />
 
-                                <div className="flex items-center gap-2">
-                                    {systemHealth?.database.status === 'up' ? (
-                                        <CheckCircle size={14} className="text-emerald-500" />
-                                    ) : (
-                                        <AlertCircle size={14} className="text-red-500" />
-                                    )}
-                                    <span className="text-xs">Database</span>
-                                    <span className="text-xs text-muted-foreground">
-                                        {systemHealth?.database.responseTime ?? 0}ms
-                                    </span>
-                                </div>
+                                <HealthTile
+                                    label="Database"
+                                    status={systemHealth?.database.status}
+                                    detail={`${systemHealth?.database.responseTime ?? 0}ms`}
+                                />
+
+                                <HealthTile
+                                    label="Redis"
+                                    status={systemHealth?.redis.status}
+                                    detail={`${systemHealth?.redis.responseTime ?? 0}ms · ${systemHealth?.redis.connectionState ?? "unknown"}`}
+                                />
+
+                                <HealthTile
+                                    label="Queue"
+                                    status={systemHealth?.queue.status}
+                                    detail={
+                                        systemHealth?.queue.jobs
+                                            ? `${systemHealth.queueJobs ?? 0} pending · ${systemHealth.queue.jobs.failed} failed`
+                                            : "unreachable"
+                                    }
+                                />
 
                                 <div className="flex items-center gap-2">
                                     <span className="text-xs text-muted-foreground">Failed requests</span>
                                     <span className={cn(
                                         "text-xs font-mono",
-                                        (systemHealth?.failedRequests ?? 0) > 0 ? "text-amber-500" : "text-emerald-500"
+                                        systemHealth?.failedRequests == null
+                                            ? "text-muted-foreground"
+                                            : systemHealth.failedRequests > 0 ? "text-amber-500" : "text-emerald-500"
                                     )}>
-                                        {systemHealth?.failedRequests ?? 0}
+                                        {systemHealth?.failedRequests ?? "n/a"}
                                     </span>
+                                </div>
+
+                                <div className="col-span-full md:col-span-3 flex items-center gap-2 min-w-0">
+                                    <span className="text-xs text-muted-foreground shrink-0">Redis errors</span>
+                                    {systemHealth?.redis.lastError ? (
+                                        <span className="text-xs text-amber-500 truncate" title={systemHealth.redis.lastError}>
+                                            {systemHealth.redis.reconnects} reconnect{systemHealth.redis.reconnects === 1 ? "" : "s"} · last: {systemHealth.redis.lastError}
+                                            {systemHealth.redis.lastErrorAt && ` (${formatRelativeTime(systemHealth.redis.lastErrorAt)})`}
+                                        </span>
+                                    ) : (
+                                        <span className="text-xs text-emerald-500">none since boot</span>
+                                    )}
                                 </div>
                             </>
                         )}

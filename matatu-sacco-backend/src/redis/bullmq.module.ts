@@ -14,22 +14,22 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
             useFactory: (config: ConfigService) => {
                 const redisUrl = config.get<string>('REDIS_URL');
 
-                if (redisUrl) {
-                    const url = new URL(redisUrl);
+                const defaultJobOptions = {
+                    removeOnComplete: true,
+                    removeOnFail: true,
+                };
 
+                if (redisUrl) {
+                    // Hand the URL straight to ioredis rather than splitting it
+                    // into host/port/password. Splitting drops the scheme, so a
+                    // rediss:// URL (Upstash, which is TLS-only) was being
+                    // dialled in plaintext and reset on every reconnect.
                     return {
                         connection: {
-                            host: url.hostname,
-                            port: Number(url.port) || 6379,
-                            username: url.username || undefined,
-                            password: url.password || undefined,
+                            url: redisUrl,
                             maxRetriesPerRequest: null,
                         },
-
-                        defaultJobOptions: {
-                            removeOnComplete: true,
-                            removeOnFail: true,
-                        },
+                        defaultJobOptions,
                     };
                 }
 
@@ -41,11 +41,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
                             config.get<string>('REDIS_PASSWORD') || undefined,
                         maxRetriesPerRequest: null,
                     },
-
-                    defaultJobOptions: {
-                        removeOnComplete: true,
-                        removeOnFail: true,
-                    },
+                    defaultJobOptions,
                 };
             },
         }),
