@@ -127,30 +127,38 @@ export const registerRequest = async (payload: RegisterPayload): Promise<AuthRes
 };
 
 
+import { setAccessToken, setRefreshToken, getRefreshToken, clearSession } from "./axios";
+
 export const loginRequest = async (
     payload: LoginPayload
 ): Promise<AuthResponse> => {
     const { data } = await api.post<AuthResponse>(
         "/auth/login",
         payload,
-        {
-            skipAuthRefresh: true,
-        }
+        { skipAuthRefresh: true },
     );
-
+    setAccessToken(data.access_token);
+    setRefreshToken(data.refresh_token);
     return data;
 };
 
-
-
 export const refreshRequest = async (): Promise<AuthResponse> => {
-    const { data } = await refreshApi.post<AuthResponse>("/auth/refresh");
+    const storedRefreshToken = getRefreshToken();
+    if (!storedRefreshToken) {
+        throw new Error("No refresh token available.");
+    }
+    const { data } = await refreshApi.post<AuthResponse>("/auth/refresh", {
+        refresh_token: storedRefreshToken,
+    });
+    setAccessToken(data.access_token);
+    setRefreshToken(data.refresh_token);
     return data;
 };
 
 export async function logoutRequest() {
-    const res = await api.post("/auth/logout")
-    return res.data
+    const res = await api.post("/auth/logout");
+    clearSession();
+    return res.data;
 }
 
 // admin-only — creates drivers/clerks (requires auth token attached via interceptor)

@@ -7,15 +7,15 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { logoutRequest, refreshRequest, type AuthResponse } from "@/api/authApi"
-import { setAccessToken } from "@/api/axios"
+import { setAccessToken, setRefreshToken, getRefreshToken, clearSession } from "@/api/axios"
 import { useNavigate } from "react-router-dom"
 
 type AuthUser = AuthResponse["user"]
 
-// Everything setSession actually needs. The refresh token never reaches JS —
-// it's an httpOnly cookie — so responses that omit it (change-password) are
-// perfectly good sessions too.
-type SessionData = { access_token: string; user: AuthUser }
+// setSession now needs the refresh_token too, since it's our job to persist
+// it — there's no cookie doing that for us anymore. change-password's response
+// includes a fresh refresh_token as well (rotation), so this isn't optional.
+type SessionData = { access_token: string; refresh_token: string; user: AuthUser }
 
 interface AuthContextValue {
     user: AuthUser | null
@@ -24,40 +24,53 @@ interface AuthContextValue {
     setSession: (data: SessionData) => void
     logout: () => void
     assignedStage: string | null
-
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
-// ─── The query itself ─────────────────────────────────────────────────────
-
 function useMeQuery() {
+    const refreshToken = getRefreshToken()
+
     return useQuery({
         queryKey: ["me"],
+
         queryFn: async () => {
+            console.log("🔥 REFRESH REQUEST RUNNING")
+
             const data = await refreshRequest()
+
+            console.log("🔥 REFRESH RESPONSE:", data)
+
             setAccessToken(data.access_token)
+            setRefreshToken(data.refresh_token)
+
             return data.user
         },
+
+        enabled: !!refreshToken,
         retry: false,
         staleTime: 5 * 60 * 1000,
     })
 }
 
-// ─── Provider ────────────────────────────────────────────────────────────
-
 export function AuthProvider({ children }: { children: ReactNode }) {
     const queryClient = useQueryClient()
-    const { data: user, isLoading } = useMeQuery()
+    const {
+        data: user,
+        isPending,
+        isError,
+    } = useMeQuery()
+
     const navigate = useNavigate()
+
     const assignedStage = user?.assignedStage ?? null
-    // Called by LoginForm/RegisterForm directly on success — no need to
-    // refetch, we already have the data from the login/register response.
+
     function setSession(data: SessionData) {
         setAccessToken(data.access_token)
+        setRefreshToken(data.refresh_token)
+
         queryClient.setQueryData(["me"], data.user)
-        // Clear all other leftover cache from a previous session,
-        // but leave "me" alone since we just set it explicitly above
+
         queryClient.removeQueries({
             predicate: (query) => query.queryKey[0] !== "me",
         })
@@ -67,26 +80,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
             await logoutRequest()
         } catch {
-            // even if this fails (e.g. token already expired), still clear local state
+            // ignore
         }
-        setAccessToken(null)
+
+        clearSession()
         queryClient.clear()
-        navigate("/login", { replace: true })   // ← add this
+        navigate("/login", { replace: true })
     }
 
     const value: AuthContextValue = {
         user: user ?? null,
         isAuthenticated: !!user,
-        isLoading,
+        isLoading: isPending,
         assignedStage,
         setSession,
         logout,
     }
 
-    return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+    return (
+        <AuthContext.Provider value={value}>
+            {children}
+        </AuthContext.Provider>
+    )
 }
-
-// ─── Hook ────────────────────────────────────────────────────────────────
 
 export function useAuth() {
     const ctx = useContext(AuthContext)

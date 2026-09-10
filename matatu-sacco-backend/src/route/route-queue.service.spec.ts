@@ -19,8 +19,6 @@ function mockQueryBuilder(overrides: Partial<Record<string, any>> = {}) {
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
         innerJoinAndSelect: jest.fn().mockReturnThis(),
-        leftJoin: jest.fn().mockReturnThis(),
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
