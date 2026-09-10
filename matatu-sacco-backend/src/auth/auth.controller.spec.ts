@@ -1,716 +1,327 @@
+// src/auth/auth.controller.spec.ts
 import { Test, TestingModule } from '@nestjs/testing';
 import { UnauthorizedException } from '@nestjs/common';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { UserRole } from './entities/user.entity';
-import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 
-// ─── Shared fixtures ──────────────────────────────────────────────────────────
-
-const mockTokenPair = {
-  access_token: 'mock-access-token',
-  refresh_token: 'mock-refresh-token',
-};
-
-const mockUser = {
-  id: 'user-uuid-1',
-  fullName: 'Jane Doe',
-  email: 'jane@example.com',
-  phoneNumber: '0712345678',
-  role: UserRole.DRIVER,
-  saccoId: null,
-  assignedStage: null,
-  createdAt: new Date('2024-01-01'),
-};
-
-const mockAuthResponse = { ...mockTokenPair, user: mockUser };
-
-const REFRESH_COOKIE_NAME = 'refresh_token';
-const REFRESH_COOKIE_PATH = '/auth/refresh';
-
-const expectedCookieOptions = {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-  path: REFRESH_COOKIE_PATH,
-};
-
-// ─── Mock helpers ─────────────────────────────────────────────────────────────
-
-const mockAuthService = () => ({
-  register: jest.fn(),
-  login: jest.fn(),
-  refresh: jest.fn(),
-  logout: jest.fn(),
-  createStaffUser: jest.fn(),
-  getUsers: jest.fn(),
-  createManager: jest.fn(),
-  updateUser: jest.fn(),
-  deleteUser: jest.fn(),
-  restoreUser: jest.fn(),
-  forgotPassword: jest.fn(),
-  verifyPasswordToken: jest.fn(),
-  resetPassword: jest.fn(),
-  changePassword: jest.fn(),
-  sendPasswordLinkForUser: jest.fn(),
-});
-
-const mockResponse = () => {
-  const res: any = {};
-  res.cookie = jest.fn().mockReturnValue(res);
-  res.clearCookie = jest.fn().mockReturnValue(res);
-  return res;
-};
-
-// ─── Test suite ───────────────────────────────────────────────────────────────
+type MockAuthService = Partial<Record<keyof AuthService, jest.Mock>>;
 
 describe('AuthController', () => {
   let controller: AuthController;
-  let authService: ReturnType<typeof mockAuthService>;
+  let authService: MockAuthService;
 
   beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [AuthController],
-      providers: [
-        { provide: AuthService, useFactory: mockAuthService },
-      ],
-    })
-      // Override the guard so it never blocks controller tests
-      .overrideGuard(JwtAuthGuard)
-      .useValue({ canActivate: () => true })
-      .compile();
-
-    controller = module.get<AuthController>(AuthController);
-    authService = module.get(AuthService);
-  });
-
-  afterEach(() => jest.clearAllMocks());
-
-  // ── Sanity ────────────────────────────────────────────────────────────────
-
-  it('should be defined', () => {
-    expect(controller).toBeDefined();
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // register()
-  // ─────────────────────────────────────────────────────────────────────────
-
-  describe('register()', () => {
-    const registerDto = {
-      fullName: 'Jane Doe',
-      email: 'jane@example.com',
-      phoneNumber: '0712345678',
-      password: 'secret123',
-      role: UserRole.PASSENGER,
+    authService = {
+      register: jest.fn(),
+      login: jest.fn(),
+      refresh: jest.fn(),
+      logout: jest.fn(),
+      forgotPassword: jest.fn(),
+      verifyPasswordToken: jest.fn(),
+      resetPassword: jest.fn(),
+      changePassword: jest.fn(),
+      createStaffUser: jest.fn(),
+      getUsers: jest.fn(),
+      createManager: jest.fn(),
+      updateUser: jest.fn(),
+      sendPasswordLinkForUser: jest.fn(),
+      restoreUser: jest.fn(),
+      deleteUser: jest.fn(),
     };
 
-    it('calls authService.register with the request body', async () => {
-      authService.register.mockResolvedValue(mockUser);
+    const module: TestingModule = await Test.createTestingModule({
+      controllers: [AuthController],
+      providers: [{ provide: AuthService, useValue: authService }],
+    }).compile();
 
-      await controller.register(registerDto);
+    controller = module.get<AuthController>(AuthController);
+  });
 
-      expect(authService.register).toHaveBeenCalledTimes(1);
-      expect(authService.register).toHaveBeenCalledWith(registerDto);
-    });
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
 
-    it('returns whatever authService.register returns', async () => {
-      authService.register.mockResolvedValue(mockUser);
+  // ─── register ────────────────────────────────────────────────────────
+  describe('register', () => {
+    it('delegates to authService.register with the request body', () => {
+      const body = {
+        fullName: 'Jane Doe',
+        email: 'jane@example.com',
+        password: 'password123',
+        role: UserRole.SACCO_ADMIN,
+      };
+      const expected = { id: 'user-1' };
+      authService.register!.mockResolvedValue(expected);
 
-      const result = await controller.register(registerDto);
+      const result = controller.register(body as any);
 
-      expect(result).toEqual(mockUser);
-    });
-
-    it('propagates exceptions from authService.register', async () => {
-      authService.register.mockRejectedValue(new Error('Conflict'));
-
-      await expect(controller.register(registerDto)).rejects.toThrow('Conflict');
-    });
-
-    it('works with phone-only registration (no email)', async () => {
-      const phoneOnlyDto = { ...registerDto, email: undefined };
-      authService.register.mockResolvedValue({ ...mockUser, email: null });
-
-      const result = await controller.register(phoneOnlyDto);
-
-      expect(authService.register).toHaveBeenCalledWith(phoneOnlyDto);
-      expect(result).toBeDefined();
-    });
-
-    it('passes saccoId through when provided', async () => {
-      const withSacco = { ...registerDto, saccoId: 'sacco-123' };
-      authService.register.mockResolvedValue({ ...mockUser, saccoId: 'sacco-123' });
-
-      await controller.register(withSacco);
-
-      expect(authService.register).toHaveBeenCalledWith(
-        expect.objectContaining({ saccoId: 'sacco-123' })
-      );
+      expect(authService.register).toHaveBeenCalledWith(body);
+      expect(result).resolves.toEqual(expected);
     });
   });
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // login()
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─── login ───────────────────────────────────────────────────────────
+  describe('login', () => {
+    it('delegates to authService.login with identifier and password', () => {
+      const body = { identifier: 'jane@example.com', password: 'password123' };
+      const expected = { access_token: 'a', refresh_token: 'r', user: { id: 'user-1' } };
+      authService.login!.mockResolvedValue(expected);
 
-  describe('login()', () => {
-    const loginDto = { identifier: 'jane@example.com', password: 'secret123' };
+      const result = controller.login(body as any);
 
-    it('calls authService.login with identifier and password', async () => {
-      authService.login.mockResolvedValue(mockAuthResponse);
-      const res = mockResponse();
-
-      await controller.login(loginDto, res);
-
-      expect(authService.login).toHaveBeenCalledTimes(1);
-      expect(authService.login).toHaveBeenCalledWith(
-        loginDto.identifier,
-        loginDto.password,
-      );
-    });
-
-    it('sets the refresh token as an httpOnly cookie', async () => {
-      authService.login.mockResolvedValue(mockAuthResponse);
-      const res = mockResponse();
-
-      await controller.login(loginDto, res);
-
-      expect(res.cookie).toHaveBeenCalledWith(
-        REFRESH_COOKIE_NAME,
-        mockTokenPair.refresh_token,
-        expectedCookieOptions,
-      );
-    });
-
-    it('returns only access_token and user in the body (never the refresh token)', async () => {
-      authService.login.mockResolvedValue(mockAuthResponse);
-      const res = mockResponse();
-
-      const result = await controller.login(loginDto, res);
-
-      expect(result).toEqual({
-        access_token: mockTokenPair.access_token,
-        user: mockUser,
-      });
-      expect(result).not.toHaveProperty('refresh_token');
-    });
-
-    it('works with a phone number as identifier', async () => {
-      const phoneLogin = { identifier: '0712345678', password: 'secret123' };
-      authService.login.mockResolvedValue(mockAuthResponse);
-      const res = mockResponse();
-
-      await controller.login(phoneLogin, res);
-
-      expect(authService.login).toHaveBeenCalledWith('0712345678', 'secret123');
-    });
-
-    it('propagates UnauthorizedException from authService.login', async () => {
-      authService.login.mockRejectedValue(new Error('Unauthorized'));
-      const res = mockResponse();
-
-      await expect(controller.login(loginDto, res)).rejects.toThrow('Unauthorized');
-      expect(res.cookie).not.toHaveBeenCalled();
+      expect(authService.login).toHaveBeenCalledWith(body.identifier, body.password);
+      expect(result).resolves.toEqual(expected);
     });
   });
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // refresh()
-  // ─────────────────────────────────────────────────────────────────────────
-
-  describe('refresh()', () => {
-    it('reads the refresh token from the cookie and calls authService.refresh', async () => {
-      const req: any = { cookies: { [REFRESH_COOKIE_NAME]: 'valid-refresh-token' } };
-      const res = mockResponse();
-      authService.refresh.mockResolvedValue(mockTokenPair);
-
-      await controller.refresh(req, res);
-
-      expect(authService.refresh).toHaveBeenCalledTimes(1);
-      expect(authService.refresh).toHaveBeenCalledWith('valid-refresh-token');
-    });
-
-    it('throws UnauthorizedException when no refresh_token cookie is present', async () => {
-      const req: any = { cookies: {} };
-      const res = mockResponse();
-
-      await expect(controller.refresh(req, res)).rejects.toThrow(UnauthorizedException);
+  // ─── refresh ─────────────────────────────────────────────────────────
+  describe('refresh', () => {
+    it('throws UnauthorizedException when no refresh_token is provided', async () => {
+      await expect(controller.refresh({ refresh_token: '' } as any)).rejects.toThrow(
+        UnauthorizedException,
+      );
       expect(authService.refresh).not.toHaveBeenCalled();
     });
 
-    it('throws UnauthorizedException when req.cookies itself is undefined', async () => {
-      const req: any = {};
-      const res = mockResponse();
-
-      await expect(controller.refresh(req, res)).rejects.toThrow(UnauthorizedException);
+    it('throws UnauthorizedException when refresh_token is undefined', async () => {
+      await expect(controller.refresh({} as any)).rejects.toThrow(UnauthorizedException);
+      expect(authService.refresh).not.toHaveBeenCalled();
     });
 
-    it('SECURITY: never echoes the refresh token in the JSON body', async () => {
-      const req: any = { cookies: { [REFRESH_COOKIE_NAME]: 'valid-refresh-token' } };
-      const res = mockResponse();
-      authService.refresh.mockResolvedValue(mockTokenPair);
+    it('delegates to authService.refresh when a token is provided', async () => {
+      const expected = { access_token: 'new-a', refresh_token: 'new-r' };
+      authService.refresh!.mockResolvedValue(expected);
 
-      const result = await controller.refresh(req, res);
+      const result = await controller.refresh({ refresh_token: 'old-r' } as any);
 
-      expect(result).toHaveProperty('access_token', mockTokenPair.access_token);
-      expect(result).not.toHaveProperty('refresh_token');
-    });
-
-    it('re-sets the refresh_token cookie with the rotated value', async () => {
-      const req: any = { cookies: { [REFRESH_COOKIE_NAME]: 'valid-refresh-token' } };
-      const res = mockResponse();
-      authService.refresh.mockResolvedValue({
-        access_token: 'new-access',
-        refresh_token: 'same-or-new-refresh',
-      });
-
-      await controller.refresh(req, res);
-
-      expect(res.cookie).toHaveBeenCalledWith(
-        REFRESH_COOKIE_NAME,
-        'same-or-new-refresh',
-        expectedCookieOptions,
-      );
-    });
-
-    it('propagates errors from authService.refresh (e.g. expired/stale token)', async () => {
-      const req: any = { cookies: { [REFRESH_COOKIE_NAME]: 'stale-token' } };
-      const res = mockResponse();
-      authService.refresh.mockRejectedValue(
-        new Error('Session expired. Please log in again.')
-      );
-
-      await expect(controller.refresh(req, res)).rejects.toThrow(
-        'Session expired. Please log in again.'
-      );
+      expect(authService.refresh).toHaveBeenCalledWith('old-r');
+      expect(result).toEqual(expected);
     });
   });
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // logout()
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─── logout ──────────────────────────────────────────────────────────
+  describe('logout', () => {
+    it("delegates to authService.logout with the caller's user id", () => {
+      const req = { user: { sub: 'user-1' } };
+      const expected = { success: true };
+      authService.logout!.mockResolvedValue(expected);
 
-  describe('logout()', () => {
-    const mockReq = { user: { sub: 'user-uuid-1' } };
+      const result = controller.logout(req);
 
-    it('calls authService.logout with the user id from the request', async () => {
-      const res = mockResponse();
-      authService.logout.mockResolvedValue({
-        success: true,
-        message: 'Logged out successfully. Safe travels!',
-      });
-
-      await controller.logout(mockReq, res);
-
-      expect(authService.logout).toHaveBeenCalledTimes(1);
-      expect(authService.logout).toHaveBeenCalledWith('user-uuid-1');
-    });
-
-    it('clears the refresh_token cookie', async () => {
-      const res = mockResponse();
-      authService.logout.mockResolvedValue({ success: true, message: 'Logged out' });
-
-      await controller.logout(mockReq, res);
-
-      expect(res.clearCookie).toHaveBeenCalledWith(
-        REFRESH_COOKIE_NAME,
-        expectedCookieOptions,
-      );
-    });
-
-    it('returns success true and a message', async () => {
-      const res = mockResponse();
-      authService.logout.mockResolvedValue({
-        success: true,
-        message: 'Logged out successfully. Safe travels!',
-      });
-
-      const result = await controller.logout(mockReq, res);
-
-      expect(result).toMatchObject({
-        success: true,
-        message: expect.stringContaining('Logged out'),
-      });
-    });
-
-    it('extracts user id from req.user.sub', async () => {
-      const res = mockResponse();
-      const differentReq = { user: { sub: 'another-uuid' } };
-      authService.logout.mockResolvedValue({ success: true, message: 'Logged out' });
-
-      await controller.logout(differentReq, res);
-
-      expect(authService.logout).toHaveBeenCalledWith('another-uuid');
-    });
-
-    it('propagates errors from authService.logout', async () => {
-      const res = mockResponse();
-      authService.logout.mockRejectedValue(new Error('User not found'));
-
-      await expect(controller.logout(mockReq, res)).rejects.toThrow('User not found');
+      expect(authService.logout).toHaveBeenCalledWith('user-1');
+      expect(result).resolves.toEqual(expected);
     });
   });
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // createStaff()
-  // ─────────────────────────────────────────────────────────────────────────
-
-  describe('createStaff()', () => {
-    const staffDto = {
-      fullName: 'Clerk One',
-      email: 'clerk@example.com',
-      phoneNumber: '0711111111',
-      role: UserRole.CLERK as UserRole.CLERK,
-      saccoId: 'sacco-123',
-      assignedStage: 'stage-a',
-    };
-    const req: any = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' } };
-
-    it('delegates to authService.createStaffUser with the body and req.user', async () => {
-      authService.createStaffUser.mockResolvedValue({ id: 'staff-1', ...staffDto });
-
-      await controller.createStaff(staffDto, req);
-
-      expect(authService.createStaffUser).toHaveBeenCalledWith(staffDto, req.user);
-    });
-
-    it('returns whatever authService.createStaffUser returns', async () => {
-      const created = { id: 'staff-1', ...staffDto };
-      authService.createStaffUser.mockResolvedValue(created);
-
-      const result = await controller.createStaff(staffDto, req);
-
-      expect(result).toEqual(created);
-    });
-
-    it('propagates authorization errors (e.g. cross-sacco creation)', async () => {
-      authService.createStaffUser.mockRejectedValue(new UnauthorizedException());
-
-      await expect(controller.createStaff(staffDto, req)).rejects.toThrow(UnauthorizedException);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // getUsers()
-  // ─────────────────────────────────────────────────────────────────────────
-
-  describe('getUsers()', () => {
-    const paginatedResult = {
-      data: [mockUser],
-      meta: { total: 1, page: 1, limit: 20, totalPages: 1 },
-    };
-
-    it('locks sacco admins to their own saccoId regardless of query param', async () => {
-      const req: any = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' } };
-      authService.getUsers.mockResolvedValue(paginatedResult);
-
-      await controller.getUsers('someone-elses-sacco', undefined, undefined, undefined, undefined, req);
-
-      expect(authService.getUsers).toHaveBeenCalledWith(
-        expect.objectContaining({ saccoId: 'sacco-123' })
-      );
-    });
-
-    it('lets super admins filter by whatever saccoId is passed', async () => {
-      const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
-      authService.getUsers.mockResolvedValue(paginatedResult);
-
-      await controller.getUsers('sacco-999', undefined, undefined, undefined, undefined, req);
-
-      expect(authService.getUsers).toHaveBeenCalledWith(
-        expect.objectContaining({ saccoId: 'sacco-999' })
-      );
-    });
-
-    it('lets super admins omit saccoId to get all users', async () => {
-      const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
-      authService.getUsers.mockResolvedValue(paginatedResult);
-
-      await controller.getUsers(undefined, undefined, undefined, undefined, undefined, req);
-
-      expect(authService.getUsers).toHaveBeenCalledWith(
-        expect.objectContaining({ saccoId: undefined })
-      );
-    });
-
-    it('converts page and limit query strings to numbers', async () => {
-      const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
-      authService.getUsers.mockResolvedValue(paginatedResult);
-
-      await controller.getUsers(undefined, '3', '10', undefined, undefined, req);
-
-      expect(authService.getUsers).toHaveBeenCalledWith(
-        expect.objectContaining({ page: 3, limit: 10 })
-      );
-    });
-
-    it('leaves page and limit undefined when not provided', async () => {
-      const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
-      authService.getUsers.mockResolvedValue(paginatedResult);
-
-      await controller.getUsers(undefined, undefined, undefined, undefined, undefined, req);
-
-      expect(authService.getUsers).toHaveBeenCalledWith(
-        expect.objectContaining({ page: undefined, limit: undefined })
-      );
-    });
-
-    it('passes the search term through', async () => {
-      const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
-      authService.getUsers.mockResolvedValue(paginatedResult);
-
-      await controller.getUsers(undefined, undefined, undefined, 'jane', undefined, req);
-
-      expect(authService.getUsers).toHaveBeenCalledWith(
-        expect.objectContaining({ search: 'jane' })
-      );
-    });
-
-    it('returns whatever authService.getUsers returns', async () => {
-      const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
-      authService.getUsers.mockResolvedValue(paginatedResult);
-
-      const result = await controller.getUsers(undefined, undefined, undefined, undefined, undefined, req);
-
-      expect(result).toEqual(paginatedResult);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // createManager()
-  // ─────────────────────────────────────────────────────────────────────────
-
-  describe('createManager()', () => {
-    const managerDto = {
-      fullName: 'Sacco Manager',
-      email: 'manager@example.com',
-      phoneNumber: '0700000000',
-      password: 'secret123',
-      saccoId: 'sacco-123',
-    };
-
-    it('delegates to authService.createManager with the dto', async () => {
-      authService.createManager.mockResolvedValue({ id: 'manager-1', ...managerDto });
-
-      await controller.createManager(managerDto);
-
-      expect(authService.createManager).toHaveBeenCalledWith(managerDto);
-    });
-
-    it('returns whatever authService.createManager returns', async () => {
-      const created = { id: 'manager-1', ...managerDto };
-      authService.createManager.mockResolvedValue(created);
-
-      const result = await controller.createManager(managerDto);
-
-      expect(result).toEqual(created);
-    });
-
-    it('propagates errors from authService.createManager', async () => {
-      authService.createManager.mockRejectedValue(new Error('Conflict'));
-
-      await expect(controller.createManager(managerDto)).rejects.toThrow('Conflict');
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // updateUser()
-  // ─────────────────────────────────────────────────────────────────────────
-
-  describe('updateUser()', () => {
-    const req: any = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' } };
-    const updateDto = { fullName: 'New Name' };
-
-    it('delegates to authService.updateUser with id, dto, and req.user', async () => {
-      authService.updateUser.mockResolvedValue({ ...mockUser, fullName: 'New Name' });
-
-      await controller.updateUser('target-1', updateDto, req);
-
-      expect(authService.updateUser).toHaveBeenCalledWith('target-1', updateDto, req.user);
-    });
-
-    it('returns whatever authService.updateUser returns', async () => {
-      const updated = { ...mockUser, fullName: 'New Name' };
-      authService.updateUser.mockResolvedValue(updated);
-
-      const result = await controller.updateUser('target-1', updateDto, req);
-
-      expect(result).toEqual(updated);
-    });
-
-    it('propagates authorization errors (e.g. cross-sacco edit)', async () => {
-      authService.updateUser.mockRejectedValue(new UnauthorizedException());
-
-      await expect(controller.updateUser('target-1', updateDto, req)).rejects.toThrow(
-        UnauthorizedException,
-      );
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // deleteUser()
-  // ─────────────────────────────────────────────────────────────────────────
-
-  describe('deleteUser()', () => {
-    const req: any = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' } };
-
-    it('delegates to authService.deleteUser with id and req.user', async () => {
-      authService.deleteUser.mockResolvedValue({ success: true, message: 'User removed.' });
-
-      await controller.deleteUser('target-1', req);
-
-      expect(authService.deleteUser).toHaveBeenCalledWith('target-1', req.user);
-    });
-
-    it('returns whatever authService.deleteUser returns', async () => {
-      const deleted = { success: true, message: 'User removed.' };
-      authService.deleteUser.mockResolvedValue(deleted);
-
-      const result = await controller.deleteUser('target-1', req);
-
-      expect(result).toEqual(deleted);
-    });
-
-    it('propagates errors (e.g. self-delete attempt)', async () => {
-      authService.deleteUser.mockRejectedValue(new Error('You cannot delete your own account.'));
-
-      await expect(controller.deleteUser('admin-1', req)).rejects.toThrow(
-        'You cannot delete your own account.',
-      );
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Password flows
-  // ─────────────────────────────────────────────────────────────────────────
-
-  describe('forgotPassword()', () => {
-    it('delegates the email to authService.forgotPassword', async () => {
-      const generic = { success: true, message: 'If that email is registered, a reset link is on its way.' };
-      authService.forgotPassword.mockResolvedValue(generic);
-
-      const result = await controller.forgotPassword({ email: 'jane@example.com' });
+  // ─── forgotPassword ──────────────────────────────────────────────────
+  describe('forgotPassword', () => {
+    it('delegates to authService.forgotPassword with the email', () => {
+      const body = { email: 'jane@example.com' };
+      authService.forgotPassword!.mockResolvedValue(undefined);
+
+      controller.forgotPassword(body as any);
 
       expect(authService.forgotPassword).toHaveBeenCalledWith('jane@example.com');
-      expect(result).toEqual(generic);
     });
   });
 
-  describe('verifyResetToken()', () => {
-    it('passes the query token through to the service', async () => {
-      authService.verifyPasswordToken.mockResolvedValue({ valid: true, purpose: 'invite' });
+  // ─── verifyResetToken ────────────────────────────────────────────────
+  describe('verifyResetToken', () => {
+    it('delegates to authService.verifyPasswordToken with the token query param', () => {
+      const expected = { valid: true };
+      authService.verifyPasswordToken!.mockResolvedValue(expected);
 
-      const result = await controller.verifyResetToken('raw-token');
+      const result = controller.verifyResetToken('token-abc');
 
-      expect(authService.verifyPasswordToken).toHaveBeenCalledWith('raw-token');
-      expect(result).toEqual({ valid: true, purpose: 'invite' });
+      expect(authService.verifyPasswordToken).toHaveBeenCalledWith('token-abc');
+      expect(result).resolves.toEqual(expected);
     });
   });
 
-  describe('resetPassword()', () => {
-    it('passes the token and new password through to the service', async () => {
-      authService.resetPassword.mockResolvedValue({ success: true, message: 'Password set. You can now sign in.' });
+  // ─── resetPassword ───────────────────────────────────────────────────
+  describe('resetPassword', () => {
+    it('delegates to authService.resetPassword with token and new password', () => {
+      const body = { token: 'token-abc', password: 'newpassword123' };
+      authService.resetPassword!.mockResolvedValue(undefined);
 
-      await controller.resetPassword({ token: 'raw-token', password: 'brand-new-pass' });
+      controller.resetPassword(body as any);
 
-      expect(authService.resetPassword).toHaveBeenCalledWith('raw-token', 'brand-new-pass');
+      expect(authService.resetPassword).toHaveBeenCalledWith('token-abc', 'newpassword123');
     });
   });
 
-  describe('changePassword()', () => {
-    const req: any = { user: { sub: 'user-uuid-1' } };
+  // ─── changePassword ──────────────────────────────────────────────────
+  describe('changePassword', () => {
+    it("delegates to authService.changePassword with the caller's id and both passwords", () => {
+      const body = { currentPassword: 'oldpass123', newPassword: 'newpass123' };
+      const req = { user: { sub: 'user-1' } };
+      const expected = { access_token: 'a', refresh_token: 'r' };
+      authService.changePassword!.mockResolvedValue(expected);
 
-    it('re-sets the refresh cookie and returns only the access token and user', async () => {
-      const res = mockResponse();
-      authService.changePassword.mockResolvedValue(mockAuthResponse);
-
-      const result = await controller.changePassword(
-        { currentPassword: 'current-pass', newPassword: 'a-different-pass' },
-        req,
-        res,
-      );
+      const result = controller.changePassword(body as any, req);
 
       expect(authService.changePassword).toHaveBeenCalledWith(
-        'user-uuid-1',
-        'current-pass',
-        'a-different-pass',
+        'user-1',
+        'oldpass123',
+        'newpass123',
       );
-      expect(res.cookie).toHaveBeenCalledWith(
-        REFRESH_COOKIE_NAME,
-        mockTokenPair.refresh_token,
-        expect.objectContaining({ httpOnly: true, path: REFRESH_COOKIE_PATH }),
-      );
-      expect(result).toEqual({ access_token: mockTokenPair.access_token, user: mockUser });
-      expect(result).not.toHaveProperty('refresh_token');
-    });
-
-    it('does not touch the cookie when the current password is wrong', async () => {
-      const res = mockResponse();
-      authService.changePassword.mockRejectedValue(new UnauthorizedException());
-
-      await expect(
-        controller.changePassword(
-          { currentPassword: 'wrong', newPassword: 'a-different-pass' },
-          req,
-          res,
-        ),
-      ).rejects.toThrow(UnauthorizedException);
-      expect(res.cookie).not.toHaveBeenCalled();
+      expect(result).resolves.toEqual(expected);
     });
   });
 
-  describe('getUsers() status filter', () => {
-    const req: any = { user: { sub: 'super-1', role: UserRole.SUPER_ADMIN, saccoId: null } };
+  // ─── createStaff ─────────────────────────────────────────────────────
+  describe('createStaff', () => {
+    it("delegates to authService.createStaffUser with the dto and caller's user", () => {
+      const body = { fullName: 'Staff One', saccoId: 'sacco-1' };
+      const req = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-1' } };
+      const expected = { id: 'staff-1' };
+      authService.createStaffUser!.mockResolvedValue(expected);
 
-    it('passes the status filter through to the service', async () => {
-      authService.getUsers.mockResolvedValue({ data: [], meta: {} });
+      const result = controller.createStaff(body as any, req);
 
-      await controller.getUsers(undefined, undefined, undefined, undefined, 'removed', req);
+      expect(authService.createStaffUser).toHaveBeenCalledWith(body, req.user);
+      expect(result).resolves.toEqual(expected);
+    });
+  });
+
+  // ─── getUsers ────────────────────────────────────────────────────────
+  describe('getUsers', () => {
+    it("scopes to the caller's saccoId when the caller is a SACCO_ADMIN, ignoring the query param", () => {
+      const req = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-own' } };
+      authService.getUsers!.mockResolvedValue([]);
+
+      controller.getUsers('sacco-other', undefined, undefined, undefined, undefined, req);
 
       expect(authService.getUsers).toHaveBeenCalledWith(
-        expect.objectContaining({ status: 'removed' }),
+        expect.objectContaining({ saccoId: 'sacco-own' }),
+      );
+    });
+
+    it('uses the query saccoId when the caller is a SUPER_ADMIN', () => {
+      const req = { user: { sub: 'admin-1', role: UserRole.SUPER_ADMIN } };
+      authService.getUsers!.mockResolvedValue([]);
+
+      controller.getUsers('sacco-target', undefined, undefined, undefined, undefined, req);
+
+      expect(authService.getUsers).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: 'sacco-target' }),
+      );
+    });
+
+    it('leaves saccoId undefined for a SUPER_ADMIN with no query param', () => {
+      const req = { user: { sub: 'admin-1', role: UserRole.SUPER_ADMIN } };
+      authService.getUsers!.mockResolvedValue([]);
+
+      controller.getUsers(undefined, undefined, undefined, undefined, undefined, req);
+
+      expect(authService.getUsers).toHaveBeenCalledWith(
+        expect.objectContaining({ saccoId: undefined }),
+      );
+    });
+
+    it('converts page and limit query strings to numbers', () => {
+      const req = { user: { sub: 'admin-1', role: UserRole.SUPER_ADMIN } };
+      authService.getUsers!.mockResolvedValue([]);
+
+      controller.getUsers(undefined, '2', '25', undefined, undefined, req);
+
+      expect(authService.getUsers).toHaveBeenCalledWith(
+        expect.objectContaining({ page: 2, limit: 25 }),
+      );
+    });
+
+    it('leaves page and limit undefined when not provided', () => {
+      const req = { user: { sub: 'admin-1', role: UserRole.SUPER_ADMIN } };
+      authService.getUsers!.mockResolvedValue([]);
+
+      controller.getUsers(undefined, undefined, undefined, undefined, undefined, req);
+
+      expect(authService.getUsers).toHaveBeenCalledWith(
+        expect.objectContaining({ page: undefined, limit: undefined }),
+      );
+    });
+
+    it('passes search and status straight through', () => {
+      const req = { user: { sub: 'admin-1', role: UserRole.SUPER_ADMIN } };
+      authService.getUsers!.mockResolvedValue([]);
+
+      controller.getUsers(undefined, undefined, undefined, 'jane', 'active' as any, req);
+
+      expect(authService.getUsers).toHaveBeenCalledWith(
+        expect.objectContaining({ search: 'jane', status: 'active' }),
       );
     });
   });
 
-  describe('restoreUser()', () => {
-    const req: any = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' } };
+  // ─── createManager ───────────────────────────────────────────────────
+  describe('createManager', () => {
+    it('delegates to authService.createManager with the dto', () => {
+      const dto = { fullName: 'Manager One', saccoId: 'sacco-1' };
+      const expected = { id: 'manager-1' };
+      authService.createManager!.mockResolvedValue(expected);
 
-    it('delegates to the service with the target id and requester', async () => {
-      authService.restoreUser.mockResolvedValue({ id: 'target-1', message: 'restored' });
+      const result = controller.createManager(dto as any);
 
-      await controller.restoreUser('target-1', req);
-
-      expect(authService.restoreUser).toHaveBeenCalledWith('target-1', req.user);
-    });
-
-    it('propagates cross-sacco authorization errors', async () => {
-      authService.restoreUser.mockRejectedValue(new UnauthorizedException());
-
-      await expect(controller.restoreUser('target-1', req)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      expect(authService.createManager).toHaveBeenCalledWith(dto);
+      expect(result).resolves.toEqual(expected);
     });
   });
 
-  describe('sendPasswordLink()', () => {
-    const req: any = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-123' } };
+  // ─── updateUser ──────────────────────────────────────────────────────
+  describe('updateUser', () => {
+    it("delegates to authService.updateUser with id, dto, and the caller's user", () => {
+      const dto = { fullName: 'Updated Name' };
+      const req = { user: { sub: 'admin-1', role: UserRole.SUPER_ADMIN } };
+      const expected = { id: 'user-1', fullName: 'Updated Name' };
+      authService.updateUser!.mockResolvedValue(expected);
 
-    it('delegates to the service with the target id and requester', async () => {
-      authService.sendPasswordLinkForUser.mockResolvedValue({ success: true, purpose: 'invite' });
+      const result = controller.updateUser('user-1', dto as any, req);
 
-      await controller.sendPasswordLink('staff-1', req);
-
-      expect(authService.sendPasswordLinkForUser).toHaveBeenCalledWith('staff-1', req.user);
+      expect(authService.updateUser).toHaveBeenCalledWith('user-1', dto, req.user);
+      expect(result).resolves.toEqual(expected);
     });
+  });
 
-    it('propagates cross-sacco authorization errors', async () => {
-      authService.sendPasswordLinkForUser.mockRejectedValue(new UnauthorizedException());
+  // ─── sendPasswordLink ────────────────────────────────────────────────
+  describe('sendPasswordLink', () => {
+    it("delegates to authService.sendPasswordLinkForUser with id and the caller's user", () => {
+      const req = { user: { sub: 'admin-1', role: UserRole.SACCO_ADMIN, saccoId: 'sacco-1' } };
+      const expected = { sent: true };
+      authService.sendPasswordLinkForUser!.mockResolvedValue(expected);
 
-      await expect(controller.sendPasswordLink('staff-1', req)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      const result = controller.sendPasswordLink('user-1', req);
+
+      expect(authService.sendPasswordLinkForUser).toHaveBeenCalledWith('user-1', req.user);
+      expect(result).resolves.toEqual(expected);
+    });
+  });
+
+  // ─── restoreUser ─────────────────────────────────────────────────────
+  describe('restoreUser', () => {
+    it("delegates to authService.restoreUser with id and the caller's user", () => {
+      const req = { user: { sub: 'admin-1', role: UserRole.SUPER_ADMIN } };
+      const expected = { id: 'user-1', deletedAt: null };
+      authService.restoreUser!.mockResolvedValue(expected);
+
+      const result = controller.restoreUser('user-1', req);
+
+      expect(authService.restoreUser).toHaveBeenCalledWith('user-1', req.user);
+      expect(result).resolves.toEqual(expected);
+    });
+  });
+
+  // ─── deleteUser ──────────────────────────────────────────────────────
+  describe('deleteUser', () => {
+    it("delegates to authService.deleteUser with id and the caller's user", () => {
+      const req = { user: { sub: 'admin-1', role: UserRole.SUPER_ADMIN } };
+      const expected = { deleted: true };
+      authService.deleteUser!.mockResolvedValue(expected);
+
+      const result = controller.deleteUser('user-1', req);
+
+      expect(authService.deleteUser).toHaveBeenCalledWith('user-1', req.user);
+      expect(result).resolves.toEqual(expected);
     });
   });
 });

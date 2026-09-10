@@ -2,7 +2,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { RouteQueueService } from './route-queue.service';
 import { RouteQueue, RouteQueueStatus } from './entities/route-queue.entity';
 import { QueueEntry, QueueEntryStatus } from './entities/queue-entry.entity';
@@ -11,7 +11,11 @@ import { RouteService } from './route.service';
 import { TripService } from '../trip/trip.service';
 import { BookingService } from '../booking/booking.service';
 
-type MockRepo<T = any> = Partial<Record<keyof Repository<T>, jest.Mock>>;
+type MockRepo<T extends ObjectLiteral = any> =
+    Partial<Record<keyof Repository<T>, jest.Mock>> & {
+        manager?: any;
+    };
+
 
 function mockQueryBuilder(overrides: Partial<Record<string, any>> = {}) {
     const qb: any = {
@@ -19,6 +23,8 @@ function mockQueryBuilder(overrides: Partial<Record<string, any>> = {}) {
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
         innerJoinAndSelect: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
@@ -367,11 +373,16 @@ describe('RouteQueueService', () => {
 
     // ─── updateQueueEntry ──────────────────────────────────────────────
     describe('updateQueueEntry', () => {
+        // `position` is added here (typed as number | undefined) purely so
+        // TS knows the literal has that property — the service assigns it
+        // in place when the entry moves to a different route queue, and
+        // later assertions read `entry.position` back off this same object.
         const baseEntry = () => ({
             id: 'qe-1',
             vehicleId: 'vehicle-1',
             status: QueueEntryStatus.WAITING,
             routeQueueId: 'rq-1',
+            position: undefined as number | undefined,
             clockedInAt: new Date('2026-08-17T08:00:00'),
             vehicle: { seatingCapacity: 14 },
             routeQueue: {
@@ -526,10 +537,15 @@ describe('RouteQueueService', () => {
             const entry = entryWithTrip();
             queueEntryRepository.findOne!.mockResolvedValue(entry);
 
+            // `status` is added here (typed as QueueEntryStatus) purely so
+            // TS knows the literal has that property — the service mutates
+            // it in place (WAITING -> BOARDING) and the assertion below
+            // reads `nextWaiting.status` back off this same object.
             const nextWaiting = {
                 id: 'qe-2',
                 vehicleId: 'vehicle-2',
                 vehicle: { seatingCapacity: 14 },
+                status: QueueEntryStatus.WAITING as QueueEntryStatus,
             };
             managerQbQueue = [
                 mockQueryBuilder({ getOne: jest.fn().mockResolvedValue(nextWaiting) }),
