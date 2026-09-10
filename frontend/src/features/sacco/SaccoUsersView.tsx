@@ -48,6 +48,7 @@ import {
     Send,
     Undo2,
     Archive,
+    MapPin,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { InviteLinkPanel } from "@/features/auth/InviteLinkPanel"
@@ -72,28 +73,34 @@ interface SaccoUsersTableProps {
     saccoId?: string
 }
 
-
-
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const ROLE_META: Record<
     string,
-    { label: string; dot: string }
+    { label: string; badgeBg: string; badgeText: string; dot: string }
 > = {
     SUPER_ADMIN: {
         label: "Super Admin",
-        dot: "bg-purple-500",
+        badgeBg: "bg-violet-500/10",
+        badgeText: "text-violet-600 dark:text-violet-400",
+        dot: "bg-violet-500",
     },
     SACCO_ADMIN: {
         label: "Sacco Admin",
+        badgeBg: "bg-blue-500/10",
+        badgeText: "text-blue-600 dark:text-blue-400",
         dot: "bg-blue-500",
     },
     CLERK: {
         label: "Clerk",
+        badgeBg: "bg-muted",
+        badgeText: "text-muted-foreground",
         dot: "bg-emerald-500",
     },
     DRIVER: {
         label: "Driver",
+        badgeBg: "bg-amber-500/10",
+        badgeText: "text-amber-600 dark:text-amber-400",
         dot: "bg-amber-500",
     },
 }
@@ -117,23 +124,30 @@ function formatDate(iso: string) {
     })
 }
 
+// Status dot on the avatar reflects account state, independent of role.
+function statusDotClass(user: User) {
+    if (user.isActive === false) return "bg-muted-foreground/40"
+    if (!user.passwordSetAt) return "bg-amber-500"
+    return "bg-emerald-500"
+}
+
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
 // Shown until the user follows their invite link and picks a password. Until
 // then the account exists but nobody can sign into it.
 function PendingInviteBadge() {
     return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
             <MailWarning className="size-2.5" />
             Invite pending
         </span>
     )
 }
 
-// One place for the resend, used by both the row and the details dialog.
+// One place for the resend, used by both the row and the details panel.
 // The link always comes back; when no email went out (phone-only user, or a
 // failed send) the toast carries a copy action so nothing is lost even from
-// the table row, and the details dialog shows the full share panel.
+// the table row, and the details panel shows the full share panel.
 function useSendPasswordLink() {
     const queryClient = useQueryClient()
 
@@ -167,10 +181,16 @@ function RoleBadge({ role }: { role: string }) {
     if (!meta) return <span className="text-xs text-muted-foreground">{role}</span>
 
     return (
-        <div className="flex items-center gap-1.5">
+        <span
+            className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                meta.badgeBg,
+                meta.badgeText,
+            )}
+        >
             <span className={cn("size-1.5 rounded-full", meta.dot)} />
-            <span className="text-xs text-muted-foreground">{meta.label}</span>
-        </div>
+            {meta.label}
+        </span>
     )
 }
 
@@ -388,11 +408,12 @@ export function SaccoUsersTable({ saccoId }: SaccoUsersTableProps) {
 
                 {/* Content */}
                 {isMobile ? (
-                    <div className="divide-y">
+                    <div className="flex flex-col gap-2.5">
                         {users.map((user) => (
-                            <MobileUserRow
+                            <MobileUserCard
                                 key={user.id}
                                 user={user}
+                                showSacco={!saccoId}
                                 onSelect={() => setSelectedUser(user)}
                             />
                         ))}
@@ -468,27 +489,50 @@ export function SaccoUsersTable({ saccoId }: SaccoUsersTableProps) {
                 )}
             </div>
 
-            {/* Dialogs */}
-            <UserDetailsDialog
-                user={selectedUser}
-                open={!!selectedUser}
-                onOpenChange={() => setSelectedUser(null)}
-                showSacco={!saccoId}
-                onEdit={() => {
-                    if (selectedUser) {
-                        setEditingUser(selectedUser)
-                        setSelectedUser(null)
-                    }
-                }}
-                onDelete={() => {
-                    if (selectedUser) {
-                        setDeletingUser(selectedUser)
-                        setSelectedUser(null)
-                    }
-                }}
-                onRestore={() => selectedUser && restoreMutation.mutate(selectedUser.id)}
-                restoring={restoreMutation.isPending}
-            />
+            {/* Details: centered dialog on desktop, bottom sheet on mobile */}
+            {isMobile ? (
+                <MobileUserDetailsSheet
+                    user={selectedUser}
+                    open={!!selectedUser}
+                    onOpenChange={() => setSelectedUser(null)}
+                    showSacco={!saccoId}
+                    onEdit={() => {
+                        if (selectedUser) {
+                            setEditingUser(selectedUser)
+                            setSelectedUser(null)
+                        }
+                    }}
+                    onDelete={() => {
+                        if (selectedUser) {
+                            setDeletingUser(selectedUser)
+                            setSelectedUser(null)
+                        }
+                    }}
+                    onRestore={() => selectedUser && restoreMutation.mutate(selectedUser.id)}
+                    restoring={restoreMutation.isPending}
+                />
+            ) : (
+                <UserDetailsDialog
+                    user={selectedUser}
+                    open={!!selectedUser}
+                    onOpenChange={() => setSelectedUser(null)}
+                    showSacco={!saccoId}
+                    onEdit={() => {
+                        if (selectedUser) {
+                            setEditingUser(selectedUser)
+                            setSelectedUser(null)
+                        }
+                    }}
+                    onDelete={() => {
+                        if (selectedUser) {
+                            setDeletingUser(selectedUser)
+                            setSelectedUser(null)
+                        }
+                    }}
+                    onRestore={() => selectedUser && restoreMutation.mutate(selectedUser.id)}
+                    restoring={restoreMutation.isPending}
+                />
+            )}
 
             <EditUserDialog
                 user={editingUser}
@@ -546,11 +590,19 @@ function DesktopUserRow({
         >
             <TableCell>
                 <div className="flex items-center gap-3">
-                    <Avatar className="size-8 border-0">
-                        <AvatarFallback className="bg-muted text-[10px] font-medium text-muted-foreground">
-                            {getInitials(user.fullName)}
-                        </AvatarFallback>
-                    </Avatar>
+                    <div className="relative shrink-0">
+                        <Avatar className="size-8 border-0">
+                            <AvatarFallback className="bg-muted text-[10px] font-medium text-muted-foreground">
+                                {getInitials(user.fullName)}
+                            </AvatarFallback>
+                        </Avatar>
+                        <span
+                            className={cn(
+                                "absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-background",
+                                statusDotClass(user),
+                            )}
+                        />
+                    </div>
                     <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
                             <p className="truncate text-sm font-medium">{user.fullName}</p>
@@ -631,39 +683,251 @@ function DesktopUserRow({
     )
 }
 
-// ─── Mobile Row ──────────────────────────────────────────────────────────────
+// ─── Mobile Card ─────────────────────────────────────────────────────────────
+// Full card composition (avatar + status dot, role badge, id/contact line,
+// footer meta bar) replacing the old single-line mobile row.
 
-interface MobileUserRowProps {
+interface MobileUserCardProps {
     user: User
+    showSacco: boolean
     onSelect: () => void
 }
 
-function MobileUserRow({ user, onSelect }: MobileUserRowProps) {
+function MobileUserCard({ user, showSacco, onSelect }: MobileUserCardProps) {
+    const saccoName = useSaccoName(showSacco ? user.saccoId ?? undefined : undefined)
+    const footerLabel =
+        user.role === "CLERK" && user.assignedStage
+            ? user.assignedStage
+            : showSacco && user.saccoId
+                ? saccoName ?? "…"
+                : null
+
     return (
-        <button
+        <div
             onClick={onSelect}
-            className="flex w-full items-center justify-between py-3 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="group cursor-pointer overflow-hidden rounded-xl bg-card shadow-sm ring-1 ring-border/50 transition-all active:scale-[0.99]"
         >
-            <div className="flex items-center gap-3 min-w-0">
-                <Avatar className="size-8 border-0">
-                    <AvatarFallback className="bg-muted text-[10px] font-medium text-muted-foreground">
-                        {getInitials(user.fullName)}
-                    </AvatarFallback>
-                </Avatar>
-                <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{user.fullName}</p>
-                    <div className="flex items-center gap-1.5">
-                        <RoleBadge role={user.role} />
-                        {!user.passwordSetAt && <PendingInviteBadge />}
+            <div className="flex items-start justify-between gap-2 p-3.5">
+                <div className="flex min-w-0 items-start gap-3">
+                    <div className="relative shrink-0">
+                        <Avatar className="size-10 border-0">
+                            <AvatarFallback className="bg-muted text-xs font-medium text-muted-foreground">
+                                {getInitials(user.fullName)}
+                            </AvatarFallback>
+                        </Avatar>
+                        <span
+                            className={cn(
+                                "absolute bottom-0 right-0 size-2.5 rounded-full ring-2 ring-card",
+                                statusDotClass(user),
+                            )}
+                        />
+                    </div>
+                    <div className="flex min-w-0 flex-col gap-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="truncate text-sm font-semibold">{user.fullName}</span>
+                            <RoleBadge role={user.role} />
+                        </div>
+                        <span className="truncate text-xs text-muted-foreground">
+                            {user.email || user.phoneNumber || "—"}
+                        </span>
                     </div>
                 </div>
+                <ChevronRight className="mt-1 size-4 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
             </div>
-            <ChevronRight className="size-4 shrink-0 text-muted-foreground/40" />
-        </button>
+
+            {(footerLabel || !user.passwordSetAt) && (
+                <div className="flex items-center justify-between gap-2 bg-muted/40 px-3.5 py-2">
+                    {footerLabel ? (
+                        <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+                            <MapPin className="size-3 shrink-0" />
+                            <span className="truncate text-[10px] font-medium uppercase tracking-wider">
+                                {footerLabel}
+                            </span>
+                        </div>
+                    ) : (
+                        <span />
+                    )}
+                    {!user.passwordSetAt && <PendingInviteBadge />}
+                </div>
+            )}
+        </div>
     )
 }
 
-// ─── Dialogs ─────────────────────────────────────────────────────────────────
+// ─── Shared details content (used by both the dialog and the sheet) ─────────
+
+function UserDetailsBody({
+    user,
+    showSacco,
+}: {
+    user: User
+    showSacco: boolean
+}) {
+    const saccoName = useSaccoName(user.saccoId ?? undefined)
+
+    return (
+        <div className="grid grid-cols-2 items-start justify-items-start gap-x-6 gap-y-4">
+            <DetailField label="Primary email">
+                {user.email ? (
+                    <a href={`mailto:${user.email}`} className="hover:underline">
+                        {user.email}
+                    </a>
+                ) : (
+                    "—"
+                )}
+            </DetailField>
+
+            <DetailField label="Phone contact">
+                {user.phoneNumber ? (
+                    <a href={`tel:${user.phoneNumber}`} className="hover:underline">
+                        {user.phoneNumber}
+                    </a>
+                ) : (
+                    "—"
+                )}
+            </DetailField>
+
+            <DetailField label="Affiliation">
+                {showSacco ? (user.saccoId ? saccoName ?? "…" : "—") : "This sacco"}
+            </DetailField>
+
+            <DetailField label="Assigned base">
+                {user.assignedStage ?? "—"}
+            </DetailField>
+
+            <DetailField label="Joined">
+                {formatDate(user.createdAt!)}
+            </DetailField>
+        </div>
+    )
+}
+
+// Label/value pair used in the details grid — uppercase micro-label above a
+// normal-weight value, two per row.
+function DetailField({
+    label,
+    children,
+}: {
+    label: string
+    children: React.ReactNode
+}) {
+    return (
+        <div className="space-y-1 text-left">
+            <p className="text-left text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                {label}
+            </p>
+            <p className="truncate text-left text-sm font-medium">{children}</p>
+        </div>
+    )
+}
+
+function UserDetailsFooterActions({
+    user,
+    onEdit,
+    onDelete,
+    onRestore,
+    restoring,
+    sendLink,
+    stacked = false,
+}: {
+    user: User
+    onEdit: () => void
+    onDelete: () => void
+    onRestore: () => void
+    restoring: boolean
+    sendLink: ReturnType<typeof useSendPasswordLink>
+    stacked?: boolean
+}) {
+    const isPending = !user.passwordSetAt
+    const isRemoved = user.isActive === false
+
+    return (
+        <RoleGuard
+            allowed={ALL_ADMINS}
+            fallback={
+                <Button variant="outline" size="sm" className="w-full">
+                    Close
+                </Button>
+            }
+        >
+            {isRemoved ? (
+                <Button size="sm" className="w-full" disabled={restoring} onClick={onRestore}>
+                    {restoring ? (
+                        <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                    ) : (
+                        <Undo2 className="mr-1.5 size-3.5" />
+                    )}
+                    Restore access
+                </Button>
+            ) : (
+                <div className={cn("flex gap-2", stacked ? "flex-col" : "flex-wrap")}>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        disabled={sendLink.isPending}
+                        onClick={() => sendLink.mutate(user.id)}
+                        title={
+                            user.email
+                                ? "Email a fresh link, and get a copy to share"
+                                : "No email on file — you'll get a link to send them"
+                        }
+                    >
+                        {sendLink.isPending ? (
+                            <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                        ) : (
+                            <Send className="mr-1.5 size-3.5" />
+                        )}
+                        {isPending ? "Get invite link" : "Reset password"}
+                    </Button>
+                    <Button variant="outline" size="sm" className="flex-1" onClick={onEdit}>
+                        <Pencil className="mr-1.5 size-3.5" />
+                        Edit
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-destructive hover:text-destructive"
+                        onClick={onDelete}
+                    >
+                        <Trash2 className="mr-1.5 size-3.5" />
+                        Remove
+                    </Button>
+                </div>
+            )}
+        </RoleGuard>
+    )
+}
+
+function UserDetailsHeader({ user }: { user: User }) {
+    const isPending = !user.passwordSetAt
+    const isRemoved = user.isActive === false
+
+    return (
+        <div className="flex items-center gap-3">
+            <Avatar className="size-10">
+                <AvatarFallback className="bg-muted text-sm font-medium text-muted-foreground">
+                    {getInitials(user.fullName)}
+                </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0">
+                <p className="truncate text-base font-semibold">{user.fullName}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <RoleBadge role={user.role} />
+                    {isPending && <PendingInviteBadge />}
+                    {isRemoved && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            <Archive className="size-2.5" />
+                            Removed
+                        </span>
+                    )}
+                </div>
+            </div>
+        </div>
+    )
+}
+
+// ─── Desktop dialog ──────────────────────────────────────────────────────────
 
 function UserDetailsDialog({
     user,
@@ -684,85 +948,18 @@ function UserDetailsDialog({
     onRestore: () => void
     restoring: boolean
 }) {
-    const saccoName = useSaccoName(user?.saccoId ?? undefined)
     const sendLink = useSendPasswordLink()
     if (!user) return null
-
-    const isPending = !user.passwordSetAt
-    const isRemoved = user.isActive === false
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="gap-6 sm:max-w-sm">
                 <DialogHeader className="space-y-4">
-                    <div className="flex items-center gap-3">
-                        <Avatar className="size-10">
-                            <AvatarFallback className="bg-muted text-sm font-medium text-muted-foreground">
-                                {getInitials(user.fullName)}
-                            </AvatarFallback>
-                        </Avatar>
-                        <div className="min-w-0">
-                            <DialogTitle className="truncate text-base">
-                                {user.fullName}
-                            </DialogTitle>
-                            <div className="flex items-center gap-1.5">
-                                <RoleBadge role={user.role} />
-                                {isPending && <PendingInviteBadge />}
-                                {isRemoved && (
-                                    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                                        <Archive className="size-2.5" />
-                                        Removed
-                                    </span>
-                                )}
-                            </div>
-                        </div>
-                    </div>
+                    <UserDetailsHeader user={user} />
                 </DialogHeader>
 
                 <div className="space-y-4">
-                    <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground">Email</p>
-                        {user.email ? (
-                            <a
-                                href={`mailto:${user.email}`}
-                                className="text-sm hover:underline"
-                            >
-                                {user.email}
-                            </a>
-                        ) : (
-                            <p className="text-sm text-muted-foreground">—</p>
-                        )}
-                    </div>
-
-                    <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground">Phone</p>
-                        {user.phoneNumber ? (
-                            <a
-                                href={`tel:${user.phoneNumber}`}
-                                className="text-sm hover:underline"
-                            >
-                                {user.phoneNumber}
-                            </a>
-                        ) : (
-                            <p className="text-sm text-muted-foreground">—</p>
-                        )}
-                    </div>
-
-                    <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground">Assigned stage</p>
-                        <p className="text-sm text-muted-foreground">
-                            {user.assignedStage ?? "—"}
-                        </p>
-                    </div>
-
-                    {showSacco && (
-                        <div className="space-y-1">
-                            <p className="text-xs text-muted-foreground">Sacco</p>
-                            <p className="text-sm text-muted-foreground">
-                                {user.saccoId ? (saccoName ?? "…") : "—"}
-                            </p>
-                        </div>
-                    )}
+                    <UserDetailsBody user={user} showSacco={showSacco} />
 
                     {sendLink.data && (
                         <InviteLinkPanel
@@ -774,82 +971,122 @@ function UserDetailsDialog({
                             purpose={sendLink.data.purpose}
                         />
                     )}
-
-                    <div className="grid grid-cols-2 gap-4 border-t pt-4">
-                        <div className="space-y-1">
-                            <p className="text-xs text-muted-foreground">Joined</p>
-                            <p className="text-xs">{formatDate(user.createdAt!)}</p>
-                        </div>
-
-                    </div>
                 </div>
 
                 <DialogFooter className="flex-wrap gap-2 sm:gap-2">
-                    {/* Admin gets Edit/Remove, Clerk gets Close */}
-                    <RoleGuard
-                        allowed={ALL_ADMINS}
-                        fallback={
-                            <Button variant="outline" size="sm" className="w-full" onClick={onOpenChange}>
-                                Close
-                            </Button>
-                        }
-                    >
-                        {isRemoved ? (
-                            <Button
-                                size="sm"
-                                className="w-full"
-                                disabled={restoring}
-                                onClick={onRestore}
-                            >
-                                {restoring ? (
-                                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                                ) : (
-                                    <Undo2 className="mr-1.5 size-3.5" />
-                                )}
-                                Restore access
-                            </Button>
-                        ) : (
-                            <>
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="flex-1"
-                                    disabled={sendLink.isPending}
-                                    onClick={() => sendLink.mutate(user.id)}
-                                    title={
-                                        user.email
-                                            ? "Email a fresh link, and get a copy to share"
-                                            : "No email on file — you'll get a link to send them"
-                                    }
-                                >
-                                    {sendLink.isPending ? (
-                                        <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                                    ) : (
-                                        <Send className="mr-1.5 size-3.5" />
-                                    )}
-                                    {isPending ? "Get invite link" : "Reset password"}
-                                </Button>
-                                <Button variant="outline" size="sm" className="flex-1" onClick={onEdit}>
-                                    <Pencil className="mr-1.5 size-3.5" />
-                                    Edit
-                                </Button>
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="flex-1 text-destructive hover:text-destructive"
-                                    onClick={onDelete}
-                                >
-                                    <Trash2 className="mr-1.5 size-3.5" />
-                                    Remove
-                                </Button>
-                            </>
-                        )}
-                    </RoleGuard>
+                    <UserDetailsFooterActions
+                        user={user}
+                        onEdit={onEdit}
+                        onDelete={onDelete}
+                        onRestore={onRestore}
+                        restoring={restoring}
+                        sendLink={sendLink}
+                    />
                 </DialogFooter>
             </DialogContent>
         </Dialog>
     )
 }
+
+// ─── Mobile bottom sheet ─────────────────────────────────────────────────────
+// Replaces the centered Dialog on small screens: slides up from the bottom
+// with a drag handle, like a native action sheet, instead of popping up in
+// the middle of the screen.
+
+function MobileUserDetailsSheet({
+    user,
+    open,
+    onOpenChange,
+    showSacco,
+    onEdit,
+    onDelete,
+    onRestore,
+    restoring,
+}: {
+    user: User | null
+    open: boolean
+    onOpenChange: () => void
+    showSacco: boolean
+    onEdit: () => void
+    onDelete: () => void
+    onRestore: () => void
+    restoring: boolean
+}) {
+    const sendLink = useSendPasswordLink()
+
+    // Lock body scroll while the sheet is open.
+    useEffect(() => {
+        if (!open) return
+        const prev = document.body.style.overflow
+        document.body.style.overflow = "hidden"
+        return () => {
+            document.body.style.overflow = prev
+        }
+    }, [open])
+
+    if (!open || !user) return null
+
+    return (
+        <div
+            className="fixed inset-0 z-50 flex items-end bg-black/40 backdrop-blur-[2px] animate-in fade-in duration-200"
+            onClick={(e) => {
+                if (e.target === e.currentTarget) onOpenChange()
+            }}
+        >
+            <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-2xl bg-card shadow-xl animate-in slide-in-from-bottom duration-300">
+                {/* Drag handle + header */}
+                <div className="flex shrink-0 flex-col items-center border-b pb-2 pt-3">
+                    <div className="mb-2 h-1 w-9 rounded-full bg-muted-foreground/20" />
+                    <div className="flex w-full items-center justify-between px-4">
+                        <span className="text-sm font-semibold">User details</span>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8 text-muted-foreground"
+                            onClick={onOpenChange}
+                        >
+                            <X className="size-4" />
+                        </Button>
+                    </div>
+                </div>
+
+                {/* Scrollable content */}
+                <div className="overflow-y-auto p-4">
+                    <div className="space-y-4">
+                        <UserDetailsHeader user={user} />
+                        <UserDetailsBody user={user} showSacco={showSacco} />
+
+                        {sendLink.data && (
+                            <InviteLinkPanel
+                                link={sendLink.data.link}
+                                fullName={user.fullName}
+                                phoneNumber={user.phoneNumber}
+                                email={user.email}
+                                sent={sendLink.data.sent}
+                                purpose={sendLink.data.purpose}
+                            />
+                        )}
+                    </div>
+                </div>
+
+                {/* Footer actions, pinned above the safe area */}
+                <div className="shrink-0 border-t p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
+                    <UserDetailsFooterActions
+                        user={user}
+                        onEdit={onEdit}
+                        onDelete={onDelete}
+                        onRestore={onRestore}
+                        restoring={restoring}
+                        sendLink={sendLink}
+                        stacked
+                    />
+                </div>
+            </div>
+        </div>
+    )
+}
+
+// ─── Dialogs ─────────────────────────────────────────────────────────────────
 
 function EditUserDialog({
     user,
@@ -1069,17 +1306,19 @@ function CreateUserDialog({
 function UsersTableSkeleton({ isMobile }: { isMobile?: boolean }) {
     if (isMobile) {
         return (
-            <div className="divide-y">
+            <div className="flex flex-col gap-2.5">
                 {Array.from({ length: 4 }).map((_, i) => (
-                    <div key={i} className="flex items-center justify-between py-3">
-                        <div className="flex items-center gap-3">
-                            <Skeleton className="size-8 rounded-full" />
-                            <div className="space-y-1.5">
-                                <Skeleton className="h-4 w-32" />
-                                <Skeleton className="h-3 w-16" />
+                    <div key={i} className="rounded-xl bg-card p-3.5 shadow-sm">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <Skeleton className="size-10 rounded-full" />
+                                <div className="space-y-1.5">
+                                    <Skeleton className="h-4 w-32" />
+                                    <Skeleton className="h-3 w-20" />
+                                </div>
                             </div>
+                            <Skeleton className="size-4" />
                         </div>
-                        <Skeleton className="size-4" />
                     </div>
                 ))}
             </div>
