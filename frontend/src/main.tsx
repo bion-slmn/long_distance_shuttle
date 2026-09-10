@@ -8,6 +8,7 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import './index.css'
 import App from './App.tsx'
 import { AuthProvider } from './features/auth/AuthContext.tsx'
+import { InstallPromptProvider } from './pwa/InstallPromptContext'
 
 // Cache lives a full working day so a clerk reopening the app at the stage
 // paints the last-known queue immediately instead of a skeleton, then
@@ -44,28 +45,30 @@ const persister = createSyncStoragePersister({
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <PersistQueryClientProvider
-      client={queryClient}
-      persistOptions={{
-        persister,
-        maxAge: CACHE_MAX_AGE,
-        // Bump when a cached response shape changes so old entries are dropped
-        // rather than hydrated into a component that can't read them.
-        buster: "v1",
-        dehydrateOptions: {
-          shouldDehydrateQuery: (query) => {
-            if (query.state.status !== "success") return false
-            return !NEVER_PERSIST.has(String(query.queryKey[0]))
+    <InstallPromptProvider>
+      <PersistQueryClientProvider
+        client={queryClient}
+        persistOptions={{
+          persister,
+          maxAge: CACHE_MAX_AGE,
+          // Bump when a cached response shape changes so old entries are dropped
+          // rather than hydrated into a component that can't read them.
+          buster: "v1",
+          dehydrateOptions: {
+            shouldDehydrateQuery: (query) => {
+              if (query.state.status !== "success") return false
+              return !NEVER_PERSIST.has(String(query.queryKey[0]))
+            },
           },
-        },
-      }}
-    >
-      <BrowserRouter>
-        <AuthProvider>
-          <App />
-          <ReactQueryDevtools initialIsOpen={false} />
-        </AuthProvider>
-      </BrowserRouter>
-    </PersistQueryClientProvider>
+        }}
+      >
+        <BrowserRouter>
+          <AuthProvider>
+            <App />
+            <ReactQueryDevtools initialIsOpen={false} />
+          </AuthProvider>
+        </BrowserRouter>
+      </PersistQueryClientProvider>
+    </InstallPromptProvider>
   </StrictMode>,
 )

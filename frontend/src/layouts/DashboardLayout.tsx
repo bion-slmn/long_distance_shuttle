@@ -35,6 +35,7 @@ import { Separator } from "@/components/ui/separator"
 import { useAuth } from "@/features/auth/AuthContext"
 import { useSaccoName } from "@/hooks/useSaccoName"
 import { MobileBottomNav } from "./MobileBottomNav"
+import { InstallBanner } from "./InstallBanner"
 
 interface NavItem {
     label: string
@@ -289,6 +290,7 @@ export function DashboardLayout() {
                     </div>
                 </header>
 
+                <InstallBanner />
                 <main className="flex-1 p-4 md:p-6 pb-20 md:pb-6 overflow-x-hidden">
                     <Outlet />
                 </main>
