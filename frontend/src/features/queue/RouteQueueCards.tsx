@@ -201,6 +201,7 @@ function RouteQueueCard({
         route.id,
         selectedDate,
         loadingVehicle?.vehicleId,
+        loadingVehicle?.tripId,
         showManifest
     )
 
@@ -506,133 +507,133 @@ function LoadingVehicleBlock({
                     : "bg-amber-500/10 border-amber-500/20"
             )}
         >
-                {/* Top row: plate, bay badge, elapsed */}
-                <div className="flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-2 min-w-0">
-                        <span className={cn(
-                            "size-2 rounded-full shrink-0",
-                            isFull ? "bg-emerald-500" : "bg-amber-500"
-                        )} />
-                        <span className="truncate text-sm font-bold font-mono">{entry.vehicle.numberPlate}</span>
+            {/* Top row: plate, bay badge, elapsed */}
+            <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-2 min-w-0">
+                    <span className={cn(
+                        "size-2 rounded-full shrink-0",
+                        isFull ? "bg-emerald-500" : "bg-amber-500"
+                    )} />
+                    <span className="truncate text-sm font-bold font-mono">{entry.vehicle.numberPlate}</span>
 
+                </span>
+                <span className="flex items-center gap-2 text-[10px] text-muted-foreground shrink-0">
+                    <span className="flex items-center gap-1">
+                        <ClockIcon className="size-2.5" />
+                        {elapsed}
                     </span>
-                    <span className="flex items-center gap-2 text-[10px] text-muted-foreground shrink-0">
-                        <span className="flex items-center gap-1">
-                            <ClockIcon className="size-2.5" />
-                            {elapsed}
-                        </span>
-                        {onViewManifest && !isFull && (
-                            <button
-                                type="button"
-                                className="text-muted-foreground/60 hover:text-foreground transition-colors"
-                                title="View manifest"
-                                aria-label="View manifest"
+                    {onViewManifest && !isFull && (
+                        <button
+                            type="button"
+                            className="text-muted-foreground/60 hover:text-foreground transition-colors"
+                            title="View manifest"
+                            aria-label="View manifest"
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                onViewManifest()
+                            }}
+                        >
+                            <ClipboardList className="size-3" />
+                        </button>
+                    )}
+                </span>
+            </div>
+
+            {/* Seated count + seats left */}
+            <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1.5 font-medium text-foreground/80">
+                    <Users className="size-3.5" />
+                    {seated} / {capacity} Seated
+                </span>
+                {isFull ? (
+                    <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-500">
+                        <PartyPopper className="size-3" />
+                        Full House!
+                    </span>
+                ) : (
+                    <span className="text-[11px] font-semibold text-amber-500">
+                        {capacity - seated} seat{capacity - seated === 1 ? "" : "s"} left
+                    </span>
+                )}
+            </div>
+
+            {/* Progress bar */}
+            <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                <div
+                    className={cn(
+                        "h-full rounded-full transition-[width] duration-500 ease-out",
+                        isFull ? "bg-emerald-500" : "bg-amber-500"
+                    )}
+                    style={{ width: `${pct}%` }}
+                />
+            </div>
+
+
+            {/* Primary action row */}
+            <div className="flex items-center gap-2">
+                {isFull ? (
+                    <>
+                        {!readOnly && onDispatch && (
+                            <Button
+                                size="sm"
+                                className="flex-1 gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full"
+                                disabled={isUpdating}
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    onDispatch()
+                                }}
+                            >
+                                <Truck className="size-3.5" />
+                                Dispatch
+                            </Button>
+                        )}
+                        {onViewManifest && (
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                className="gap-1.5 rounded-full"
                                 onClick={(e) => {
                                     e.stopPropagation()
                                     onViewManifest()
                                 }}
                             >
-                                <ClipboardList className="size-3" />
-                            </button>
+                                <ClipboardList className="size-3.5" />
+                                Manifest ({entry.seatedCount ?? 0})
+                            </Button>
                         )}
-                    </span>
-                </div>
-
-                {/* Seated count + seats left */}
-                <div className="flex items-center justify-between text-xs">
-                    <span className="flex items-center gap-1.5 font-medium text-foreground/80">
-                        <Users className="size-3.5" />
-                        {seated} / {capacity} Seated
-                    </span>
-                    {isFull ? (
-                        <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-500">
-                            <PartyPopper className="size-3" />
-                            Full House!
-                        </span>
-                    ) : (
-                        <span className="text-[11px] font-semibold text-amber-500">
-                            {capacity - seated} seat{capacity - seated === 1 ? "" : "s"} left
-                        </span>
-                    )}
-                </div>
-
-                {/* Progress bar */}
-                <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                    <div
-                        className={cn(
-                            "h-full rounded-full transition-[width] duration-500 ease-out",
-                            isFull ? "bg-emerald-500" : "bg-amber-500"
+                    </>
+                ) : (
+                    <>
+                        {onClick && (
+                            <Button
+                                size="sm"
+                                className="flex-1 gap-1.5 bg-amber-500 hover:bg-amber-600 text-amber-950 rounded-full"
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    onClick()
+                                }}
+                            >
+                                <UserPlus className="size-3.5" />
+                                Book Seat
+                            </Button>
                         )}
-                        style={{ width: `${pct}%` }}
-                    />
-                </div>
-
-
-                {/* Primary action row */}
-                <div className="flex items-center gap-2">
-                    {isFull ? (
-                        <>
-                            {!readOnly && onDispatch && (
-                                <Button
-                                    size="sm"
-                                    className="flex-1 gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full"
-                                    disabled={isUpdating}
-                                    onClick={(e) => {
-                                        e.stopPropagation()
-                                        onDispatch()
-                                    }}
-                                >
-                                    <Truck className="size-3.5" />
-                                    Dispatch
-                                </Button>
-                            )}
-                            {onViewManifest && (
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="gap-1.5 rounded-full"
-                                    onClick={(e) => {
-                                        e.stopPropagation()
-                                        onViewManifest()
-                                    }}
-                                >
-                                    <ClipboardList className="size-3.5" />
-                                    Manifest ({entry.seatedCount ?? 0})
-                                </Button>
-                            )}
-                        </>
-                    ) : (
-                        <>
-                            {onClick && (
-                                <Button
-                                    size="sm"
-                                    className="flex-1 gap-1.5 bg-amber-500 hover:bg-amber-600 text-amber-950 rounded-full"
-                                    onClick={(e) => {
-                                        e.stopPropagation()
-                                        onClick()
-                                    }}
-                                >
-                                    <UserPlus className="size-3.5" />
-                                    Book Seat
-                                </Button>
-                            )}
-                            {onViewManifest && (
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="gap-1.5 rounded-full"
-                                    onClick={(e) => {
-                                        e.stopPropagation()
-                                        onViewManifest()
-                                    }}
-                                >
-                                    <ClipboardList className="size-3.5" />
-                                    Manifest ({entry.seatedCount ?? 0})
-                                </Button>
-                            )}
-                        </>
-                    )}
-                </div>
+                        {onViewManifest && (
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                className="gap-1.5 rounded-full"
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    onViewManifest()
+                                }}
+                            >
+                                <ClipboardList className="size-3.5" />
+                                Manifest ({entry.seatedCount ?? 0})
+                            </Button>
+                        )}
+                    </>
+                )}
+            </div>
         </div>
     )
 }

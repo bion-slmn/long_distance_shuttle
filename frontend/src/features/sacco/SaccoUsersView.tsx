@@ -573,6 +573,14 @@ function DesktopUserRow({
                 </TableCell>
             )}
 
+            {user.role === "CLERK" && (
+                <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">
+                        {user.assignedStage ?? "—"}
+                    </p>
+                </div>
+            )}
+
             {/* Actions – only for admins */}
             <RoleGuard allowed={ALL_ADMINS}>
                 <TableCell onClick={(e) => e.stopPropagation()}>
@@ -738,6 +746,13 @@ function UserDetailsDialog({
                         ) : (
                             <p className="text-sm text-muted-foreground">—</p>
                         )}
+                    </div>
+
+                    <div className="space-y-1">
+                        <p className="text-xs text-muted-foreground">Assigned stage</p>
+                        <p className="text-sm text-muted-foreground">
+                            {user.assignedStage ?? "—"}
+                        </p>
                     </div>
 
                     {showSacco && (
@@ -1029,19 +1044,21 @@ function CreateUserDialog({
 }) {
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-md">
-                <DialogHeader>
+            <DialogContent className="sm:max-w-md max-h-[85dvh] flex flex-col gap-0 p-0">
+                <DialogHeader className="px-6 pt-6 pb-2 shrink-0">
                     <DialogTitle className="text-base">Add user</DialogTitle>
                     <DialogDescription>
                         Create a new user account.
                     </DialogDescription>
                 </DialogHeader>
-                <AdminCreateUser
-                    onCreated={() => {
-                        onCreated()
-                        onOpenChange(false)
-                    }}
-                />
+                <div className="overflow-y-auto px-6 pb-6">
+                    <AdminCreateUser
+                        onCreated={() => {
+                            onCreated()
+                            onOpenChange(false)
+                        }}
+                    />
+                </div>
             </DialogContent>
         </Dialog>
     )

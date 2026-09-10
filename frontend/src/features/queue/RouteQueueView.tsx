@@ -268,6 +268,7 @@ export function RouteQueueView({ routeId, onRouteChange, className }: RouteQueue
         selectedRouteId,
         selectedDate,
         manifestEntry?.vehicleId,
+        manifestEntry?.tripId,
         !!manifestEntry
     )
 

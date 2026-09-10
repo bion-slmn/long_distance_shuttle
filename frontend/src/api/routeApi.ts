@@ -72,6 +72,9 @@ export interface QueueEntry {
         notes: string;
     };
     routeQueue: RouteQueue;
+    // Set for BOARDING and DISPATCHED entries only — a WAITING vehicle has no
+    // trip yet.
+    tripId?: string;
     // Both only present on BOARDING entries — a WAITING vehicle has no trip
     // to count bookings against yet.
     /** Seats paid for. Does NOT include seats blocked by an in-flight payment. */

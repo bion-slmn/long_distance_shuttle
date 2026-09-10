@@ -5,11 +5,12 @@ export function useVehicleManifest(
     routeId: string | undefined,
     travelDate: string,
     vehicleId: string | undefined,
+    tripId: string | undefined,
     enabled: boolean
 ) {
     const { data: routeBookings, isLoading } = useQuery({
-        queryKey: ["bookings", routeId, travelDate],
-        queryFn: () => getBookingsRequest({ routeId, travelDate }),
+        queryKey: ["bookings", routeId, travelDate, tripId],
+        queryFn: () => getBookingsRequest({ routeId, travelDate, tripId }),
         enabled: enabled && !!routeId,
     })
 
